@@ -72,7 +72,7 @@ impl<S: PacketRecv> VpnDevice<S> {
             config = config.wintun_file("./wintun.dll".to_string());
         }
         let dev = config
-            .name(self.network.name.as_str())
+            .name(format!("{}_{}", self.network.name, self.network.id).as_str())
             .mtu(1400)
             .layer(Layer::L3)
             .build_async().map_err(into_vpn_err!(VpnErrorCode::Failed))?;
