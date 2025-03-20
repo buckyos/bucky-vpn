@@ -172,10 +172,10 @@ impl<S: VpnTunnelSend> PendingSendCache<S> {
         if let Some(index) = index {
             let mut send = None;
             for i in delete_list.iter().rev() {
-                cache.remove(*i);
                 if *i < index && send.is_none() {
                     send = Some(cache.remove(index));
                 }
+                cache.remove(*i);
             }
             send
         } else {
