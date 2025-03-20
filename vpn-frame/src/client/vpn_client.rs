@@ -238,6 +238,7 @@ impl<T: CmdClient<u16, u8>, R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFact
 
             tunnel_manager.get_router().add_network(group_id, network_id, members);
         }
+        self.cur_version.store(server_version, Ordering::SeqCst);
         Ok(())
     }
 

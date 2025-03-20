@@ -60,7 +60,7 @@ class _HomeState extends State<Home> with SingleTickerProviderStateMixin {
         backgroundColor: Colors.white,
         body: Center(
             child: Container(
-              width: 600,
+              width: 1024,
               color: Colors.white,
               child: Column(
               mainAxisAlignment: MainAxisAlignment.start,

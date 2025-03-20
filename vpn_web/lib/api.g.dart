@@ -38,6 +38,10 @@ JoinedNode _$JoinedNodeFromJson(Map<String, dynamic> json) => JoinedNode(
       allowJoin: json['allow_join'] as bool,
       name: json['name'] as String,
       comment: json['comment'] as String,
+      isOnline: json['online'] as bool,
+      clientVersion: json['client_version'] as String?,
+      ipList:
+          (json['ip_list'] as List<dynamic>?)?.map((e) => e as String).toList(),
     );
 
 Map<String, dynamic> _$JoinedNodeToJson(JoinedNode instance) =>
@@ -47,6 +51,9 @@ Map<String, dynamic> _$JoinedNodeToJson(JoinedNode instance) =>
       'allow_join': instance.allowJoin,
       'name': instance.name,
       'comment': instance.comment,
+      'online': instance.isOnline,
+      'client_version': instance.clientVersion,
+      'ip_list': instance.ipList,
     };
 
 Network _$NetworkFromJson(Map<String, dynamic> json) => Network(
@@ -73,10 +80,17 @@ NetworkMember _$NetworkMemberFromJson(Map<String, dynamic> json) =>
     NetworkMember(
       nodeId: json['id'] as String,
       ipAddr: json['ip'] as String,
+      isOnline: json['online'] as bool,
+      clientVersion: json['client_version'] as String?,
+      ipList:
+          (json['ip_list'] as List<dynamic>?)?.map((e) => e as String).toList(),
     );
 
 Map<String, dynamic> _$NetworkMemberToJson(NetworkMember instance) =>
     <String, dynamic>{
       'id': instance.nodeId,
       'ip': instance.ipAddr,
+      'online': instance.isOnline,
+      'client_version': instance.clientVersion,
+      'ip_list': instance.ipList,
     };

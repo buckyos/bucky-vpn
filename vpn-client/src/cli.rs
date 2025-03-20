@@ -8,7 +8,7 @@ pub struct Cli;
 
 impl Cli {
     pub async fn join(server: String, server_id: String, group_id: NetworkGroupId, name: Option<String>) -> VpnResult<()> {
-        let http_client = HttpClient::new(5, Some("http://127.0.0.1:45364"));
+        let http_client = HttpClient::new(5, Some("http://127.0.0.1:4536"));
         let result: HttpServerResult<()> = http_client.post_json("/join", &Join {
             server,
             server_id,
@@ -23,7 +23,7 @@ impl Cli {
     }
 
     pub async fn get_state(server: String) -> VpnResult<()> {
-        let http_client = HttpClient::new(5, Some("http://127.0.0.1:45364"));
+        let http_client = HttpClient::new(5, Some("http://127.0.0.1:4536"));
         let result: HttpServerResult<()> = http_client.get_json("/state").await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
         if result.err != 0 {
             Err(vpn_err!(VpnErrorCode::Failed, "err: {}, msg: {}", result.err, result.msg))

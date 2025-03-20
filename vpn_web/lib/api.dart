@@ -50,8 +50,22 @@ class JoinedNode {
   bool allowJoin;
   String name;
   String comment;
+  @JsonKey(name: 'online')
+  bool isOnline;
+  @JsonKey(name: 'client_version')
+  String? clientVersion;
+  @JsonKey(name: 'ip_list')
+  List<String>? ipList;
 
-  JoinedNode({required this.groupId, required this.nodeId, required this.allowJoin, required this.name, required this.comment});
+  JoinedNode(
+      {required this.groupId,
+      required this.nodeId,
+      required this.allowJoin,
+      required this.name,
+      required this.comment,
+      required this.isOnline,
+      this.clientVersion,
+      this.ipList});
 
   factory JoinedNode.fromJson(Map<String, dynamic> json) => _$JoinedNodeFromJson(json);
   Map<String, dynamic> toJson() => _$JoinedNodeToJson(this);
@@ -89,9 +103,19 @@ class NetworkMember {
   String nodeId;
   @JsonKey(name: 'ip')
   String ipAddr;
+  @JsonKey(name: 'online')
+  bool isOnline;
+  @JsonKey(name: 'client_version')
+  String? clientVersion;
+  @JsonKey(name: 'ip_list')
+  List<String>? ipList;
 
   NetworkMember(
-      {required this.nodeId, required this.ipAddr});
+      {required this.nodeId,
+        required this.ipAddr,
+        required this.isOnline,
+        this.clientVersion,
+        this.ipList});
 
   factory NetworkMember.fromJson(Map<String, dynamic> json) =>
       _$NetworkMemberFromJson(json);
@@ -118,7 +142,7 @@ class Api {
         final port = Uri.base.port;
         _instance = Api._internal("http://$host:$port/api");
       } else {
-        _instance = Api._internal("http://127.0.0.1:3445");
+        _instance = Api._internal("http://192.168.80.100:3445");
       }
     }
     return _instance!;

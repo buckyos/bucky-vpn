@@ -53,6 +53,15 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
     });
   }
 
+  String? getNodeName(String nodeId) {
+    for (var node in _joinedNodes) {
+      if (node.nodeId == nodeId) {
+        return node.comment.isNotEmpty ? node.comment : node.name.isNotEmpty? node.name : node.nodeId;
+      }
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -61,60 +70,74 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
         child: Container(
           width: 600,
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisAlignment: MainAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: <Widget>[
               SizedBox(
                 height: 40,
               ),
-              Expanded(
-                  child: Table(
+              Table(
                       border: TableBorder.all(color: Colors.black),
                       defaultVerticalAlignment:
                       TableCellVerticalAlignment.middle,
                       children: [
                 TableRow(children: [
-                  TableCell(child: Center(child: Text("node id"))),
-                  TableCell(child: Center(child: Text("ip"))),
+                  TableCell(child: Center(child: Text("Name"))),
+                  TableCell(child: Center(child: Text("Ip"))),
                   TableCell(child: Center(child: Text("Action"))),
                 ]),
                 for (var member in _networkMembers)
                   TableRow(children: [
-                    TableCell(child: Center(child: Text(member.nodeId))),
-                    TableCell(child: Center(child: Text(member.ipAddr))),
-                    TableCell(
-                        child: ElevatedButton(
-                      onPressed: () async {
-                        final result = await Api.instance().deleteNetworkMember(
-                            widget.network.id, member.nodeId);
-                        if (result.isSuccess) {
-                          Fluttertoast.showToast(
-                            msg: "Remove member success",
-                            toastLength: Toast.LENGTH_SHORT,
-                            gravity: ToastGravity.TOP,
-                            backgroundColor: Colors.black,
-                            textColor: Colors.white,
-                            fontSize: 16.0,
-                          );
-                          setState(() {
-                            _networkMembers.remove(member);
-                          });
-                        } else {
-                          Fluttertoast.showToast(
-                            msg: result.msg ?? "Remove member failed",
-                            toastLength: Toast.LENGTH_SHORT,
-                            gravity: ToastGravity.TOP,
-                            backgroundColor: Colors.black,
-                            textColor: Colors.white,
-                            fontSize: 16.0,
-                          );
-                        }
-                      },
-                      child: Text("Remove"),
-                    ))
-                  ]),
-                TableRow(children: [
-                  TableCell(
-                    child: Expanded(
+                    TableCell(child: Center(child: SelectableText(getNodeName(member.nodeId)?? member.nodeId))),
+                        TableCell(
+                            child:
+                                Center(child: SelectableText(member.ipAddr))),
+                        TableCell(
+                            child: Center(
+                                child: MouseRegion(
+                                    cursor: SystemMouseCursors.click,
+                                    child: InkWell(
+                                      onTap: () async {
+                                        final result = await Api.instance()
+                                            .deleteNetworkMember(
+                                                widget.network.id,
+                                                member.nodeId);
+                                        if (result.isSuccess) {
+                                          Fluttertoast.showToast(
+                                            msg: "Remove member success",
+                                            toastLength: Toast.LENGTH_SHORT,
+                                            gravity: ToastGravity.TOP,
+                                            backgroundColor: Colors.black,
+                                            textColor: Colors.white,
+                                            fontSize: 16.0,
+                                          );
+                                          setState(() {
+                                            _networkMembers.remove(member);
+                                          });
+                                        } else {
+                                          Fluttertoast.showToast(
+                                            msg: result.msg ??
+                                                "Remove member failed",
+                                            toastLength: Toast.LENGTH_SHORT,
+                                            gravity: ToastGravity.TOP,
+                                            backgroundColor: Colors.black,
+                                            textColor: Colors.white,
+                                            fontSize: 16.0,
+                                          );
+                                        }
+                                      },
+                                      child: Text(
+                                        "Remove",
+                                        style: TextStyle(
+                                            color: Colors.blue,
+                                            decoration:
+                                                TextDecoration.underline),
+                                      ),
+                                    ))))
+                      ]),
+                    TableRow(children: [
+                      TableCell(
+                    child: Center(
                         child: Container(
                           padding: EdgeInsets.all(3),
                       height: 40,
@@ -136,7 +159,7 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
                     )),
                   ),
                   TableCell(
-                    child: Expanded(
+                    child: Center(
                         child: Container(
                           padding: EdgeInsets.all(3),
                       height: 40,
@@ -194,7 +217,7 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
                                 setState(() {
                                   _networkMembers.add(NetworkMember(
                                       nodeId: addingNode!.nodeId,
-                                      ipAddr: _ipController.text));
+                                      ipAddr: _ipController.text, isOnline: false));
                                 });
                               } else {
                                 Fluttertoast.showToast(
@@ -215,7 +238,7 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
                             ))),
                   ))
                 ])
-              ]))
+              ])
             ],
           ),
         ),

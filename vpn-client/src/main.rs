@@ -85,7 +85,7 @@ async fn main() {
             let server_id = matches.get_one::<String>("server_id").unwrap();
             let id = matches.get_one::<u64>("network_id").unwrap();
             let name = matches.get_one::<String>("name");
-            Cli::join(server.clone(), server_id.clone(), *id, name.map(|v| v.clone())).await;
+            let _ = Cli::join(server.clone(), server_id.clone(), *id, name.map(|v| v.clone())).await;
             return;
         },
         Some(("state", _)) => {
@@ -121,7 +121,7 @@ async fn main() {
     // let stack = create_p2p_stack(stack_config).await.unwrap();
     // stack.wait_online(None).await.unwrap();
 
-    let http_config = HttpServerConfig::new("127.0.0.1", 45364);
+    let http_config = HttpServerConfig::new("127.0.0.1", 4536);
     let mut http_server = TideHttpServer::new(http_config);
     Api::register_api(&mut http_server, setting);
     http_server.run().await.unwrap();

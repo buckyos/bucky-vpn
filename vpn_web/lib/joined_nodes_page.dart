@@ -57,8 +57,10 @@ class _JoinedNodesPageState extends State<JoinedNodesPage> {
               border: TableBorder.all(color: Colors.black),
               defaultVerticalAlignment: TableCellVerticalAlignment.middle,
               columnWidths: {
-                0: FixedColumnWidth(80),
-                1: FlexColumnWidth()
+                0: FixedColumnWidth(120),
+                1: FixedColumnWidth(240),
+                2: FlexColumnWidth(),
+                3: FixedColumnWidth(160),
               },
               children: [
                 TableRow(
@@ -68,6 +70,8 @@ class _JoinedNodesPageState extends State<JoinedNodesPage> {
                           child: Text("Allow Join"),
                         )),
                     TableCell(child: Center(child: Text("Name"))),
+                    TableCell(child: Center(child: Text("ID"))),
+                    TableCell(child: Center(child: Text("State")))
                   ],
                 ),
                 for (var node in _joinedNodes!)
@@ -87,7 +91,9 @@ class _JoinedNodesPageState extends State<JoinedNodesPage> {
                                   }
                                 },
                               ))),
-                      TableCell(child: Center(child: Text(node.name))),
+                      TableCell(child: Center(child: Text(node.comment.isNotEmpty ? node.comment : node.name.isNotEmpty ? node.name : node.nodeId))),
+                      TableCell(child: Center(child: Text(node.nodeId))),
+                      TableCell(child: Center(child: Text(node.isOnline? node.ipList!.join("\n"):"offline")))
                     ],
                   )
               ]),
