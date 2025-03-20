@@ -216,4 +216,21 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
     pub async fn get_peer_ip_list(&self, peer_id: &PeerId) -> VpnResult<Vec<IpAddr>> {
         self.cmd_server.get_peer_wan_ip(peer_id).await
     }
+
+    pub async fn get_node_online_state(&self, node_id: &NodeId) -> Option<(String, Vec<IpAddr>)> {
+        let online_nodes = self.online_nodes.lock().unwrap();
+        if let Some(node) = online_nodes.get(node_id) {
+            if!node.is_expire() {
+                let ips = self.cmd_server.get_peer_wan_ip(&PeerId::from(node_id.as_slice())).await.unwrap_or(vec![]);
+                if ips.is_empty() {
+                    return None;
+                }
+                Some((node.version.clone(), ips))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
 }

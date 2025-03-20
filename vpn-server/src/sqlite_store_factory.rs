@@ -1,13 +1,17 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::sync::Arc;
+use p2p_frame::sn::service::SnServiceRef;
 use sfo_sql::errors::{SqlErrorCode};
 use sfo_sql::mysql::sql_query;
 use sfo_sql::sqlite::{SqlConnection, SqlPool, SqliteJournalMode};
 use sfo_sql::{Row};
+use vpn_frame::cmd_server::{CmdHandler, PeerId, TunnelId};
+use vpn_frame::cmd_server::errors::CmdResult;
+use vpn_frame::cmd_server::server::CmdServer;
 use vpn_frame::errors::{into_vpn_err, vpn_err, VpnErrorCode, VpnResult};
 use vpn_frame::NodeNetwork;
-use vpn_frame::server::{JoinedNode, Network, NetworkGroupId, NetworkId, NetworkManager, NetworkMember, NetworkStore, Node, NodeId, NodeManager, NodeStore, VpnStore, VpnStoreFactory, VpnStoreGuard};
+use vpn_frame::server::{JoinedNode, Network, NetworkGroupId, NetworkId, NetworkManager, NetworkMember, NetworkStore, Node, NodeId, NodeManager, NodeStore, VpnCmdServer, VpnServer, VpnStore, VpnStoreFactory, VpnStoreGuard};
 
 pub struct SqliteVpnStore {
     conn: SqlConnection
@@ -534,5 +538,57 @@ impl VpnStoreFactory<SqliteVpnStore> for SqliteStoreFactory {
     }
 }
 
+pub struct P2pSnCmdServer {
+    sn_service: SnServiceRef,
+}
+
+impl P2pSnCmdServer {
+    pub fn new(sn_service: SnServiceRef) -> Self {
+        Self {
+            sn_service,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl CmdServer<u16, u8> for P2pSnCmdServer {
+    fn register_cmd_handler(&self, cmd: u8, handler: impl CmdHandler<u16, u8>) {
+        self.sn_service.get_cmd_server().register_cmd_handler(cmd, handler);
+    }
+
+    async fn send(&self, peer_id: &PeerId, cmd: u8, version: u8, body: &[u8]) -> CmdResult<()> {
+        self.sn_service.get_cmd_server().send(peer_id, cmd, version, body).await
+    }
+
+    async fn send2(&self, peer_id: &PeerId, cmd: u8, version: u8, body: &[&[u8]]) -> CmdResult<()> {
+        self.sn_service.get_cmd_server().send2(peer_id, cmd, version, body).await
+    }
+
+    async fn send_by_specify_tunnel(&self, peer_id: &PeerId, tunnel_id: TunnelId, cmd: u8, version: u8, body: &[u8]) -> CmdResult<()> {
+        self.sn_service.get_cmd_server().send_by_specify_tunnel(peer_id, tunnel_id, cmd, version, body).await
+    }
+
+    async fn send2_by_specify_tunnel(&self, peer_id: &PeerId, tunnel_id: TunnelId, cmd: u8, version: u8, body: &[&[u8]]) -> CmdResult<()> {
+        self.sn_service.get_cmd_server().send2_by_specify_tunnel(peer_id, tunnel_id, cmd, version, body).await
+    }
+
+    async fn send_by_all_tunnels(&self, peer_id: &PeerId, cmd: u8, version: u8, body: &[u8]) -> CmdResult<()> {
+        self.sn_service.get_cmd_server().send_by_all_tunnels(peer_id, cmd, version, body).await
+    }
+
+    async fn send2_by_all_tunnels(&self, peer_id: &PeerId, cmd: u8, version: u8, body: &[&[u8]]) -> CmdResult<()> {
+        self.sn_service.get_cmd_server().send2_by_all_tunnels(peer_id, cmd, version, body).await
+    }
+}
+
+#[async_trait::async_trait]
+impl VpnCmdServer for P2pSnCmdServer {
+    async fn get_peer_wan_ip(&self, peer_id: &PeerId) -> VpnResult<Vec<IpAddr>> {
+        let list = self.sn_service.get_peer_wan_ep(&peer_id).await.iter().map(|ep| ep.addr().ip().clone()).collect();
+        Ok(list)
+    }
+}
+
 pub type NodeManagerRef = Arc<NodeManager<SqliteVpnStore, SqliteStoreFactory>>;
 pub type NetworkManagerRef = Arc<NetworkManager<SqliteVpnStore, SqliteStoreFactory>>;
+pub type VpnServerRef = Arc<VpnServer<P2pSnCmdServer, SqliteVpnStore, SqliteStoreFactory>>;

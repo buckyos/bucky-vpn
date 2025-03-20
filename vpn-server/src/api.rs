@@ -7,7 +7,7 @@ use sfo_http::openapi::OpenApiServer;
 use sfo_http::openapi::utoipa;
 use vpn_frame::errors::{into_vpn_err, vpn_err, VpnErrorCode, VpnResult};
 use vpn_frame::server::{NetworkGroupId, NetworkId, NodeId};
-use crate::sqlite_store_factory::{NetworkManagerRef};
+use crate::sqlite_store_factory::{NetworkManagerRef, VpnServerRef};
 use crate::user_store::UserManagerRef;
 use vpn_frame::serialize_u64_as_string;
 use vpn_frame::deserialize_u64_from_string;
@@ -22,6 +22,11 @@ struct JsonJoinedNode {
     pub allow_join: bool,
     pub name: String,
     pub comment: String,
+    pub online: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_list: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, utoipa::ToSchema)]
@@ -30,6 +35,11 @@ struct JsonNetworkMember {
     pub ip: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ipv6: Option<String>,
+    pub online: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_list: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, utoipa::ToSchema)]
@@ -105,12 +115,12 @@ impl Api {
         S: HttpServer<Req, Resp> + OpenApiServer,
     >(server: &mut S,
       user_manager: UserManagerRef,
-      network_manager: NetworkManagerRef) {
+      vpn_server: VpnServerRef) {
         let tmp_user_manager = user_manager.clone();
-        let tmp_network_manager = network_manager.clone();
+        let tmp_vpn_server = vpn_server.clone();
         server.serve("/get_joined_nodes", HttpMethod::GET, move | req: Req| {
             let user_manager = tmp_user_manager.clone();
-            let network_manager = tmp_network_manager.clone();
+            let vpn_server = tmp_vpn_server.clone();
             async move {
                 let result: VpnResult<Vec<JsonJoinedNode>> = async move {
                     let session = req
@@ -122,24 +132,46 @@ impl Api {
                     }
                     let session = session.split_at("Bearer ".len()).1;
                     let user = user_manager.decode_session(session).await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
-                    let nodes = network_manager.get_joint_nodes(&user.account.network_id).await?.iter().map(|v| JsonJoinedNode {
-                        group_id: v.group_id,
-                        node_id: v.node_id.to_base58(),
-                        allow_join: v.allow_join,
-                        name: v.name.clone(),
-                        comment: v.comment.clone(),
-                    }).collect::<Vec<_>>();
-                    Ok(nodes)
+                    let nodes = vpn_server.network_manager().get_joint_nodes(&user.account.network_id).await?;
+                    let mut ret_nodes = Vec::new();
+                    for node in nodes.iter() {
+                        let online = vpn_server.get_node_online_state(&node.node_id).await;
+                        if online.is_some() {
+                            let (client_version, ip_list) = online.unwrap();
+                            ret_nodes.push(JsonJoinedNode {
+                                group_id: node.group_id,
+                                node_id: node.node_id.to_base58(),
+                                allow_join: node.allow_join,
+                                name: node.name.clone(),
+                                comment: node.comment.clone(),
+                                online: true,
+                                client_version: Some(client_version),
+                                ip_list: Some(ip_list.iter().map(|ip| ip.to_string()).collect()),
+                            });
+                        } else {
+                            ret_nodes.push(JsonJoinedNode {
+                                group_id: node.group_id,
+                                node_id: node.node_id.to_base58(),
+                                allow_join: node.allow_join,
+                                name: node.name.clone(),
+                                comment: node.comment.clone(),
+                                online: false,
+                                client_version: None,
+                                ip_list: None,
+                            });
+                        }
+                    }
+                    Ok(ret_nodes)
                 }.await;
                 Ok(Resp::from_result(result))
             }
         });
 
         let tmp_user_manager = user_manager.clone();
-        let tmp_network_manager = network_manager.clone();
+        let tmp_vpn_server = vpn_server.clone();
         server.serve("/allow_join", HttpMethod::POST, move | mut req: Req| {
             let user_manager = tmp_user_manager.clone();
-            let network_manager = tmp_network_manager.clone();
+            let vpn_server = tmp_vpn_server.clone();
             async move {
                 let result: VpnResult<()> = async move {
                     let session = req
@@ -153,17 +185,17 @@ impl Api {
                     let user = user_manager.decode_session(session).await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
                     let req = req.body_json::<AllowJoinReq>().await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
                     let node_id = NodeId::from_base58(&req.node_id).map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
-                    network_manager.update_allow_join(&user.account.network_id, &node_id, req.allow_join).await
+                    vpn_server.network_manager().update_allow_join(&user.account.network_id, &node_id, req.allow_join).await
                 }.await;
                 Ok(Resp::from_result(result))
             }
         });
 
         let tmp_user_manager = user_manager.clone();
-        let tmp_network_manager = network_manager.clone();
+        let tmp_vpn_server = vpn_server.clone();
         server.serve("/add_network", HttpMethod::POST, move | mut req: Req| {
             let user_manager = tmp_user_manager.clone();
-            let network_manager = tmp_network_manager.clone();
+            let vpn_server = tmp_vpn_server.clone();
             async move {
                 let result: VpnResult<()> = async move {
                     let session = req
@@ -176,22 +208,22 @@ impl Api {
                     let session = session.split_at("Bearer ".len()).1;
                     let user = user_manager.decode_session(session).await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
                     let req = req.body_json::<AddNetworkReq>().await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
-                    let mut network = network_manager.new_network(&user.account.network_id).await?;
+                    let mut network = vpn_server.network_manager().new_network(&user.account.network_id).await?;
                     network.name = req.name.clone();
                     network.ip_seg = Some(req.ip_addr.parse().map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?);
                     network.mask = req.mask;
 
-                    network_manager.update_network(&network).await
+                    vpn_server.network_manager().update_network(&network).await
                 }.await;
                 Ok(Resp::from_result(result))
             }
         });
 
         let tmp_user_manager = user_manager.clone();
-        let tmp_network_manager = network_manager.clone();
+        let tmp_vpn_server = vpn_server.clone();
         server.serve("/update_network", HttpMethod::POST, move | mut req: Req| {
             let user_manager = tmp_user_manager.clone();
-            let network_manager = tmp_network_manager.clone();
+            let vpn_server = tmp_vpn_server.clone();
             async move {
                 let result: VpnResult<()> = async move {
                     let session = req
@@ -204,7 +236,7 @@ impl Api {
                     let session = session.split_at("Bearer ".len()).1;
                     let user = user_manager.decode_session(session).await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
                     let req = req.body_json::<UpdateNetworkReq>().await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
-                    let network = network_manager.get_network(&req.network_id).await?;
+                    let network = vpn_server.network_manager().get_network(&req.network_id).await?;
                     if network.is_none() {
                         return Err(vpn_err!(VpnErrorCode::InvalidParam));
                     }
@@ -217,17 +249,17 @@ impl Api {
                     network.ip_seg = Some(req.ip_addr.parse().map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?);
                     network.mask = req.mask;
 
-                    network_manager.update_network(&network).await
+                    vpn_server.network_manager().update_network(&network).await
                 }.await;
                 Ok(Resp::from_result(result))
             }
         });
 
         let tmp_user_manager = user_manager.clone();
-        let tmp_network_manager = network_manager.clone();
+        let tmp_vpn_server = vpn_server.clone();
         server.serve("/get_networks", HttpMethod::GET, move | req: Req| {
             let user_manager = tmp_user_manager.clone();
-            let network_manager = tmp_network_manager.clone();
+            let vpn_server = tmp_vpn_server.clone();
             async move {
                 let result: VpnResult<Vec<JsonNetwork>> = async move {
                     let session = req
@@ -240,7 +272,7 @@ impl Api {
                     let session = session.split_at("Bearer ".len()).1;
                     let user = user_manager.decode_session(session).await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
 
-                    let list = network_manager.get_networks_of_group(&user.account.network_id).await?.iter().map(|v| {
+                    let list = vpn_server.network_manager().get_networks_of_group(&user.account.network_id).await?.iter().map(|v| {
                         JsonNetwork {
                             id: v.id,
                             group_id: v.group_id,
@@ -258,10 +290,10 @@ impl Api {
         });
 
         let tmp_user_manager = user_manager.clone();
-        let tmp_network_manager = network_manager.clone();
+        let tmp_vpn_server = vpn_server.clone();
         server.serve("/add_network_member", HttpMethod::POST, move | mut req: Req| {
             let user_manager = tmp_user_manager.clone();
-            let network_manager = tmp_network_manager.clone();
+            let vpn_server = tmp_vpn_server.clone();
             async move {
                 let result: VpnResult<()> = async move {
                     let session = req
@@ -274,7 +306,7 @@ impl Api {
                     let session = session.split_at("Bearer ".len()).1;
                     let user = user_manager.decode_session(session).await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
                     let req = req.body_json::<AddNetworkMemberReq>().await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
-                    let network = network_manager.get_network(&req.network_id).await?;
+                    let network = vpn_server.network_manager().get_network(&req.network_id).await?;
                     if network.is_none() {
                         return Err(vpn_err!(VpnErrorCode::InvalidParam));
                     }
@@ -289,17 +321,17 @@ impl Api {
                     }
 
                     let node_id = NodeId::from_base58(req.node_id.as_str()).map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
-                    network_manager.add_network_member(&network.id, &node_id, req.ip_addr.clone(), None).await
+                    vpn_server.network_manager().add_network_member(&network.id, &node_id, req.ip_addr.clone(), None).await
                 }.await;
                 Ok(Resp::from_result(result))
             }
         });
 
         let tmp_user_manager = user_manager.clone();
-        let tmp_network_manager = network_manager.clone();
+        let tmp_vpn_server = vpn_server.clone();
         server.serve("/update_network_member", HttpMethod::POST, move | mut req: Req| {
             let user_manager = tmp_user_manager.clone();
-            let network_manager = tmp_network_manager.clone();
+            let vpn_server = tmp_vpn_server.clone();
             async move {
                 let result: VpnResult<()> = async move {
                     let session = req
@@ -312,7 +344,7 @@ impl Api {
                     let session = session.split_at("Bearer ".len()).1;
                     let user = user_manager.decode_session(session).await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
                     let req = req.body_json::<UpdateNetworkMemberReq>().await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
-                    let network = network_manager.get_network(&req.network_id).await?;
+                    let network = vpn_server.network_manager().get_network(&req.network_id).await?;
                     if network.is_none() {
                         return Err(vpn_err!(VpnErrorCode::InvalidParam));
                     }
@@ -327,17 +359,17 @@ impl Api {
                     }
 
                     let node_id = NodeId::from_base58(req.node_id.as_str()).map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
-                    network_manager.update_network_member(&network.id, node_id, req.ip_addr.clone(), None).await
+                    vpn_server.network_manager().update_network_member(&network.id, node_id, req.ip_addr.clone(), None).await
                 }.await;
                 Ok(Resp::from_result(result))
             }
         });
 
         let tmp_user_manager = user_manager.clone();
-        let tmp_network_manager = network_manager.clone();
+        let tmp_vpn_server = vpn_server.clone();
         server.serve("/delete_network_member", HttpMethod::POST, move | mut req: Req| {
             let user_manager = tmp_user_manager.clone();
-            let network_manager = tmp_network_manager.clone();
+            let vpn_server = tmp_vpn_server.clone();
             async move {
                 let result: VpnResult<()> = async move {
                     let session = req
@@ -350,7 +382,7 @@ impl Api {
                     let session = session.split_at("Bearer ".len()).1;
                     let user = user_manager.decode_session(session).await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
                     let req = req.body_json::<DeleteNetworkMemberReq>().await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
-                    let network = network_manager.get_network(&req.network_id).await?;
+                    let network = vpn_server.network_manager().get_network(&req.network_id).await?;
                     if network.is_none() {
                         return Err(vpn_err!(VpnErrorCode::InvalidParam));
                     }
@@ -360,17 +392,17 @@ impl Api {
                     }
 
                     let node_id = NodeId::from_base58(req.node_id.as_str()).map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
-                    network_manager.del_network_member(&network.id, &node_id).await
+                    vpn_server.network_manager().del_network_member(&network.id, &node_id).await
                 }.await;
                 Ok(Resp::from_result(result))
             }
         });
 
         let tmp_user_manager = user_manager.clone();
-        let tmp_network_manager = network_manager.clone();
+        let tmp_vpn_server = vpn_server.clone();
         server.serve("/get_network_member", HttpMethod::POST, move | mut req: Req| {
             let user_manager = tmp_user_manager.clone();
-            let network_manager = tmp_network_manager.clone();
+            let vpn_server = tmp_vpn_server.clone();
             async move {
                 let result: VpnResult<Vec<JsonNetworkMember>> = async move {
                     let session = req
@@ -383,7 +415,7 @@ impl Api {
                     let session = session.split_at("Bearer ".len()).1;
                     let user = user_manager.decode_session(session).await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
                     let req = req.body_json::<GetNetworkMemberReq>().await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
-                    let network = network_manager.get_network(&req.network_id).await?;
+                    let network = vpn_server.network_manager().get_network(&req.network_id).await?;
                     if network.is_none() {
                         return Err(vpn_err!(VpnErrorCode::InvalidParam));
                     }
@@ -392,13 +424,31 @@ impl Api {
                         return Err(vpn_err!(VpnErrorCode::NoPermission, "No permission"));
                     }
 
-                    let list = network_manager.get_network_member(&req.network_id).await?.iter().map(|v| {
-                        JsonNetworkMember {
-                            id: v.id.to_base58(),
-                            ip: v.ip.clone(),
-                            ipv6: v.ipv6.clone(),
+                    let members = vpn_server.network_manager().get_network_member(&req.network_id).await?;
+                    let mut list = Vec::new();
+                    for member in members.iter() {
+                        let online = vpn_server.get_node_online_state(&member.id).await;
+                        if online.is_some() {
+                            let (client_version, ip_list) = online.unwrap();
+                            list.push(JsonNetworkMember {
+                                id: member.id.to_base58(),
+                                ip: member.ip.clone(),
+                                ipv6: member.ipv6.clone(),
+                                online: true,
+                                client_version: Some(client_version),
+                                ip_list: Some(ip_list.iter().map(|ip| ip.to_string()).collect()),
+                            });
+                        } else {
+                            list.push(JsonNetworkMember {
+                                id: member.id.to_base58(),
+                                ip: member.ip.clone(),
+                                ipv6: member.ipv6.clone(),
+                                online: false,
+                                client_version: None,
+                                ip_list: None,
+                            })
                         }
-                    }).collect();
+                    }
                     Ok(list)
                 }.await;
                 Ok(Resp::from_result(result))

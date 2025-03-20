@@ -22,63 +22,12 @@ use vpn_frame::errors::VpnResult;
 use vpn_frame::server::{VpnCmdServer, VpnServer, VpnStoreFactory};
 use vpn_frame::cmd_server::server::CmdServer;
 use crate::api::Api;
-use crate::sqlite_store_factory::{SqliteStoreFactory};
+use crate::sqlite_store_factory::{P2pSnCmdServer, SqliteStoreFactory};
 use crate::user_store::{SqliteUserStore, User};
 
 mod user_store;
 mod sqlite_store_factory;
 mod api;
-
-struct P2pSnCmdServer {
-    sn_service: SnServiceRef,
-}
-
-impl P2pSnCmdServer {
-    fn new(sn_service: SnServiceRef) -> Self {
-        Self {
-            sn_service,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl CmdServer<u16, u8> for P2pSnCmdServer {
-    fn register_cmd_handler(&self, cmd: u8, handler: impl CmdHandler<u16, u8>) {
-        self.sn_service.get_cmd_server().register_cmd_handler(cmd, handler);
-    }
-
-    async fn send(&self, peer_id: &PeerId, cmd: u8, version: u8, body: &[u8]) -> CmdResult<()> {
-        self.sn_service.get_cmd_server().send(peer_id, cmd, version, body).await
-    }
-
-    async fn send2(&self, peer_id: &PeerId, cmd: u8, version: u8, body: &[&[u8]]) -> CmdResult<()> {
-        self.sn_service.get_cmd_server().send2(peer_id, cmd, version, body).await
-    }
-
-    async fn send_by_specify_tunnel(&self, peer_id: &PeerId, tunnel_id: TunnelId, cmd: u8, version: u8, body: &[u8]) -> CmdResult<()> {
-        self.sn_service.get_cmd_server().send_by_specify_tunnel(peer_id, tunnel_id, cmd, version, body).await
-    }
-
-    async fn send2_by_specify_tunnel(&self, peer_id: &PeerId, tunnel_id: TunnelId, cmd: u8, version: u8, body: &[&[u8]]) -> CmdResult<()> {
-        self.sn_service.get_cmd_server().send2_by_specify_tunnel(peer_id, tunnel_id, cmd, version, body).await
-    }
-
-    async fn send_by_all_tunnels(&self, peer_id: &PeerId, cmd: u8, version: u8, body: &[u8]) -> CmdResult<()> {
-        self.sn_service.get_cmd_server().send_by_all_tunnels(peer_id, cmd, version, body).await
-    }
-
-    async fn send2_by_all_tunnels(&self, peer_id: &PeerId, cmd: u8, version: u8, body: &[&[u8]]) -> CmdResult<()> {
-        self.sn_service.get_cmd_server().send2_by_all_tunnels(peer_id, cmd, version, body).await
-    }
-}
-
-#[async_trait::async_trait]
-impl VpnCmdServer for P2pSnCmdServer {
-    async fn get_peer_wan_ip(&self, peer_id: &PeerId) -> VpnResult<Vec<IpAddr>> {
-        let list = self.sn_service.get_peer_wan_ep(&peer_id).await.iter().map(|ep| ep.addr().ip().clone()).collect();
-        Ok(list)
-    }
-}
 
 #[derive(utoipa::OpenApi)]
 #[openapi(paths(), components())]
@@ -198,7 +147,7 @@ async fn main() {
     http_server.enable_api_doc(true);
 
     AccountServer::register_server(&mut http_server, user_manager.clone());
-    Api::register_api(&mut http_server, user_manager.clone(), network_manager.clone());
+    Api::register_api(&mut http_server, user_manager.clone(), vpn_server.clone());
 
     http_server.run().await.unwrap();
 
