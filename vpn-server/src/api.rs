@@ -7,7 +7,7 @@ use sfo_http::openapi::OpenApiServer;
 use sfo_http::openapi::utoipa;
 use vpn_frame::errors::{into_vpn_err, vpn_err, VpnErrorCode, VpnResult};
 use vpn_frame::server::{NetworkGroupId, NetworkId, NodeId};
-use crate::sqlite_store_factory::{NetworkManagerRef, VpnServerRef};
+use crate::sqlite_store_factory::{VpnServerRef};
 use crate::user_store::UserManagerRef;
 use vpn_frame::serialize_u64_as_string;
 use vpn_frame::deserialize_u64_from_string;

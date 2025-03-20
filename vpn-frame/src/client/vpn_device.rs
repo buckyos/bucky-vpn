@@ -1,5 +1,4 @@
 use std::net::IpAddr;
-use std::ops::Deref;
 use std::sync::Arc;
 use pnet_packet::ipv4::Ipv4Packet;
 use pnet_packet::ipv6::Ipv6Packet;

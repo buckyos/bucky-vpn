@@ -5,7 +5,7 @@ use sfo_cmd_server::CmdHeader;
 use tokio::io::{AsyncRead, AsyncWrite};
 use crate::errors::{VpnError, VpnErrorCode, VpnResult};
 use crate::sequence::Sequence;
-use crate::server::{Network, NetworkGroupId, NetworkId, NetworkMember, NodeId};
+use crate::server::{NetworkGroupId, NetworkId, NetworkMember, NodeId};
 
 pub trait  VpnTunnelSend: AsyncWrite + Send + 'static + Unpin {
     fn is_target_tunnel(&self, target: &NodeId) -> bool;

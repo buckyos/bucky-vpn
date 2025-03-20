@@ -1,6 +1,5 @@
 use base58::{FromBase58, ToBase58};
 use bucky_raw_codec::{RawDecode, RawEncode};
-use sha2::Digest;
 use crate::errors::{vpn_err, VpnErrorCode, VpnResult};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, RawEncode, RawDecode)]

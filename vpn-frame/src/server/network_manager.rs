@@ -198,7 +198,7 @@ impl <S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
         store.get_members(network_id).await
     }
 
-    pub async fn get_member_of_ip(&self, group_id: &NetworkGroupId, network_id: &NetworkId, ip_addr: &IpAddr) -> VpnResult<Option<NodeId>> {
+    pub async fn get_member_of_ip(&self, _group_id: &NetworkGroupId, network_id: &NetworkId, ip_addr: &IpAddr) -> VpnResult<Option<NodeId>> {
         let mut store = self.store_factory.get_vpn_store().await?;
         store.get_member(network_id, ip_addr).await.map(|v| v.map(|m| m.id))
     }
