@@ -164,8 +164,11 @@ class _NetworksPageState extends State<NetworksPage> {
                                           context: context,
                                           builder: (context) {
                                             return Dialog(
-                                              child: NetworkMembersPage(
-                                                  network: network),
+                                              child: SizedBox(
+                                                width: 1024,
+                                                child: NetworkMembersPage(
+                                                    network: network),
+                                              ),
                                             );
                                           });
                                     },
