@@ -12,7 +12,7 @@ pub struct JoinedNode {
     pub comment: String,
 }
 
-#[derive(RawDecode, RawEncode)]
+#[derive(RawDecode, RawEncode, Clone)]
 pub struct NetworkMember {
     pub id: NodeId,
     pub ip: String,

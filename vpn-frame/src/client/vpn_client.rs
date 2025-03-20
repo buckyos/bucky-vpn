@@ -21,17 +21,25 @@ struct DevicePkgRecv<
     tunnel_manager: Arc<TunnelManager<R, S, F, L>>,
     network_group_id: NetworkGroupId,
     network_id: NetworkId,
+    ipv4_mask: u8,
+    ipv6_mask: u8,
 }
 
 impl<R: VpnTunnelRecv,
     S: VpnTunnelSend,
     F: VpnTunnelFactory<R, S>,
     L: VpnTunnelListener<R, S>> DevicePkgRecv<R, S, F, L> {
-    pub fn new(tunnel_manager: Arc<TunnelManager<R, S, F, L>>, network_group_id: NetworkGroupId, network_id: NetworkId) -> Self {
+    pub fn new(tunnel_manager: Arc<TunnelManager<R, S, F, L>>,
+               network_group_id: NetworkGroupId,
+               network_id: NetworkId,
+               ipv4_mask: u8,
+               ipv6_mask: u8) -> Self {
         Self {
             tunnel_manager,
             network_group_id,
             network_id,
+            ipv4_mask,
+            ipv6_mask,
         }
     }
 }
@@ -42,6 +50,36 @@ impl<R: VpnTunnelRecv,
     F: VpnTunnelFactory<R, S>,
     L: VpnTunnelListener<R, S>> PacketRecv for DevicePkgRecv<R, S, F, L> {
     async fn on_recv(&self, target: IpAddr, packet: &[u8]) -> VpnResult<()> {
+        // 首先判断目标ip地址是否是广播地址
+        if let IpAddr::V4(ipv4) = target {
+            let is_broadcast = if self.ipv4_mask < 32 {
+                // Calculate the broadcast address using the netmask
+                let host_bits = 32 - self.ipv4_mask;
+                let host_mask = (1u32 << host_bits) - 1;
+                let addr_bits = u32::from_be_bytes(ipv4.octets());
+                (addr_bits & host_mask) == host_mask
+            } else {
+                false
+            };
+
+            if is_broadcast || target.is_multicast() {
+                let all_send = self.tunnel_manager.get_all_send(self.network_group_id, self.network_id).await?;
+                for mut send in all_send {
+                    let data_header = DataHeader {
+                        dest_ip: target,
+                        network_id: self.network_id,
+                        group_id: self.network_group_id,
+                    };
+                    let data_header = data_header.to_vec().map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
+                    let data_cmd = VpnCmdHeader::new(0, VpnCmdCode::Data as u8, (data_header.len() + packet.len()) as u16);
+                    send.write_all(data_cmd.to_vec().map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?.as_slice()).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+                    send.write_all(data_header.as_slice()).await.map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
+                    send.write_all(packet).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+                    send.flush().await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+                }
+                return Ok(());
+            }
+        }
         let mut send = self.tunnel_manager.get_send(self.network_group_id, self.network_id, target).await?;
         let data_header = DataHeader {
             dest_ip: target,
@@ -172,6 +210,9 @@ impl<T: CmdClient<u16, u8>, R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFact
         for vpn_info in vpn_infos {
             let group_id = vpn_info.node_info.group_id;
             let network_id = vpn_info.node_info.id;
+            let members = vpn_info.members
+                .iter()
+                .filter(|x| vpn_info.node_info.ip.is_none() || x.ip != vpn_info.node_info.ip.as_ref().unwrap().to_string()).map(|x| x.clone()).collect::<Vec<_>>();
             let vpn_device = vpn_devices.remove(&vpn_info.node_info.id);
             if vpn_device.is_none() {
                 let mut vpn_device = VpnDevice::new(vpn_info.node_info.clone());
@@ -179,7 +220,11 @@ impl<T: CmdClient<u16, u8>, R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFact
                     let tunnel_manager = self.tunnel_manager.lock().unwrap();
                     tunnel_manager.as_ref().unwrap().clone()
                 };
-                if let Ok(_) = vpn_device.start(Arc::new(DevicePkgRecv::new(tunnel_manager, vpn_info.node_info.group_id, vpn_info.node_info.id))) {
+                if let Ok(_) = vpn_device.start(Arc::new(DevicePkgRecv::new(tunnel_manager,
+                                                                            vpn_info.node_info.group_id,
+                                                                            vpn_info.node_info.id,
+                                                                            vpn_info.node_info.mask,
+                                                                            vpn_info.node_info.ipv6_mask))) {
                     let mut vpn_devices = self.vpn_devices.lock().unwrap();
                     vpn_devices.as_mut().unwrap().insert(network_id, vpn_device);
                 }
@@ -190,7 +235,8 @@ impl<T: CmdClient<u16, u8>, R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFact
                     vpn_devices.as_mut().unwrap().insert(network_id, vpn_device);
                 }
             }
-            tunnel_manager.get_router().add_network(group_id, network_id, vpn_info.members);
+
+            tunnel_manager.get_router().add_network(group_id, network_id, members);
         }
         Ok(())
     }

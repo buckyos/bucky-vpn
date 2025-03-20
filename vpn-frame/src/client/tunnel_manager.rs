@@ -11,7 +11,7 @@ use tokio::spawn;
 use tokio::task::JoinHandle;
 use crate::{VpnCmdCode, VpnCmdHeader, VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv, VpnTunnelSend};
 use crate::errors::{into_vpn_err, vpn_err, VpnErrorCode, VpnResult};
-use crate::server::{Network, NetworkGroupId, NetworkId, NetworkMember, NodeId};
+use crate::server::{NetworkGroupId, NetworkId, NetworkMember, NodeId};
 
 pub(crate) struct VpnRouter {
     routers: Mutex<HashMap<NetworkGroupId, HashMap<NetworkId, HashMap<IpAddr, NodeId>>>>,
@@ -34,6 +34,19 @@ impl VpnRouter {
             }
         }
         None
+    }
+
+    pub fn get_all_nodes(&self, network_group_id: NetworkGroupId, network_id: NetworkId) -> Vec<(IpAddr, NodeId)> {
+        let routers = self.routers.lock().unwrap();
+        let mut list = Vec::new();
+        if let Some(group) = routers.get(&network_group_id) {
+            if let Some(network) = group.get(&network_id) {
+                for (ip, node_id) in network.iter() {
+                    list.push((ip.clone(), node_id.clone()));
+                }
+            }
+        }
+        list
     }
 
     pub fn add_network(&self, network_group_id: NetworkGroupId, network_id: NetworkId, members: Vec<NetworkMember>) {
@@ -335,6 +348,35 @@ impl<
             }
         };
         pool.get_worker().await.map_err(into_vpn_err!(VpnErrorCode::Failed, "get worker failed"))
+    }
+
+    pub async fn get_all_send(&self, network_group_id: NetworkGroupId, network_id: NetworkId) -> VpnResult<Vec<WorkerGuard<PkgSend<S>, Factory<R, S, F, A>>>> {
+        let nodes = self.router.get_all_nodes(network_group_id, network_id);
+        let mut list = vec![];
+        for (ip, node_id) in nodes {
+            let key = Target {
+                ip,
+                network_group_id,
+                network_id
+            };
+            let pool = {
+                let mut tunnels = self.tunnels.lock().unwrap();
+                if let Some(pool) = tunnels.get(&key) {
+                    pool.clone()
+                } else {
+                    let pool = WorkerPool::new(5, Factory::new(node_id,
+                                                               self.tunnel_factory.clone(),
+                                                               self.pending_send_cache.clone(),
+                                                               self.pkg_listener.clone(), ));
+                    tunnels.insert(key, pool.clone());
+                    pool
+                }
+            };
+            let worker = pool.get_worker().await.map_err(into_vpn_err!(VpnErrorCode::Failed, "get worker failed"))?;
+            list.push(worker);
+        }
+
+        Ok(list)
     }
 }
 

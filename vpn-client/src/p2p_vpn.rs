@@ -23,6 +23,7 @@ use vpn_frame::{VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv, VpnTunnelSen
 use vpn_frame::server::{NetworkGroupId, NodeId};
 use vpn_frame::serialize_u64_as_string;
 use vpn_frame::deserialize_u64_from_string;
+use base58::ToBase58;
 
 pub struct P2pVpnTunnelRecv {
     read: StreamRead,
@@ -177,6 +178,9 @@ impl VpnClientFactory<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTun
             Arc::new(local_identity)
         };
         let sn_id = P2pId::from_str(sn_id).map_err(into_vpn_err!(VpnErrorCode::Failed, "parse sn_id failed"))?;
+        let local_id = local_identity.get_id();
+        log::info!("create client base58:{} base36:{}", local_id.as_slice().to_base58(), local_id.to_string());
+
         let sn_ep = Endpoint::from((Protocol::Quic,
                                     SocketAddr::new(ip.parse().map_err(into_vpn_err!(VpnErrorCode::Failed, "parse {} failed", ip))?, self.sn_port)));
 

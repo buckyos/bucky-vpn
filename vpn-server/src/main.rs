@@ -1,5 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use base58::ToBase58;
@@ -110,24 +110,34 @@ async fn main() {
         .set_default("ip", "0.0.0.0").unwrap()
         .set_default("port", 3424).unwrap()
         .set_default("http.ip", "0.0.0.0").unwrap()
-        .set_default("http.port", 3445).unwrap()
-        .set_default("jwt_key", "sdfasdgdfgsdfgsdfgsdfg").unwrap()
-        .set_default("admin.name", "wugren").unwrap()
-        .set_default("admin.password", "123456").unwrap()
-        .set_default("db_path", data_folder.join("vpn.db").to_string_lossy().to_string()).unwrap();
+        .set_default("http.port", 3445).unwrap();
+        // .set_default("jwt_key", "sdfasdgdfgsdfgsdfgsdfg").unwrap()
+        // .set_default("admin.name", "wugren").unwrap()
+        // .set_default("admin.password", "123456").unwrap();
     if Path::new(config_file.as_str()).exists() {
         config = config.add_source(config::File::from(Path::new(config_file.as_str())));
     }
+    config = config.add_source(config::Environment::with_prefix("VPN").separator("_"));
     let config = config.build().unwrap();
 
     let ip = config.get_string("ip").unwrap();
     let port = config.get_int("port").unwrap() as u16;
     let http_ip = config.get_string("http.ip").unwrap();
     let http_port = config.get_int("http.port").unwrap() as u16;
-    let jwt_key = config.get_string("jwt_key").unwrap().to_string();
-    let db_path = config.get_string("db_path").unwrap();
     let admin_name = config.get_string("admin.name").unwrap();
     let admin_password = config.get_string("admin.password").unwrap();
+    let jwt_key = config.get_string("jwt.key").unwrap().to_string();
+    let data_dir = match config.get_string("data.dir") {
+        Ok(dir) => PathBuf::from(dir),
+        Err(_) => {
+            dirs::data_dir().unwrap().join("vpn-server")
+        }
+    };
+
+    if !data_dir.exists() {
+        tokio::fs::create_dir_all(data_dir.as_path()).await.unwrap();
+    }
+    let db_path = data_dir.join("vpn.db").to_string_lossy().to_string();
     let pool = SqlPool::open(db_path.as_str(), 300, Some(SqliteJournalMode::Wal)).await.unwrap();
 
     let user_store = SqliteUserStore::new(pool.clone());
@@ -140,10 +150,6 @@ async fn main() {
     }
     let eps = vec![Endpoint::from((Protocol::Quic, SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from_str(ip.as_str()).unwrap(), port))))];
 
-    let data_dir = dirs::data_dir().unwrap().join("vpn-server");
-    if !data_dir.exists() {
-        tokio::fs::create_dir_all(data_dir.as_path()).await.unwrap();
-    }
     let identity_file = data_dir.join("identity");
     let identity = if identity_file.exists() {
         let data = tokio::fs::read(identity_file.as_path()).await.unwrap();
@@ -166,7 +172,6 @@ async fn main() {
     sn_service.start().await.unwrap();
 
     let vpn_server = VpnServer::new(Arc::new(P2pSnCmdServer::new(sn_service.clone())), store_factory.clone());
-    let node_manager = vpn_server.node_manager().clone();
     let network_manager = vpn_server.network_manager().clone();
 
     if user_store.get_account(&admin_name).await.unwrap().is_none() {

@@ -14,6 +14,14 @@ impl NodeId {
         Ok(Self(base58.from_base58().map_err(|_e|vpn_err!(VpnErrorCode::InvalidParam, "invalid node id {}", base58))?))
     }
 
+    pub fn to_base36(&self) -> String {
+        base36::encode(self.0.as_slice())
+    }
+
+    pub fn from_base36(base36: &str) -> VpnResult<Self> {
+        Ok(Self(base36::decode(base36).map_err(|_e|vpn_err!(VpnErrorCode::InvalidParam, "invalid node id {}", base36))?))
+    }
+
     pub fn as_slice(&self) -> &[u8] {
         self.0.as_slice()
     }
@@ -21,9 +29,7 @@ impl NodeId {
 
 impl From<&[u8]> for NodeId {
     fn from(key: &[u8]) -> Self {
-        let mut sha256 = sha2::Sha256::new();
-        sha256.update(key);
-        Self(sha256.finalize().as_slice().to_vec())
+        Self(key.to_vec())
     }
 }
 

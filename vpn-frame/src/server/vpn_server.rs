@@ -171,6 +171,7 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
     }
 
     async fn handle_join_network_group_req(&self, peer_id: PeerId, req: JoinNetworkGroupReq) -> VpnResult<()> {
+        log::info!("join peer base58 {} base36 {} to group {}", peer_id.to_base58(), peer_id.to_base36(), req.group_id.to_string());
         let node_id = NodeId::from(peer_id.as_slice());
         let exist = self.network_manager.exist_network_group(&req.group_id).await?;
         if !exist {
