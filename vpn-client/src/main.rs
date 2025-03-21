@@ -54,15 +54,6 @@ async fn async_main() {
             dirs::data_dir().unwrap().join("bucky-vpn")
         }
     };
-    let log = config.get_bool("log").unwrap_or(true);
-    if log {
-        sfo_log::Logger::new("bucky-vpn")
-            .set_log_to_file(true)
-            .set_log_file_count(5)
-            .set_log_path(vpn_config_path.join("logs").to_string_lossy().to_string().as_str())
-            .set_log_level("info")
-            .start().unwrap();
-    }
 
     let matches = clap::Command::new("bucky-vpn")
         .version("0.1.0")
@@ -102,13 +93,30 @@ async fn async_main() {
             let server_id = matches.get_one::<String>("server_id").unwrap();
             let id = matches.get_one::<u64>("network_id").unwrap();
             let name = matches.get_one::<String>("name");
-            let _ = Cli::join(server.clone(), server_id.clone(), *id, name.map(|v| v.clone())).await;
+            match Cli::join(server.clone(), server_id.clone(), *id, name.map(|v| v.clone())).await {
+                Ok(_) => {
+                    println!("Join success");
+                }
+                Err(_e) => {
+                    println!("Join failed");
+                }
+            }
             return;
         },
         Some(("state", _)) => {
 
         }
         _ => {}
+    }
+
+    let log = config.get_bool("log").unwrap_or(true);
+    if log {
+        sfo_log::Logger::new("bucky-vpn")
+            .set_log_to_file(true)
+            .set_log_file_count(5)
+            .set_log_path(vpn_config_path.join("logs").to_string_lossy().to_string().as_str())
+            .set_log_level("info")
+            .start().unwrap();
     }
 
     let eps = vec![Endpoint::from((Protocol::Quic, SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 3422))))];
