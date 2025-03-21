@@ -1,0 +1,13 @@
+#!/bin/bash
+set -e
+
+if [ "$1" = "configure" ]; then
+    # Reload systemd to recognize the new service
+    systemctl daemon-reload
+    # Enable the service to start on boot
+    systemctl enable bucky-vpn.service
+    # Start the service
+    systemctl start bucky-vpn.service
+fi
+
+exit 0

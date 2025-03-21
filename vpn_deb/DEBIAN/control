@@ -1,0 +1,6 @@
+Package: bucky-vpn
+Version: 1.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Description: BuckyVPN install package

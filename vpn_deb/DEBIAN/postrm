@@ -1,0 +1,11 @@
+#!/bin/bash
+set -e
+
+if [ "$1" = "remove" ]; then
+    # Stop the service
+    systemctl stop bucky-vpn.service
+    # Disable the service
+    systemctl disable bucky-vpn.service
+fi
+
+exit 0

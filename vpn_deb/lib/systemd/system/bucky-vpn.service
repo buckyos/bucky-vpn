@@ -1,0 +1,11 @@
+[Unit]
+Description=BuckyVPN Service
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/bucky-vpn
+Restart=always
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
