@@ -33,12 +33,6 @@ struct ApiDoc;
 
 #[tokio::main]
 async fn main() {
-    sfo_log::Logger::new("vpn-server")
-        .set_log_to_file(true)
-        .set_log_file_count(5)
-        .set_log_level("info")
-        .start().unwrap();
-
     let data_folder = std::env::current_dir().unwrap();
     let default_config = data_folder.join("config.toml").to_string_lossy().to_string();
     let matches = clap::Command::new("vpn-server")
@@ -77,9 +71,19 @@ async fn main() {
     let data_dir = match config.get_string("data.dir") {
         Ok(dir) => PathBuf::from(dir),
         Err(_) => {
-            dirs::data_dir().unwrap().join("vpn-server")
+            dirs::data_dir().unwrap().join("bucky-vpn-server")
         }
     };
+
+    let log = config.get_bool("log").unwrap_or(true);
+    if log {
+        sfo_log::Logger::new("vpn-server")
+            .set_log_to_file(true)
+            .set_log_file_count(5)
+            .set_log_path(data_dir.join("logs").to_string_lossy().to_string().as_str())
+            .set_log_level("info")
+            .start().unwrap();
+    }
 
     if !data_dir.exists() {
         tokio::fs::create_dir_all(data_dir.as_path()).await.unwrap();

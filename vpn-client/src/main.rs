@@ -2,10 +2,16 @@ mod api;
 mod cli;
 mod p2p_vpn;
 mod setting;
+
+#[cfg(target_os = "windows")]
+mod windows_main;
+
 use std::fs::create_dir_all;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::path::PathBuf;
 use std::sync::Arc;
 use async_trait::async_trait;
+use config::builder::DefaultState;
 use p2p_frame::endpoint::{Endpoint, Protocol};
 use p2p_frame::stack::{init_p2p, P2pConfig};
 use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
@@ -37,19 +43,30 @@ impl PacketRecv for TestRecv {
 }
 
 
-#[tokio::main]
-async fn main() {
-    sfo_log::Logger::new("vpn-client")
-        .set_log_to_file(true)
-        .set_log_file_count(5)
-        .set_log_level("info")
-        .start().unwrap();
+async fn async_main() {
+    let mut config = config::ConfigBuilder::<DefaultState>::default();
+    config = config.add_source(config::Environment::with_prefix("VPN").separator("_"));
+    let config = config.build().unwrap();
 
-    let data_folder = std::env::current_dir().unwrap();
-    let default_config = data_folder.join("config.toml").to_string_lossy().to_string();
-    let matches = clap::Command::new("vpn-server")
+    let vpn_config_path = match config.get_string("data.dir") {
+        Ok(dir) => PathBuf::from(dir),
+        Err(_) => {
+            dirs::data_dir().unwrap().join("bucky-vpn")
+        }
+    };
+    let log = config.get_bool("log").unwrap_or(true);
+    if log {
+        sfo_log::Logger::new("bucky-vpn")
+            .set_log_to_file(true)
+            .set_log_file_count(5)
+            .set_log_path(vpn_config_path.join("logs").to_string_lossy().to_string().as_str())
+            .set_log_level("info")
+            .start().unwrap();
+    }
+
+    let matches = clap::Command::new("bucky-vpn")
         .version("0.1.0")
-        .about("vpn server")
+        .about("bucky-vpn")
         .arg(clap::Arg::new("config")
             .short('c')
             .long("config")
@@ -98,7 +115,6 @@ async fn main() {
     let p2p_config = P2pConfig::new(Arc::new(X509IdentityFactory), Arc::new(X509IdentityCertFactory), eps);
     init_p2p(p2p_config).await.unwrap();
 
-    let vpn_config_path = dirs::data_dir().unwrap().join("vpn");
     if !vpn_config_path.exists() {
         let _ = create_dir_all(vpn_config_path.as_path());
     }
@@ -126,4 +142,20 @@ async fn main() {
     Api::register_api(&mut http_server, setting);
     http_server.run().await.unwrap();
     std::future::pending::<()>().await;
+}
+
+fn main() {
+    #[cfg(all(target_os = "windows", not(debug_assertions)))]
+    {
+        windows_main::windows_main().unwrap();
+    }
+
+    #[cfg(any(not(target_os = "windows"), debug_assertions))]
+    {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async_main())
+    }
 }
