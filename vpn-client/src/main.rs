@@ -56,14 +56,7 @@ async fn async_main() {
     };
 
     let matches = clap::Command::new("bucky-vpn")
-        .version("0.1.0")
         .about("bucky-vpn")
-        .arg(clap::Arg::new("config")
-            .short('c')
-            .long("config")
-            .value_name("FILE")
-            .help("Sets a custom config file")
-            .required(false))
         .subcommand(clap::Command::new("join")
             .arg(clap::Arg::new("server")
                 .long("server")
@@ -84,7 +77,8 @@ async fn async_main() {
                 .short('n')
                 .help("The name of the node seen on the server")
                 .required(false)))
-        .subcommand(clap::Command::new("state"))
+        // .subcommand(clap::Command::new("state"))
+        .subcommand(clap::Command::new("daemon").about("Run as daemon"))
         .get_matches();
 
     match matches.subcommand() {
@@ -105,51 +99,53 @@ async fn async_main() {
         },
         Some(("state", _)) => {
 
+        },
+        Some(("daemon", _)) => {
+            let log = config.get_bool("log").unwrap_or(true);
+            if log {
+                sfo_log::Logger::new("bucky-vpn")
+                    .set_log_to_file(true)
+                    .set_log_file_count(5)
+                    .set_log_path(vpn_config_path.join("logs").to_string_lossy().to_string().as_str())
+                    .set_log_level("info")
+                    .start().unwrap();
+            }
+
+            let eps = vec![Endpoint::from((Protocol::Quic, SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 3422))))];
+            let p2p_config = P2pConfig::new(Arc::new(X509IdentityFactory), Arc::new(X509IdentityCertFactory), eps);
+            init_p2p(p2p_config).await.unwrap();
+
+            if !vpn_config_path.exists() {
+                let _ = create_dir_all(vpn_config_path.as_path());
+            }
+
+            init_p2p_vpn_client_manager(vpn_config_path.clone(), 34245, 3424, "1.0.0".to_string()).unwrap();
+
+            let setting = Arc::new(Setting::load(vpn_config_path.join("setting.toml").as_path()).await.unwrap());
+            if let Some(records) = setting.get::<Vec<JoinRecord>>("joined_networks") {
+                for record in records.iter() {
+                    let vpn_client = vpn_client_manager().get_client(format!("{}_{}", record.server_id, record.server_ip).as_str()).await.unwrap();
+                    vpn_client.run();
+                }
+            }
+
+            // let local_identity = x509::generate_x509_identity(None).unwrap();
+            // let conn_timeout = Duration::from_secs(30);
+            // let stack_config = P2pStackConfig::new(Arc::new(local_identity))
+            //     .set_conn_timeout(conn_timeout)
+            //     .set_support_proxy(true);
+            // let stack = create_p2p_stack(stack_config).await.unwrap();
+            // stack.wait_online(None).await.unwrap();
+
+            let http_config = HttpServerConfig::new("127.0.0.1", 4536);
+            let mut http_server = TideHttpServer::new(http_config);
+            Api::register_api(&mut http_server, setting);
+            http_server.run().await.unwrap();
+            std::future::pending::<()>().await;
         }
         _ => {}
     }
 
-    let log = config.get_bool("log").unwrap_or(true);
-    if log {
-        sfo_log::Logger::new("bucky-vpn")
-            .set_log_to_file(true)
-            .set_log_file_count(5)
-            .set_log_path(vpn_config_path.join("logs").to_string_lossy().to_string().as_str())
-            .set_log_level("info")
-            .start().unwrap();
-    }
-
-    let eps = vec![Endpoint::from((Protocol::Quic, SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 3422))))];
-    let p2p_config = P2pConfig::new(Arc::new(X509IdentityFactory), Arc::new(X509IdentityCertFactory), eps);
-    init_p2p(p2p_config).await.unwrap();
-
-    if !vpn_config_path.exists() {
-        let _ = create_dir_all(vpn_config_path.as_path());
-    }
-
-    init_p2p_vpn_client_manager(vpn_config_path.clone(), 34245, 3424, "1.0.0".to_string()).unwrap();
-
-    let setting = Arc::new(Setting::load(vpn_config_path.join("setting.toml").as_path()).await.unwrap());
-    if let Some(records) = setting.get::<Vec<JoinRecord>>("joined_networks") {
-        for record in records.iter() {
-            let vpn_client = vpn_client_manager().get_client(format!("{}_{}", record.server_id, record.server_ip).as_str()).await.unwrap();
-            vpn_client.run();
-        }
-    }
-
-    // let local_identity = x509::generate_x509_identity(None).unwrap();
-    // let conn_timeout = Duration::from_secs(30);
-    // let stack_config = P2pStackConfig::new(Arc::new(local_identity))
-    //     .set_conn_timeout(conn_timeout)
-    //     .set_support_proxy(true);
-    // let stack = create_p2p_stack(stack_config).await.unwrap();
-    // stack.wait_online(None).await.unwrap();
-
-    let http_config = HttpServerConfig::new("127.0.0.1", 4536);
-    let mut http_server = TideHttpServer::new(http_config);
-    Api::register_api(&mut http_server, setting);
-    http_server.run().await.unwrap();
-    std::future::pending::<()>().await;
 }
 
 fn main() {

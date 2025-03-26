@@ -1,0 +1,15 @@
+#!/bin/bash
+TARGET_FILE="$HOME/.zshrc"
+if ! grep -q "BuckyVPN" "$TARGET_FILE"; then
+    echo 'export PATH="$PATH:/Applications/BuckyVPN.app/Contents/MacOS"' >> "$TARGET_FILE"
+fi
+
+PLIST_PATH="/Library/LaunchDaemons/com.bucky.vpn.plist"
+cp "com.bucky.vpn.plist" "$PLIST_PATH"
+
+# 设置权限（必须为 root:wheel）
+chown root:wheel "$PLIST_PATH"
+chmod 644 "$PLIST_PATH"
+
+# 加载服务
+launchctl load -w "$PLIST_PATH"

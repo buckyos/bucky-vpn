@@ -3,7 +3,7 @@ Description=BuckyVPN Service
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/bucky-vpn
+ExecStart=/usr/bin/bucky-vpn daemon
 Restart=always
 KillMode=process
 

@@ -1,0 +1,19 @@
+#!/bin/bash
+
+APP_NAME="bucky-vpn"
+APP_PID=$(pgrep -x "$APP_NAME")
+
+if [ -n "$APP_PID" ]; then
+    kill -TERM "$APP_PID"  # 发送终止信号
+    for i in {1..10}; do
+        if ! pgrep -x "$APP_NAME" >/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+    # 强制终止（如果未响应）
+    if pgrep -x "$APP_NAME" >/dev/null; then
+        echo "强制终止 $APP_NAME..."
+        kill -9 "$APP_PID"
+    fi
+fi

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.bucky.vpn</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/BuckyVPN.app/Contents/MacOS/bucky-vpn</string>
+        <string>daemon</string>
+    </array>
+    <key>RunAtLoad</key>                       <!-- 开机启动 -->
+    <true/>
+    <key>KeepAlive</key>                       <!-- 崩溃后自动重启 -->
+    <false/>
+    <key>StandardOutPath</key>                 <!-- 日志输出 -->
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>
