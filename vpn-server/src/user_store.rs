@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use base58::ToBase58;
 use sfo_account::{account_err, hash_data, into_account_err, Account, AccountErrorCode, AccountResult, AccountStore, DefaultAccountManager};
 use serde::{Deserialize, Serialize};
@@ -46,17 +47,28 @@ impl Account for User {
 
 pub struct SqliteUserStore {
     pool: SqlPool,
+    password_cache: Mutex<HashMap<String, String>>,
 }
 
 impl SqliteUserStore {
     pub fn new(pool: SqlPool) -> Self {
-        Self { pool }
+        Self { pool, password_cache: Mutex::new(Default::default()) }
     }
 
     pub async fn init_user_store(&self) -> VpnResult<()> {
         let mut conn = self.pool.get_conn().await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
-        conn.execute_sql(sql_query("CREATE TABLE IF NOT EXISTS user (id varchar(64) PRIMARY KEY, password TEXT, network_id integer, server_id TEXT)")).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        conn.execute_sql(sql_query("CREATE TABLE IF NOT EXISTS user (id varchar(64) PRIMARY KEY, network_id integer, server_id TEXT)")).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
         Ok(())
+    }
+
+    pub fn update_password(&self, account: &str, password: &str) {
+        let mut cache = self.password_cache.lock().unwrap();
+        cache.insert(account.to_string(), password.to_string());
+    }
+
+    pub fn get_password(&self, account: &str) -> Option<String> {
+        let cache = self.password_cache.lock().unwrap();
+        cache.get(account).cloned()
     }
 }
 
@@ -67,8 +79,13 @@ impl AccountStore<User> for SqliteUserStore {
         match conn.query_one(sql_query("SELECT * FROM user WHERE id = ?").bind(account_id)).await {
             Ok(row) => {
                 let id: String = row.get("id");
-                let password: String = row.get("password");
                 let network_id: i64 = row.get("network_id");
+                let password = match self.get_password(&id) {
+                    Some(p) => p,
+                    None => {
+                        return Ok(None);
+                    }
+                };
                 let server_id: String = row.get("server_id");
                 Ok(Some(User { id, password, network_id: network_id as u64, server_id }))
             }
@@ -87,8 +104,13 @@ impl AccountStore<User> for SqliteUserStore {
         match conn.query_one(sql_query("SELECT * FROM user WHERE id = ?").bind(account_name)).await {
             Ok(row) => {
                 let id: String = row.get("id");
-                let password: String = row.get("password");
                 let network_id: i64 = row.get("network_id");
+                let password = match self.get_password(&id) {
+                    Some(p) => p,
+                    None => {
+                        return Ok(None);
+                    }
+                };
                 let server_id: String = row.get("server_id");
                 Ok(Some(User { id, password, network_id: network_id as u64, server_id }))
             }
@@ -110,17 +132,16 @@ impl AccountStore<User> for SqliteUserStore {
 
     async fn add_account(&self, account: &User) -> AccountResult<<User as Account>::Id> {
         let mut conn = self.pool.get_conn().await.map_err(into_account_err!(AccountErrorCode::IoError))?;
-        conn.execute_sql(sql_query("INSERT INTO user (id, password, network_id, server_id) VALUES (?, ?, ?, ?)")
+        self.update_password(&account.id, &account.password);
+        conn.execute_sql(sql_query("INSERT INTO user (id, network_id, server_id) VALUES (?, ?, ?)")
             .bind(&account.id)
-            .bind(&account.password)
             .bind(account.network_id as i64)
             .bind(account.server_id.as_str())).await.map_err(into_account_err!(AccountErrorCode::IoError))?;
         Ok(account.id.clone())
     }
 
     async fn update_account(&self, account: &User) -> AccountResult<()> {
-        let mut conn = self.pool.get_conn().await.map_err(into_account_err!(AccountErrorCode::IoError))?;
-        conn.execute_sql(sql_query("UPDATE user SET password = ? WHERE id = ?").bind(&account.password).bind(&account.id)).await.map_err(into_account_err!(AccountErrorCode::IoError))?;
+        self.update_password(&account.id, &account.password);
         Ok(())
     }
 }

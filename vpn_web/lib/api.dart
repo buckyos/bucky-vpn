@@ -142,7 +142,7 @@ class Api {
         final port = Uri.base.port;
         _instance = Api._internal("http://$host:$port/api");
       } else {
-        _instance = Api._internal("http://192.168.80.100:3445");
+        _instance = Api._internal("http://127.0.0.1:3445");
       }
     }
     return _instance!;

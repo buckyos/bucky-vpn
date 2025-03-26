@@ -125,6 +125,7 @@ async fn main() {
     let vpn_server = VpnServer::new(Arc::new(P2pSnCmdServer::new(sn_service.clone())), store_factory.clone());
     let network_manager = vpn_server.network_manager().clone();
 
+    user_store.update_password(&admin_name, hash_data(vec![admin_name.as_bytes(), admin_password.as_bytes()].as_slice()).to_base58().as_str());
     if user_store.get_account(&admin_name).await.unwrap().is_none() {
         let network_id = network_manager.new_network_group().await.unwrap();
         let user = User {
@@ -135,6 +136,7 @@ async fn main() {
         };
         user_store.add_account(&user).await.unwrap();
     }
+
     let user_manager = DefaultAccountManager::new(user_store, jwt_key.into_bytes());
 
     vpn_server.start();

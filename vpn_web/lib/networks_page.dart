@@ -70,7 +70,7 @@ class _NetworksPageState extends State<NetworksPage> {
                                 builder: (context) {
                                   return EditNetworkDialog(
                                     name: "test",
-                                    address: "192.168.8.0",
+                                    address: "192.168.18.0",
                                     mask: 24,
                                     onSave: (name, address, mask) async {
                                       var result = await Api.instance()
