@@ -33,8 +33,10 @@ cat > ${PKG_DIR}/${APP_NAME}.app/Contents/Info.plist <<EOF
 </plist>
 EOF
 
-pkgbuild --root ${PKG_DIR} --identifier "com.bucky.vpn" --version "${VERSION}" --install-location "/Applications" --scripts ${PKG_DIR}/scripts ${PKG_NAME}
+mkdir -p ./dist
+
+pkgbuild --root ${PKG_DIR} --identifier "com.bucky.vpn" --version "${VERSION}" --install-location "/Applications" --scripts ${PKG_DIR}/scripts ./dist/${PKG_NAME}
 
 # 清理临时文件
 # rm -rf "${PKG_DIR}"
-echo "build success: ${PKG_NAME}"
+echo "build success: ./dist/${PKG_NAME}"
