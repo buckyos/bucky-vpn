@@ -139,16 +139,14 @@ pub type P2pVpnClientRef = Arc<VpnClient<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTu
 pub struct P2pVpnClientFactory {
     config_path: PathBuf,
     vpn_port: u16,
-    sn_port: u16,
     client_version: String,
 }
 
 impl P2pVpnClientFactory {
-    pub fn new(config_path: PathBuf, vpn_port: u16, sn_port: u16, client_version: String) -> P2pVpnClientFactory {
+    pub fn new(config_path: PathBuf, vpn_port: u16, client_version: String) -> P2pVpnClientFactory {
         P2pVpnClientFactory {
             config_path,
             vpn_port,
-            sn_port,
             client_version,
         }
     }
@@ -162,7 +160,29 @@ impl VpnClientFactory<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTun
             return Err(vpn_err!(VpnErrorCode::Failed, "key {} is invalid", key));
         }
         let sn_id = list[0];
-        let ip = list[1];
+        let server = list[1];
+        let list: Vec<_> = server.split(':').collect();
+        if list.len()!= 2 {
+            return Err(vpn_err!(VpnErrorCode::Failed, "server {} is invalid", server));
+        }
+        let ip = list[0];
+        //判断ip是不是域名，如果是域名，需要解析ip
+        let ip = if ip.parse::<std::net::IpAddr>().is_ok() {
+            ip.to_string()
+        } else {
+            // 解析域名
+            tokio::net::lookup_host(ip)
+                .await
+                .map_err(into_vpn_err!(VpnErrorCode::Failed, "resolve domain {} failed", ip))?
+                .next()
+                .ok_or_else(|| vpn_err!(VpnErrorCode::Failed, "no IP found for domain {}", ip))?
+                .ip()
+                .to_string()
+        };
+
+        let port = list[1];
+        let sn_port = port.parse::<u16>().map_err(into_vpn_err!(VpnErrorCode::Failed, "parse {} failed", port))?;
+
         let server_config = self.config_path.join(key);
         let identity_file = server_config.join("identity");
         let local_identity = if server_config.exists() && identity_file.exists() {
@@ -181,7 +201,7 @@ impl VpnClientFactory<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTun
         log::info!("create client base58:{} base36:{}", local_id.as_slice().to_base58(), local_id.to_string());
 
         let sn_ep = Endpoint::from((Protocol::Quic,
-                                    SocketAddr::new(ip.parse().map_err(into_vpn_err!(VpnErrorCode::Failed, "parse {} failed", ip))?, self.sn_port)));
+                                    SocketAddr::new(ip.parse().map_err(into_vpn_err!(VpnErrorCode::Failed, "parse {} failed", ip))?, sn_port)));
 
         let conn_timeout = Duration::from_secs(30);
         let stack_config = P2pStackConfig::new(local_identity)
@@ -203,9 +223,9 @@ impl VpnClientFactory<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTun
 pub type P2pVpnClientManagerRef = Arc<VpnClientManager<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTunnelFactory, P2pVpnTunnelListener, P2pVpnClientFactory>>;
 
 static VPN_CLIENT_MANAGER: OnceLock<P2pVpnClientManagerRef> = OnceLock::new();
-pub fn init_p2p_vpn_client_manager(config_path: PathBuf, vpn_port: u16, sn_port: u16, client_version: String) -> VpnResult<()> {
+pub fn init_p2p_vpn_client_manager(config_path: PathBuf, vpn_port: u16, client_version: String) -> VpnResult<()> {
     VPN_CLIENT_MANAGER.get_or_init(|| {
-        Arc::new(VpnClientManager::new(Arc::new(P2pVpnClientFactory::new(config_path, vpn_port, sn_port, client_version))))
+        Arc::new(VpnClientManager::new(Arc::new(P2pVpnClientFactory::new(config_path, vpn_port, client_version))))
     });
     Ok(())
 }
@@ -217,6 +237,7 @@ pub fn vpn_client_manager() -> P2pVpnClientManagerRef {
 #[derive(Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct JoinRecord {
     pub server_ip: String,
+    pub server_port: u16,
     pub server_id: String,
     #[serde(serialize_with = "serialize_u64_as_string", deserialize_with = "deserialize_u64_from_string")]
     pub network_id: NetworkGroupId,

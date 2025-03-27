@@ -12,6 +12,7 @@ use crate::setting::Setting;
 #[derive(Serialize, Deserialize, ToSchema, Eq, PartialEq)]
 pub struct Join {
     pub server: String,
+    pub server_port: u16,
     pub server_id: String,
     pub group_id: NetworkGroupId,
     pub name: Option<String>,
@@ -44,11 +45,12 @@ impl Api {
             async move {
                 let result: VpnResult<()> = async move {
                     let join = req.body_json::<Join>().await.map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
-                    let vpn_client = vpn_client_manager().get_client(format!("{}_{}", join.server_id.as_str(), join.server.as_str()).as_str()).await?;
+                    let vpn_client = vpn_client_manager().get_client(format!("{}_{}:{}", join.server_id.as_str(), join.server.as_str(), join.server_port).as_str()).await?;
                     vpn_client.join(join.group_id, join.name.clone()).await?;
                     let mut joined_networks: Vec<JoinRecord> = setting.get("joined_networks").unwrap_or(vec![]);
                     let record = JoinRecord {
                         server_ip: join.server,
+                        server_port: join.server_port,
                         server_id: join.server_id,
                         network_id: join.group_id,
                     };

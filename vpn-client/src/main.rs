@@ -23,6 +23,7 @@ use crate::setting::Setting;
 
 async fn async_main() {
     let mut config = config::ConfigBuilder::<DefaultState>::default();
+
     config = config.add_source(config::Environment::with_prefix("VPN").separator("_"));
     let config = config.build().unwrap();
 
@@ -32,6 +33,8 @@ async fn async_main() {
             dirs::data_dir().unwrap().join("bucky-vpn")
         }
     };
+    let sn_port = config.get_int("port").unwrap_or(3624) as u16;
+    let p2p_port = config.get_int("p2p.port").unwrap_or(3622) as u16;
 
     let matches = clap::Command::new("bucky-vpn")
         .about("bucky-vpn")
@@ -43,6 +46,11 @@ async fn async_main() {
                 .short('s')
                 .help("The vpn server ip")
                 .required(true))
+            .arg(clap::Arg::new("port")
+                .long("port")
+                .short('p')
+                .help("The vpn server port")
+                .required(false))
             .arg(clap::Arg::new("server_id")
                 .long("server_id")
                 .help("The vpn server identity ID")
@@ -67,7 +75,8 @@ async fn async_main() {
             let server_id = matches.get_one::<String>("server_id").unwrap();
             let id = matches.get_one::<u64>("network_id").unwrap();
             let name = matches.get_one::<String>("name");
-            match Cli::join(server.clone(), server_id.clone(), *id, name.map(|v| v.clone())).await {
+            let server_port = matches.get_one::<u16>("port").unwrap_or(&sn_port);
+            match Cli::join(server.clone(), *server_port, server_id.clone(), *id, name.map(|v| v.clone())).await {
                 Ok(_) => {
                     println!("Join success");
                 }
@@ -91,7 +100,7 @@ async fn async_main() {
                     .start().unwrap();
             }
 
-            let eps = vec![Endpoint::from((Protocol::Quic, SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 3422))))];
+            let eps = vec![Endpoint::from((Protocol::Quic, SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, p2p_port))))];
             let p2p_config = P2pConfig::new(Arc::new(X509IdentityFactory), Arc::new(X509IdentityCertFactory), eps);
             init_p2p(p2p_config).await.unwrap();
 
@@ -99,12 +108,12 @@ async fn async_main() {
                 let _ = create_dir_all(vpn_config_path.as_path());
             }
 
-            init_p2p_vpn_client_manager(vpn_config_path.clone(), 34245, 3424, "1.0.0".to_string()).unwrap();
+            init_p2p_vpn_client_manager(vpn_config_path.clone(), 34245, "1.0.0".to_string()).unwrap();
 
             let setting = Arc::new(Setting::load(vpn_config_path.join("setting.toml").as_path()).await.unwrap());
             if let Some(records) = setting.get::<Vec<JoinRecord>>("joined_networks") {
                 for record in records.iter() {
-                    let vpn_client = vpn_client_manager().get_client(format!("{}_{}", record.server_id, record.server_ip).as_str()).await.unwrap();
+                    let vpn_client = vpn_client_manager().get_client(format!("{}_{}:{}", record.server_id, record.server_ip, record.server_port).as_str()).await.unwrap();
                     vpn_client.run();
                 }
             }

@@ -9,10 +9,11 @@ use crate::api::Join;
 pub struct Cli;
 
 impl Cli {
-    pub async fn join(server: String, server_id: String, group_id: NetworkGroupId, name: Option<String>) -> VpnResult<()> {
+    pub async fn join(server: String, server_port: u16, server_id: String, group_id: NetworkGroupId, name: Option<String>) -> VpnResult<()> {
         let http_client = HttpClient::new(5, Some("http://127.0.0.1:4536"));
         let result: HttpServerResult<()> = http_client.post_json("/join", &Join {
             server,
+            server_port,
             server_id,
             group_id,
             name
