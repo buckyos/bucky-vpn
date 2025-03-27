@@ -4,6 +4,7 @@ pub use sfo_result::into_err as into_vpn_err;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Default, FromPrimitive, ToPrimitive)]
 pub enum VpnErrorCode {
+    Ok = 0,
     #[default]
     Failed,
     InvalidParam,

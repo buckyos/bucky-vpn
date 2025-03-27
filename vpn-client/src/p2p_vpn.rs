@@ -161,27 +161,18 @@ impl VpnClientFactory<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTun
         }
         let sn_id = list[0];
         let server = list[1];
-        let list: Vec<_> = server.split(':').collect();
-        if list.len()!= 2 {
-            return Err(vpn_err!(VpnErrorCode::Failed, "server {} is invalid", server));
-        }
-        let ip = list[0];
         //判断ip是不是域名，如果是域名，需要解析ip
-        let ip = if ip.parse::<std::net::IpAddr>().is_ok() {
-            ip.to_string()
+        let ip = if let Ok(addr) = server.parse::<SocketAddr>() {
+            addr
         } else {
             // 解析域名
-            tokio::net::lookup_host(ip)
+            tokio::net::lookup_host(server)
                 .await
-                .map_err(into_vpn_err!(VpnErrorCode::Failed, "resolve domain {} failed", ip))?
+                .map_err(into_vpn_err!(VpnErrorCode::Failed, "resolve domain {} failed", server))?
                 .next()
-                .ok_or_else(|| vpn_err!(VpnErrorCode::Failed, "no IP found for domain {}", ip))?
-                .ip()
-                .to_string()
+                .ok_or_else(|| vpn_err!(VpnErrorCode::Failed, "no IP found for domain {}", server))?
         };
-
-        let port = list[1];
-        let sn_port = port.parse::<u16>().map_err(into_vpn_err!(VpnErrorCode::Failed, "parse {} failed", port))?;
+        let sn_port = ip.port();
 
         let server_config = self.config_path.join(key);
         let identity_file = server_config.join("identity");
@@ -201,7 +192,7 @@ impl VpnClientFactory<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTun
         log::info!("create client base58:{} base36:{}", local_id.as_slice().to_base58(), local_id.to_string());
 
         let sn_ep = Endpoint::from((Protocol::Quic,
-                                    SocketAddr::new(ip.parse().map_err(into_vpn_err!(VpnErrorCode::Failed, "parse {} failed", ip))?, sn_port)));
+                                    SocketAddr::new(ip.ip(), sn_port)));
 
         let conn_timeout = Duration::from_secs(30);
         let stack_config = P2pStackConfig::new(local_identity)

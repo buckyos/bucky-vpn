@@ -81,7 +81,7 @@ async fn async_main() {
                     println!("Join success");
                 }
                 Err(_e) => {
-                    println!("Join failed");
+                    println!("Join failed.{}", _e.msg());
                 }
             }
             return;

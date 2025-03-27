@@ -47,7 +47,7 @@ async fn main() {
     let config_file: String = matches.get_one::<String>("config").unwrap_or(&default_config).clone();
     let mut config = config::ConfigBuilder::<DefaultState>::default()
         .set_default("ip", "0.0.0.0").unwrap()
-        .set_default("port", 3424).unwrap()
+        .set_default("port", 3624).unwrap()
         .set_default("http.ip", "0.0.0.0").unwrap()
         .set_default("http.port", 3445).unwrap();
         // .set_default("jwt_key", "sdfasdgdfgsdfgsdfgsdfg").unwrap()
