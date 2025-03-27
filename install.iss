@@ -16,8 +16,12 @@ VersionInfoVersion={#AppVersion}
 SetupIconFile=vpn-client/bucky-vpn.ico
 
 [Files]
-Source: "target/release/bucky-vpn.exe"; DestDir: "{app}"
+Source: "target/release/bucky-vpn.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
 Source: "wintun.dll"; DestDir: "{app}"
+
+[Setup]
+CloseApplications=yes
+CloseApplicationsFilter=bucky-vpn.exe
 
 [Icons]
 Name: "{group}\bucky-vpn.exe"; Filename: "{app}\bucky-vpn.exe"

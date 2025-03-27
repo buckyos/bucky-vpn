@@ -7,7 +7,7 @@ use std::time::Duration;
 use windows_service::{Result, service_dispatcher, define_windows_service, service_control_handler};
 use windows_service::service::{ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType};
 use windows_service::service_control_handler::ServiceControlHandlerResult;
-use crate::async_main;
+use crate::run_daemon;
 
 define_windows_service!(ffi_service_main, my_service_main);
 static SERVICE_NAME: &str = "bucky-vpn";
@@ -53,7 +53,7 @@ fn run_service(_arguments: Vec<OsString>) -> Result<()> {
         .enable_all()
         .build()
         .unwrap()
-        .block_on(async_main());
+        .block_on(run_daemon());
 
     Ok(())
 }
