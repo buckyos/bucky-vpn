@@ -24,7 +24,7 @@ Name: "{group}\bucky-vpn.exe"; Filename: "{app}\bucky-vpn.exe"
 
 [Run]
 ; 使用 sc.exe 创建服务
-Filename: "{sys}\sc.exe"; Parameters: "create BuckyVPN binPath= ""{app}\bucky-vpn.exe" daemon" start= auto"; Flags: runhidden waituntilterminated
+Filename: "{sys}\sc.exe"; Parameters: "create BuckyVPN binPath= """"{app}\bucky-vpn.exe"" daemon"" start= auto"; Flags: runhidden waituntilterminated
 ; 启动服务
 Filename: "{sys}\sc.exe"; Parameters: "start BuckyVPN"; Flags: runhidden waituntilterminated
 
@@ -33,7 +33,7 @@ Filename: "{sys}\sc.exe"; Parameters: "start BuckyVPN"; Flags: runhidden waitunt
 Filename: "{sys}\sc.exe"; Parameters: "stop BuckyVPN"; RunOnceId: "CleanupOnce"; Flags: runhidden waituntilterminated
 ; 删除服务
 Filename: "{sys}\sc.exe"; Parameters: "delete BuckyVPN"; RunOnceId: "CleanupOnce"; Flags: runhidden waituntilterminated
-Filename: "taskkill"; Parameters: "/f /im bucky-vpn.exe"; Flags: runhidden waituntilterminated
+Filename: "taskkill"; Parameters: "/f /im bucky-vpn.exe"; RunOnceId: "CleanupOnce"; Flags: runhidden waituntilterminated
 
 [Code]
 procedure AddToPath(Path: string);

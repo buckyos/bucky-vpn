@@ -64,7 +64,7 @@ impl Api {
             }
         });
 
-        server.serve("/state", HttpMethod::GET, |req: Req| {
+        server.serve("/state", HttpMethod::GET, |_req: Req| {
             async move {
                 let result: VpnResult<()> = async move {
                     Ok(())

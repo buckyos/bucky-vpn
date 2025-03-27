@@ -7,41 +7,19 @@ mod setting;
 mod windows_main;
 
 use std::fs::create_dir_all;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::Arc;
-use async_trait::async_trait;
 use config::builder::DefaultState;
 use p2p_frame::endpoint::{Endpoint, Protocol};
 use p2p_frame::stack::{init_p2p, P2pConfig};
 use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
 use sfo_http::http_server::HttpServerConfig;
 use sfo_http::tide_server::TideHttpServer;
-use vpn_frame::client::{PacketRecv};
-use vpn_frame::errors::VpnResult;
 use crate::api::Api;
 use crate::cli::Cli;
 use crate::p2p_vpn::{init_p2p_vpn_client_manager, vpn_client_manager, JoinRecord};
 use crate::setting::Setting;
-
-struct TestRecv {
-
-}
-
-impl TestRecv {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-#[async_trait]
-impl PacketRecv for TestRecv {
-    async fn on_recv(&self, target: IpAddr, packet: &[u8]) -> VpnResult<()> {
-        Ok(())
-    }
-
-}
-
 
 async fn async_main() {
     let mut config = config::ConfigBuilder::<DefaultState>::default();

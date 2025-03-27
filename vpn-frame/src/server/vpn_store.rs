@@ -19,13 +19,13 @@ impl<T: VpnStore> VpnStoreGuard<T> {
         Self { store, is_transaction: false }
     }
 
-    async fn begin_transaction(&mut self) -> VpnResult<()> {
+    pub async fn begin_transaction(&mut self) -> VpnResult<()> {
         self.store.begin_transaction().await?;
         self.is_transaction = true;
         Ok(())
     }
 
-    async fn commit_transaction(&mut self) -> VpnResult<()> {
+    pub async fn commit_transaction(&mut self) -> VpnResult<()> {
         self.store.commit_transaction().await?;
         self.is_transaction = false;
         Ok(())

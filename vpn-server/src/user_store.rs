@@ -23,11 +23,6 @@ pub struct User {
     pub server_id: String,
 }
 
-impl User {
-    pub fn new(id: &str, password: &str, network_id: NetworkGroupId, server_id: &str) -> Self {
-        Self { id: id.to_string(), password: password.to_string(), network_id, server_id: server_id.to_string() }
-    }
-}
 impl Account for User {
     type Id = UserId;
 

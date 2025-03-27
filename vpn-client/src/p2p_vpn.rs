@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use std::io::Error;
 use std::net::{SocketAddr};
 use std::ops::DerefMut;
@@ -84,17 +86,14 @@ impl AsyncWrite for P2pVpnTunnelSend {
 
 pub struct P2pVpnTunnelFactory {
     stack: P2pStackRef,
-    server_client: Arc<VpnServerClient<SnCmdClient>>,
     vpn_port: u16,
 }
 
 impl P2pVpnTunnelFactory {
     pub fn new(stack: P2pStackRef,
-               server_client: Arc<VpnServerClient<SnCmdClient>>,
                vpn_port: u16) -> P2pVpnTunnelFactory {
         P2pVpnTunnelFactory {
             stack,
-            server_client,
             vpn_port,
         }
     }
@@ -194,7 +193,7 @@ impl VpnClientFactory<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTun
 
         let vpn_client = VpnServerClient::new(stack.sn_client().get_cmd_client().clone(), conn_timeout);
         let client = VpnClient::new(vpn_client.clone(),
-                                    Arc::new(P2pVpnTunnelFactory::new(stack.clone(), vpn_client.clone(), self.vpn_port)),
+                                    Arc::new(P2pVpnTunnelFactory::new(stack.clone(), self.vpn_port)),
                                     Arc::new(P2pVpnTunnelListener::new(stack.clone(), self.vpn_port).await.map_err(into_vpn_err!(VpnErrorCode::Failed))?),
                                     self.client_version.clone());
         Ok(client)
