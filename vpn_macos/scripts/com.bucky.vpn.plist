@@ -14,8 +14,8 @@
     <key>KeepAlive</key>
     <false/>
     <key>StandardOutPath</key>
-    <string>/dev/null</string>
+    <string>/var/log/bucky-vpn.log</string>
     <key>StandardErrorPath</key>
-    <string>/dev/null</string>
+    <string>/var/log/bucky-vpn.log</string>
 </dict>
 </plist>

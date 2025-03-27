@@ -174,7 +174,7 @@ impl VpnClientFactory<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTun
         };
         let sn_port = ip.port();
 
-        let server_config = self.config_path.join(key);
+        let server_config = self.config_path.join(format!("{}_{}_{}", sn_id, ip.ip().to_string(), sn_port));
         let identity_file = server_config.join("identity");
         let local_identity = if server_config.exists() && identity_file.exists() {
             let data = tokio::fs::read(identity_file.as_path()).await.map_err(into_vpn_err!(VpnErrorCode::Failed, "read {} failed", identity_file.to_string_lossy().to_string()))?;
@@ -200,7 +200,7 @@ impl VpnClientFactory<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTun
             .set_support_proxy(true)
             .add_sn(P2pSn::new(sn_id.clone(), sn_id.to_string(), vec![sn_ep]));
         let stack = create_p2p_stack(stack_config).await.map_err(into_vpn_err!(VpnErrorCode::Failed, "create stack failed"))?;
-        stack.wait_online(Some(Duration::from_secs(10))).await.map_err(into_vpn_err!(VpnErrorCode::Failed, "wait online timout"))?;
+        stack.wait_online(Some(Duration::from_secs(30))).await.map_err(into_vpn_err!(VpnErrorCode::Failed, "wait online timout"))?;
 
         let vpn_client = VpnServerClient::new(stack.sn_client().get_cmd_client().clone(), conn_timeout);
         let client = VpnClient::new(vpn_client.clone(),
