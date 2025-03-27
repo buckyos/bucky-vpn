@@ -24,7 +24,7 @@ Name: "{group}\bucky-vpn.exe"; Filename: "{app}\bucky-vpn.exe"
 
 [Run]
 ; 使用 sc.exe 创建服务
-Filename: "{sys}\sc.exe"; Parameters: "create BuckyVPN binPath= """"{app}\bucky-vpn.exe"" daemon"" start= auto"; Flags: runhidden waituntilterminated
+Filename: "{sys}\sc.exe"; Parameters: "create BuckyVPN binPath= ""\""{app}\bucky-vpn.exe\"" daemon"" start= auto"; Flags: runhidden waituntilterminated
 ; 启动服务
 Filename: "{sys}\sc.exe"; Parameters: "start BuckyVPN"; Flags: runhidden waituntilterminated
 
@@ -106,5 +106,8 @@ begin
   begin
     // 卸载完成后，从 PATH 环境变量中移除安装目录
     RemoveFromPath(ExpandConstant('{app}'));
+    Sleep(1000); // 等待 1 秒
+    DeleteFile(ExpandConstant('{app}\bucky-vpn.exe'));
+    DelTree(ExpandConstant('{app}\data\logs'), True, True, True);
   end;
 end;

@@ -30,7 +30,17 @@ async fn async_main() {
     let vpn_config_path = match config.get_string("data.dir") {
         Ok(dir) => PathBuf::from(dir),
         Err(_) => {
-            dirs::data_dir().unwrap().join("bucky-vpn")
+            #[cfg(target_os = "windows")]
+            {
+                std::env::current_exe().unwrap().parent().unwrap().join("data")
+            }
+            #[cfg(target_os = "macos")]
+            {
+                PathBuf::new("/Library/Application Support/BuckyVPN")
+            }
+            #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))] {
+                PathBuf::new("/var/bucky_vpn")
+            }
         }
     };
     let sn_port = config.get_int("port").unwrap_or(3624) as u16;
@@ -90,6 +100,10 @@ async fn async_main() {
 
         },
         Some(("daemon", _)) => {
+            if !vpn_config_path.exists() {
+                let _ = create_dir_all(vpn_config_path.as_path());
+            }
+
             let log = config.get_bool("log").unwrap_or(true);
             if log {
                 sfo_log::Logger::new("bucky-vpn")
@@ -103,10 +117,6 @@ async fn async_main() {
             let eps = vec![Endpoint::from((Protocol::Quic, SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, p2p_port))))];
             let p2p_config = P2pConfig::new(Arc::new(X509IdentityFactory), Arc::new(X509IdentityCertFactory), eps);
             init_p2p(p2p_config).await.unwrap();
-
-            if !vpn_config_path.exists() {
-                let _ = create_dir_all(vpn_config_path.as_path());
-            }
 
             init_p2p_vpn_client_manager(vpn_config_path.clone(), 34245, "1.0.0".to_string()).unwrap();
 
