@@ -57,7 +57,9 @@ async fn async_main() {
 
     let matches = clap::Command::new("bucky-vpn")
         .about("bucky-vpn")
+        .arg_required_else_help(true)
         .subcommand(clap::Command::new("join")
+            .about("join a vpn network")
             .arg(clap::Arg::new("server")
                 .long("server")
                 .short('s')
@@ -65,7 +67,7 @@ async fn async_main() {
                 .required(true))
             .arg(clap::Arg::new("server_id")
                 .long("server_id")
-                .help("The vpn server id")
+                .help("The vpn server identity ID")
                 .required(true))
             .arg(clap::Arg::new("network_id")
                 .long("network_id")
@@ -78,7 +80,7 @@ async fn async_main() {
                 .help("The name of the node seen on the server")
                 .required(false)))
         // .subcommand(clap::Command::new("state"))
-        .subcommand(clap::Command::new("daemon").about("Run as daemon"))
+        .subcommand(clap::Command::new("daemon").about("Run as vpn service"))
         .get_matches();
 
     match matches.subcommand() {
@@ -143,7 +145,8 @@ async fn async_main() {
             http_server.run().await.unwrap();
             std::future::pending::<()>().await;
         }
-        _ => {}
+        _ => {
+        }
     }
 
 }

@@ -7,9 +7,8 @@ fi
 PLIST_PATH="/Library/LaunchDaemons/com.bucky.vpn.plist"
 cp "com.bucky.vpn.plist" "$PLIST_PATH"
 
-# 设置权限（必须为 root:wheel）
 chown root:wheel "$PLIST_PATH"
 chmod 644 "$PLIST_PATH"
 
-# 加载服务
+sudo launchctl bootout system/com.bucky.vpn
 launchctl load -w "$PLIST_PATH"
