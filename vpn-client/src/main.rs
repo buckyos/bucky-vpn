@@ -70,9 +70,26 @@ async fn run_daemon() {
 
     let setting = Arc::new(Setting::load(vpn_config_path.join("setting.toml").as_path()).await.unwrap());
     if let Some(records) = setting.get::<Vec<JoinRecord>>("joined_networks") {
-        for record in records.iter() {
-            let vpn_client = vpn_client_manager().get_client(format!("{}_{}:{}", record.server_id, record.server_ip, record.server_port).as_str()).await.unwrap();
-            vpn_client.run();
+        for record in records {
+            tokio::spawn(async move {
+                let mut interval = 5;
+                loop {
+                    let vpn_client = match vpn_client_manager().get_client(format!("{}_{}:{}", record.server_id, record.server_ip, record.server_port).as_str()).await {
+                        Ok(v) => v,
+                        Err(_) => {
+                            log::error!("get client failed");
+                            interval *= 2;
+                            if interval > 3600 {
+                                interval = 3600;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+                            continue;
+                        }
+                    };
+                    vpn_client.run();
+                    break;
+                }
+            });
         }
     }
 
