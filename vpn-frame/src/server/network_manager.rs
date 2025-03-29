@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use async_named_locker::Locker;
 use crate::errors::{vpn_err, VpnErrorCode, VpnResult};
@@ -54,7 +54,64 @@ impl <S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
 
     pub async fn update_network(&self, network: &Network) -> VpnResult<()> {
         let mut store = self.store_factory.get_vpn_store().await?;
-        store.update_network(&network).await
+        store.begin_transaction().await?;
+        let cur_network = store.get_network(&network.id).await?;
+        if let Some(old_network) = cur_network {
+            let members = store.get_members(&network.id).await?;
+            for member in members {
+                let mut new_member = member.clone();
+                let mut has_change = false;
+                if old_network.ip_seg != network.ip_seg || old_network.mask != network.mask {
+                    has_change = true;
+                    if let Some(seg_ip) = network.ip_seg {
+                        match member.ip.parse::<Ipv4Addr>() {
+                            Ok(ip) => {
+                                let mask = u32::MAX << (32 - network.mask);
+                                let mut ip = u32::from(ip);
+                                let ip_seg = u32::from(seg_ip);
+                                ip = (ip & !mask) | (ip_seg & mask);
+                                new_member.ip = Ipv4Addr::from(ip).to_string();
+                            },
+                            Err(_) => {
+                                new_member.ip = "".to_string();
+                            }
+                        }
+                    } else {
+                        new_member.ip = "".to_string();
+                    }
+                }
+
+                if old_network.ipv6_seg != network.ipv6_seg || old_network.ipv6_mask != network.ipv6_mask {
+                    has_change = true;
+                    if let Some(seg_ip) = network.ipv6_seg {
+                        if let Some(ipv6) = member.ipv6 {
+                            match ipv6.parse::<Ipv6Addr>() {
+                                Ok(ip) => {
+                                    let mask = u128::MAX << (128 - network.ipv6_mask);
+                                    let mut ip = u128::from(ip);
+                                    let ip_seg = u128::from(seg_ip);
+                                    ip = (ip & !mask) | (ip_seg & mask);
+                                    new_member.ipv6 = Some(Ipv6Addr::from(ip).to_string());
+                                },
+                                Err(_) => {
+                                    new_member.ipv6 = None;
+                                }
+                            }
+                        }
+                    } else {
+                        new_member.ipv6 = None;
+                    }
+                }
+                if has_change {
+                    store.update_member(&network.id, &new_member).await?;
+                    store.inc_info_version(&member.id).await?;
+                }
+            }
+        }
+
+        store.update_network(&network).await?;
+        store.commit_transaction().await?;
+        Ok(())
     }
 
     pub async fn del_network(&self, network_id: &NetworkId) -> VpnResult<()> {
@@ -122,6 +179,24 @@ impl <S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
         joined_node.allow_join = allow_join;
         store.update_joined_node(&joined_node).await?;
         store.inc_info_version(node_id).await?;
+        store.commit_transaction().await?;
+        Ok(())
+    }
+
+    pub async fn del_joined_node(&self, network_group_id: &NetworkGroupId, node_id: &NodeId) -> VpnResult<()> {
+        let mut store = self.store_factory.get_vpn_store().await?;
+        store.begin_transaction().await?;
+        let networks = store.get_networks(network_group_id).await?;
+        for network in networks {
+            let members = store.get_members(&network.id).await?;
+            if members.iter().find(|member| member.id == *node_id).is_some() {
+                for member in members.iter() {
+                    store.inc_info_version(&member.id).await?;
+                }
+                store.del_member(&network.id, node_id).await?;
+            }
+        }
+        store.del_joined_node(network_group_id, node_id).await?;
         store.commit_transaction().await?;
         Ok(())
     }

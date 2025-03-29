@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:vpn_web/dialog_button.dart';
 
 class EditNetworkDialog extends StatefulWidget {
   final String? name;
@@ -56,20 +57,20 @@ class _EditNetworkDialogState extends State<EditNetworkDialog> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                ElevatedButton(
+                DialogButton(
                   onPressed: () {
                     Navigator.of(context).pop();
                     if (_controllerName.text.isNotEmpty && _controllerAddress.text.isNotEmpty && _controllerMask.text.isNotEmpty) {
                       widget.onSave(_controllerName.text, _controllerAddress.text, int.parse(_controllerMask.text));
                     }
                   },
-                  child: const Text('Save'),
+                  text: 'Save',
                 ),
-                ElevatedButton(
+                DialogButton(
                   onPressed: () {
                     Navigator.of(context).pop();
                   },
-                  child: const Text('Cancel'),
+                  text: 'Cancel',
                 )
               ],
             )

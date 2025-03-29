@@ -262,6 +262,50 @@ class Api {
     }
   }
 
+  Future<HttpResult> updateNetwork(String networkId, String name, String ipSeg, int mask) async {
+    String? session = window.localStorage["session"];
+    if (session == null) {
+      return HttpResult(-1);
+    }
+
+    var (result, resp) = await _client.postJson("/update_network", {"network_id": networkId, "name": name, "ip_addr": ipSeg, "mask": mask}, headers: {"authorization": "Bearer $session"});
+    if (result.isSuccess) {
+      if (resp is Map) {
+        if (resp["err"] == 0) {
+          return HttpResult(0);
+        } else {
+          return HttpResult(resp["err"], msg: resp["msg"] as String);
+        }
+      } else {
+        return HttpResult(-1);
+      }
+    } else {
+      return result;
+    }
+  }
+
+  Future<HttpResult> deleteNetwork(String networkId) async {
+    String? session = window.localStorage["session"];
+    if (session == null) {
+      return HttpResult(-1);
+    }
+
+    var (result, resp) = await _client.postJson("/delete_network", {"network_id": networkId}, headers: {"authorization": "Bearer $session"});
+    if (result.isSuccess) {
+      if (resp is Map) {
+        if (resp["err"] == 0) {
+          return HttpResult(0);
+        } else {
+          return HttpResult(resp["err"], msg: resp["msg"] as String);
+        }
+      } else {
+        return HttpResult(-1);
+      }
+    } else {
+      return result;
+    }
+  }
+
   Future<HttpResult> addNetworkMember(String networkId, String nodeId, String ipAddr) async {
     String? session = window.localStorage["session"];
     if (session == null) {
@@ -358,6 +402,50 @@ class Api {
     }
 
     var (result, resp) = await _client.postJson("/allow_join", {"node_id": nodeId, "allow_join": allowJoin}, headers: {"authorization": "Bearer $session"});
+    if (result.isSuccess) {
+      if (resp is Map) {
+        if (resp["err"] == 0) {
+          return HttpResult(0);
+        } else {
+          return HttpResult(resp["err"], msg: resp["msg"] as String);
+        }
+      } else {
+        return HttpResult(-1);
+      }
+    } else {
+      return result;
+    }
+  }
+
+  Future<HttpResult> updateJoinComment(String nodeId, String comment) async {
+    String? session = window.localStorage["session"];
+    if (session == null) {
+      return HttpResult(-1);
+    }
+
+    var (result, resp) = await _client.postJson("/update_joined_comment", {"node_id": nodeId, "comment": comment}, headers: {"authorization": "Bearer $session"});
+    if (result.isSuccess) {
+      if (resp is Map) {
+        if (resp["err"] == 0) {
+          return HttpResult(0);
+        } else {
+          return HttpResult(resp["err"], msg: resp["msg"] as String);
+        }
+      } else {
+        return HttpResult(-1);
+      }
+    } else {
+      return result;
+    }
+  }
+
+  Future<HttpResult> deleteJoinedNode(String nodeId) async {
+    String? session = window.localStorage["session"];
+    if (session == null) {
+      return HttpResult(-1);
+    }
+
+    var (result, resp) = await _client.postJson("/delete_joined_node", {"node_id": nodeId}, headers: {"authorization": "Bearer $session"});
     if (result.isSuccess) {
       if (resp is Map) {
         if (resp["err"] == 0) {

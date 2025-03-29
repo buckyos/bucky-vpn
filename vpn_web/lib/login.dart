@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:go_router/go_router.dart';
+import 'package:vpn_web/dialog_button.dart';
 
 import 'api.dart';
 
@@ -19,9 +20,7 @@ class _LoginState extends State<Login> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Login'),
-      ),
+      backgroundColor: Colors.white,
       body: Center(
         child: Container(
           width: 400,
@@ -51,7 +50,7 @@ class _LoginState extends State<Login> {
                 obscureText: _isObscure,
               ),
               const SizedBox(height: 20),
-              ElevatedButton(
+              DialogButton(
                 onPressed: () async {
                   if (_usernameController.text.isEmpty || _passwordController.text.isEmpty) {
                     Fluttertoast.showToast(
@@ -81,7 +80,7 @@ class _LoginState extends State<Login> {
                     );
                   }
                 },
-                child: const Text('Login'),
+                text: 'Login',
               ),
             ],
           ),

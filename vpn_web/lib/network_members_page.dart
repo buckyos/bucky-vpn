@@ -32,7 +32,7 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
         }
       } else {
         Fluttertoast.showToast(
-            msg: result.msg ?? "获取网络成员列表失败",
+            msg: result.msg ?? "Read network member failed",
             toastLength: Toast.LENGTH_LONG,
             gravity: ToastGravity.TOP,
             backgroundColor: Colors.red,
@@ -149,10 +149,10 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
                           });
                         },
                         items: _joinedNodes
-                            .map<DropdownMenuItem<JoinedNode>>((JoinedNode value) {
+                            .map<DropdownMenuItem<JoinedNode>>((JoinedNode node) {
                           return DropdownMenuItem<JoinedNode>(
-                            value: value,
-                            child: Text(value.name),
+                            value: node,
+                            child: Text(node.comment.isNotEmpty ? node.comment : node.name.isNotEmpty? node.name : node.nodeId),
                           );
                         }).toList(),
                       ),
@@ -162,12 +162,11 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
                     child: Center(
                         child: Container(
                           padding: EdgeInsets.all(3),
-                      height: 40,
                       child: TextField(
                         controller: _ipController,
                         textAlignVertical: TextAlignVertical.center,
-                        decoration: const InputDecoration(
-                          border: OutlineInputBorder(),
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder().copyWith(gapPadding: 1),
                           hintText: 'IP',
                         ),
                       ),

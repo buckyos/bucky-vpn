@@ -51,6 +51,7 @@ class _HomeState extends State<Home> with SingleTickerProviderStateMixin {
   Widget build(BuildContext context) {
     if (_userInfo == null) {
       return const Scaffold(
+        backgroundColor: Colors.white,
         body: Center(
           child: CircularProgressIndicator(),
         ),
@@ -64,6 +65,7 @@ class _HomeState extends State<Home> with SingleTickerProviderStateMixin {
               color: Colors.white,
               child: Column(
               mainAxisAlignment: MainAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 const SizedBox(height: 30),
                 SelectableText(
@@ -80,8 +82,8 @@ class _HomeState extends State<Home> with SingleTickerProviderStateMixin {
                     child: Column(
                       children: [
                         TabBar(controller: _tabController, tabs: [
-                          Tab(text: "连接节点"),
-                          Tab(text: "我的网络"),
+                          Tab(text: "Joined Nodes"),
+                          Tab(text: "My Networks"),
                         ]),
                         Expanded(
                             child: TabBarView(controller: _tabController, children: [
