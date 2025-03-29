@@ -38,10 +38,10 @@ async fn run_daemon() {
             }
             #[cfg(target_os = "macos")]
             {
-                PathBuf::new("/Library/Application Support/BuckyVPN")
+                PathBuf::from("/Library/Application Support/BuckyVPN")
             }
             #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))] {
-                PathBuf::new("/var/bucky_vpn")
+                PathBuf::from("/var/bucky_vpn")
             }
         }
     };
@@ -53,12 +53,13 @@ async fn run_daemon() {
     }
 
     let log = config.get_bool("log").unwrap_or(true);
+    let log_level = config.get_string("log.level").unwrap_or(String::from("info"));
     if log {
         sfo_log::Logger::new("bucky-vpn")
             .set_log_to_file(true)
             .set_log_file_count(5)
             .set_log_path(vpn_config_path.join("logs").to_string_lossy().to_string().as_str())
-            .set_log_level("info")
+            .set_log_level(log_level.as_str())
             .start().unwrap();
     }
 

@@ -70,8 +70,25 @@ impl<S: PacketRecv> VpnDevice<S> {
         {
             config = config.wintun_file("./wintun.dll".to_string());
         }
+
+        let truncated_name = if cfg!(target_os = "macos") {
+            let name =  format!("utun{}", self.network.id);
+            // MacOS: 15 chars max
+            name[..std::cmp::min(name.len(), 8)].to_string()
+        } else if cfg!(target_os = "linux") {
+            let name =  format!("tun_{}", self.network.id);
+            // Linux: 15 chars max
+            name[..std::cmp::min(name.len(), 15)].to_string()
+        } else if cfg!(windows) {
+            let name =  format!("tun_{}", self.network.id);
+            // Windows: 32 chars max for compatibility (even though wintun allows 128)
+            name[..std::cmp::min(name.len(), 32)].to_string()
+        } else {
+            let name =  format!("tun_{}", self.network.id);
+            name[..std::cmp::min(name.len(), 15)].to_string()
+        };
         let dev = config
-            .name(format!("{}_{}", self.network.name, self.network.id).as_str())
+            .name(truncated_name)
             .mtu(1400)
             .layer(Layer::L3)
             .build_async().map_err(into_vpn_err!(VpnErrorCode::Failed))?;
