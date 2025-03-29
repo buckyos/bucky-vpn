@@ -140,7 +140,12 @@ class Api {
       if (kReleaseMode) {
         final host = Uri.base.host;
         final port = Uri.base.port;
-        _instance = Api._internal("http://$host:$port/api");
+        final scheme = Uri.base.scheme;
+        final path = Uri.base.path;
+        final basePath = path.substring(0, path.lastIndexOf("/"));
+        final baseUrl = "$scheme://$host:$port$basePath";
+
+        _instance = Api._internal("$baseUrl/api");
       } else {
         _instance = Api._internal("http://127.0.0.1:3445");
       }
