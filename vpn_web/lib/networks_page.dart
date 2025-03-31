@@ -177,7 +177,7 @@ class _NetworksPageState extends State<NetworksPage> {
                                               });
                                         },
                                         child: Text(
-                                          "view",
+                                          "members",
                                           style: TextStyle(
                                               color: Colors.blue,
                                               decoration:
