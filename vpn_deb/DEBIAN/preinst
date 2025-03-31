@@ -1,0 +1,5 @@
+#!/bin/sh
+
+if systemctl is-active --quiet bucky-vpn.service 2>/dev/null; then
+    systemctl stop bucky-vpn.service
+fi
