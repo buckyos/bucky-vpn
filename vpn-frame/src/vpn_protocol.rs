@@ -77,8 +77,8 @@ pub struct JoinNetworkGroupResp {
 #[derive(RawDecode, RawEncode)]
 pub struct GetVpnInfoReq {
     pub seq: Sequence,
-    pub info_version: u64,
-    pub client_version: String,
+    pub info_version: Option<u16>,
+    pub client_version: Option<String>,
 }
 
 #[derive(RawEncode, RawDecode, Serialize, Deserialize, Clone, Eq, PartialEq)]
@@ -102,7 +102,7 @@ pub struct NodeVpnInfo {
 pub struct GetVpnInfoResp {
     pub seq: Sequence,
     pub result: u8,
-    pub info_version: u64,
+    pub info_version: u16,
     pub vpn_list: Vec<NodeVpnInfo>,
 }
 

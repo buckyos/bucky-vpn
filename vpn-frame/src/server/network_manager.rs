@@ -2,17 +2,17 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use async_named_locker::Locker;
 use crate::errors::{vpn_err, VpnErrorCode, VpnResult};
-use crate::server::{JoinedNode, Network, NetworkGroupId, NetworkId, NetworkMember, Node, NodeId, VpnStore, VpnStoreFactory};
+use crate::server::{JoinedNode, Network, NetworkGroupId, NetworkId, NetworkMember, Node, NodeId, NodeManager, VpnStore, VpnStoreFactory};
 use crate::{NodeNetwork};
 
 pub struct NetworkManager<S: VpnStore, F: VpnStoreFactory<S>> {
     store_factory: Arc<F>,
-    _p: std::marker::PhantomData<S>,
+    node_manager: Arc<NodeManager<S, F>>,
 }
 
 impl <S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
-    pub fn new(store_factory: Arc<F>) -> Arc<Self> {
-        Arc::new(Self { store_factory, _p: std::marker::PhantomData })
+    pub fn new(store_factory: Arc<F>, node_manager: Arc<NodeManager<S, F>>) -> Arc<Self> {
+        Arc::new(Self { store_factory, node_manager })
     }
 
     pub async fn new_network_group(&self) -> VpnResult<NetworkGroupId> {
@@ -105,6 +105,7 @@ impl <S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
                 if has_change {
                     store.update_member(&network.id, &new_member).await?;
                     store.inc_info_version(&member.id).await?;
+                    self.node_manager.remove_node(&member.id).await;
                 }
             }
         }
@@ -121,6 +122,7 @@ impl <S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
         for member in members {
             store.del_member(network_id, &member.id).await?;
             store.inc_info_version(&member.id).await?;
+            self.node_manager.remove_node(&member.id).await;
         }
         store.del_network(network_id).await?;
         store.commit_transaction().await?;
@@ -178,7 +180,18 @@ impl <S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
         let mut joined_node = joined_node.unwrap();
         joined_node.allow_join = allow_join;
         store.update_joined_node(&joined_node).await?;
-        store.inc_info_version(node_id).await?;
+
+        let networks = store.get_networks_of_node(node_id).await?;
+        for network in networks {
+            if network.group_id!= *network_group_id {
+                continue;
+            }
+            let members = store.get_members(&network.id).await?;
+            for member in members.iter() {
+                store.inc_info_version(&member.id).await?;
+                self.node_manager.remove_node(&member.id).await;
+            }
+        }
         store.commit_transaction().await?;
         Ok(())
     }
@@ -192,6 +205,7 @@ impl <S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
             if members.iter().find(|member| member.id == *node_id).is_some() {
                 for member in members.iter() {
                     store.inc_info_version(&member.id).await?;
+                    self.node_manager.remove_node(&member.id).await;
                 }
                 store.del_member(&network.id, node_id).await?;
             }
@@ -225,6 +239,7 @@ impl <S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
             let members = store.get_members(network_id).await?;
             for member in members {
                 store.inc_info_version(&member.id).await?;
+                self.node_manager.remove_node(&member.id).await;
             }
             store.add_member(network_id, &NetworkMember {
                 id: member.clone(),
@@ -232,6 +247,7 @@ impl <S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
                 ipv6
             }).await?;
             store.inc_info_version(member).await?;
+            self.node_manager.remove_node(member).await;
             store.commit_transaction().await?;
         }
 
@@ -243,9 +259,11 @@ impl <S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
         store.begin_transaction().await?;
         store.del_member(network_id, member).await?;
         store.inc_info_version(member).await?;
+        self.node_manager.remove_node(member).await;
         let members = store.get_members(network_id).await?;
         for member in members {
             store.inc_info_version(&member.id).await?;
+            self.node_manager.remove_node(&member.id).await;
         }
         store.commit_transaction().await?;
         Ok(())
@@ -263,6 +281,7 @@ impl <S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
         let members = store.get_members(network_id).await?;
         for member in members {
             store.inc_info_version(&member.id).await?;
+            self.node_manager.remove_node(&member.id).await;
         }
         store.commit_transaction().await?;
         Ok(())
@@ -273,8 +292,47 @@ impl <S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
         store.get_members(network_id).await
     }
 
+    pub async fn get_allowed_network_member(&self, network_id: &NetworkId) -> VpnResult<Vec<NetworkMember>> {
+        let mut store = self.store_factory.get_vpn_store().await?;
+        store.get_allowed_members(network_id).await
+    }
+
     pub async fn get_member_of_ip(&self, _group_id: &NetworkGroupId, network_id: &NetworkId, ip_addr: &IpAddr) -> VpnResult<Option<NodeId>> {
         let mut store = self.store_factory.get_vpn_store().await?;
         store.get_member(network_id, ip_addr).await.map(|v| v.map(|m| m.id))
+    }
+
+    pub async fn node_online(&self, nodes: &Vec<NodeId>) -> VpnResult<()> {
+        let mut store = self.store_factory.get_vpn_store().await?;
+        store.begin_transaction().await?;
+        for node_id in nodes {
+            let networks = store.get_networks_of_node(node_id).await?;
+            for network in networks {
+                let members = store.get_members(&network.id).await?;
+                for member in members {
+                    store.inc_info_version(&member.id).await?;
+                    self.node_manager.remove_node(&member.id).await;
+                }
+            }
+        }
+        store.commit_transaction().await?;
+        Ok(())
+    }
+
+    pub async fn node_offline(&self, nodes: &Vec<NodeId>) -> VpnResult<()> {
+        let mut store = self.store_factory.get_vpn_store().await?;
+        store.begin_transaction().await?;
+        for node_id in nodes {
+            let networks = store.get_networks_of_node(node_id).await?;
+            for network in networks {
+                let members = store.get_members(&network.id).await?;
+                for member in members {
+                    store.inc_info_version(&member.id).await?;
+                    self.node_manager.remove_node(&member.id).await;
+                }
+            }
+        }
+        store.commit_transaction().await?;
+        Ok(())
     }
 }

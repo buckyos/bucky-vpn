@@ -81,6 +81,7 @@ pub trait NetworkStore: 'static + Send + Sync {
     async fn has_member(&mut self, network_id: &NetworkId, member: &NodeId) -> VpnResult<bool>;
     async fn update_member(&mut self, network_id: &NetworkId, member: &NetworkMember) -> VpnResult<()>;
     async fn get_members(&mut self, network_id: &NetworkId) -> VpnResult<Vec<NetworkMember>>;
+    async fn get_allowed_members(&mut self, network_id: &NetworkId) -> VpnResult<Vec<NetworkMember>>;
     async fn get_member(&mut self, network_id: &NetworkId, ip_addr: &IpAddr) -> VpnResult<Option<NetworkMember>>;
     async fn get_networks_of_node(&mut self, node_id: &NodeId) -> VpnResult<Vec<NodeNetwork>>;
 }

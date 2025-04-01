@@ -15,7 +15,7 @@ impl<S: VpnStore, F: VpnStoreFactory<S>> NodeManager<S, F> {
         Arc::new(Self {
             store_factory,
             cache: Cache::builder()
-                .time_to_live(Duration::from_secs(60))
+                .time_to_live(Duration::from_secs(600))
                 .max_capacity(10000)
                 .build(),
             _p: std::marker::PhantomData,
@@ -36,7 +36,7 @@ impl<S: VpnStore, F: VpnStoreFactory<S>> NodeManager<S, F> {
         }
     }
 
-    pub fn remove_node(&self, node_id: &NodeId) {
+    pub async fn remove_node(&self, node_id: &NodeId) {
         self.cache.invalidate(node_id);
     }
 }

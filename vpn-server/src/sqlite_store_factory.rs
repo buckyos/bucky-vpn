@@ -119,7 +119,7 @@ impl NodeStore for SqliteVpnStore {
                 let info_version: i64 = row.get("info_version");
                 Ok(Some(Node {
                     id: NodeId::from_base58(&id).map_err(into_vpn_err!(VpnErrorCode::IoError))?,
-                    info_version: info_version as u64,
+                    info_version: info_version as u16,
                 }))}
             Err(e) => {
                 if e.code() == SqlErrorCode::NotFound {
@@ -427,6 +427,24 @@ impl NetworkStore for SqliteVpnStore {
 
     async fn get_members(&mut self, network_id: &NetworkId) -> VpnResult<Vec<NetworkMember>> {
         let sql = r#"SELECT network_id, node_id, ip, ipv6 FROM network_member WHERE network_id = ?"#;
+        let rows = self.conn.query_all(sql_query(sql).bind(*network_id as i64)).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        let mut members = Vec::new();
+        for row in rows {
+            let node_id: String = row.get("node_id");
+            let ip: String = row.get("ip");
+            let ipv6: String = row.get("ipv6");
+            members.push(NetworkMember {
+                id: NodeId::from_base58(&node_id).map_err(into_vpn_err!(VpnErrorCode::IoError))?,
+                ip,
+                ipv6: if ipv6.is_empty() { None } else { Some(ipv6) },
+            });
+        }
+        Ok(members)
+    }
+
+    async fn get_allowed_members(&mut self, network_id: &NetworkId) -> VpnResult<Vec<NetworkMember>> {
+        let sql = r#"SELECT network_member.network_id, network_member.node_id, network_member.ip, network_member.ipv6 FROM network_member
+         JOIN joined_node ON joined_node.node_id = network_member.node_id  WHERE network_member.network_id =? and joined_node.allow_join = TRUE"#;
         let rows = self.conn.query_all(sql_query(sql).bind(*network_id as i64)).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
         let mut members = Vec::new();
         for row in rows {

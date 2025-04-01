@@ -162,7 +162,7 @@ impl Api {
                                 name: node.name.clone(),
                                 comment: node.comment.clone(),
                                 online: true,
-                                client_version: Some(client_version),
+                                client_version,
                                 ip_list: Some(ip_list.iter().map(|ip| ip.to_string()).collect()),
                             });
                         } else {
@@ -532,7 +532,7 @@ impl Api {
                                 ip: member.ip.clone(),
                                 ipv6: member.ipv6.clone(),
                                 online: true,
-                                client_version: Some(client_version),
+                                client_version,
                                 ip_list: Some(ip_list.iter().map(|ip| ip.to_string()).collect()),
                             });
                         } else {

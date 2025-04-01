@@ -95,7 +95,7 @@ impl<T: CmdClient<u16, u8>> VpnServerClient<T> {
         }
     }
 
-    pub async fn get_vpn_info(&self, cur_version: u64, client_version: String) -> VpnResult<(u64, Vec<NodeVpnInfo>)> {
+    pub async fn get_vpn_info(&self, cur_version: Option<u16>, client_version: Option<String>) -> VpnResult<(u16, Vec<NodeVpnInfo>)> {
         let req = GetVpnInfoReq {
             seq: self.gen_seq.generate(),
             info_version: cur_version,

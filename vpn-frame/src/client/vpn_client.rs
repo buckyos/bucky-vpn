@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex, Weak};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::time::Duration;
 use bucky_raw_codec::{RawConvertTo, RawDecode};
 use sfo_cmd_server::client::CmdClient;
@@ -153,7 +153,8 @@ pub struct VpnClient<T: CmdClient<u16, u8>, R: VpnTunnelRecv, S: VpnTunnelSend, 
     vpn_devices: Mutex<Option<HashMap<NetworkId, VpnDevice<DevicePkgRecv<R, S, F, L>>>>>,
     tunnel_manager: Mutex<Option<Arc<TunnelManager<R, S, F, L>>>>,
     run_handle: Mutex<Option<JoinHandle<()>>>,
-    cur_version: AtomicU64,
+    cur_version: AtomicU16,
+    is_first: AtomicBool,
     client_version: String,
 }
 
@@ -164,7 +165,8 @@ impl<T: CmdClient<u16, u8>, R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFact
             vpn_devices: Mutex::new(Some(HashMap::new())),
             tunnel_manager: Mutex::new(None),
             run_handle: Mutex::new(None),
-            cur_version: AtomicU64::new(0),
+            cur_version: AtomicU16::new(0),
+            is_first: AtomicBool::new(true),
             client_version,
         });
         let tunnel_manager = TunnelManager::new(tunnel_factory,
@@ -192,10 +194,18 @@ impl<T: CmdClient<u16, u8>, R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFact
     }
 
     async fn run_proc(self: &Arc<Self>) -> VpnResult<()> {
-        let (server_version, vpn_infos) = self.server_client.get_vpn_info(self.cur_version.load(Ordering::SeqCst), self.client_version.clone()).await?;
-        if server_version == self.cur_version.load(Ordering::SeqCst) {
+        let (server_version, vpn_infos) = if self.is_first.load(Ordering::Relaxed) {
+            let (server_version, vpn_infos) =  self.server_client.get_vpn_info(None, Some(self.client_version.clone())).await?;
+            (server_version, vpn_infos)
+        } else {
+            self.server_client.get_vpn_info(
+                Some(self.cur_version.load(Ordering::SeqCst)), None).await?
+        };
+
+        if !self.is_first.load(Ordering::Relaxed) && server_version == self.cur_version.load(Ordering::SeqCst) {
             return Ok(());
         }
+        self.is_first.store(false, Ordering::Relaxed);
         let mut vpn_devices = {
             let mut vpn_devices = self.vpn_devices.lock().unwrap();
             let devices = vpn_devices.take().unwrap();

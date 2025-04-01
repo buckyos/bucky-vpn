@@ -2,28 +2,40 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::ops::Add;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicU16;
 use async_trait::async_trait;
 use bucky_raw_codec::{RawConvertTo, RawFrom};
 use chrono::{DateTime, TimeDelta, Utc};
 use sfo_cmd_server::{CmdBodyRead, PeerId};
 use sfo_cmd_server::errors::{into_cmd_err, CmdErrorCode};
 use sfo_cmd_server::server::CmdServer;
+use tokio::task::JoinHandle;
 use crate::errors::{vpn_err, VpnErrorCode, VpnResult};
 use crate::{GetVpnInfoReq, GetVpnInfoResp, JoinNetworkGroupReq, JoinNetworkGroupResp, NodeVpnInfo, QueryNodeReq, QueryNodeResp, VpnTunnelId, VpnCmdCode, VpnCmdHeader};
 use crate::server::{NetworkGroupId, NetworkId, NetworkManager, NodeId, NodeManager, VpnStore, VpnStoreFactory};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct OnlineNode {
-    pub version: String,
+    pub version: Option<String>,
     pub latest: DateTime<Utc>,
+    pub change_version: AtomicU16,
 }
 
 impl OnlineNode {
-    pub fn new(version: String, latest: DateTime<Utc>) -> Self {
+    pub fn new(version: Option<String>, latest: DateTime<Utc>) -> Self {
         Self {
             version,
             latest,
+            change_version: AtomicU16::new(0),
         }
+    }
+
+    pub fn change(&self) {
+        self.change_version.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn get_change_version(&self) -> u16 {
+        self.change_version.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn is_expire(&self) -> bool {
@@ -36,24 +48,103 @@ pub trait VpnCmdServer: CmdServer<u16, u8> {
     async fn get_peer_wan_ip(&self, peer_id: &PeerId) -> VpnResult<Vec<IpAddr>>;
 }
 
+struct OnlineNodesState {
+    online_nodes1: HashMap<NodeId, OnlineNode>,
+    online_nodes2: HashMap<NodeId, OnlineNode>,
+    effect_cache: u8,
+}
+
+impl OnlineNodesState {
+    pub fn new() -> Self {
+        Self {
+            online_nodes1: HashMap::new(),
+            online_nodes2: HashMap::new(),
+            effect_cache: 0,
+        }
+    }
+
+    pub fn update_online_node(&mut self, node: &NodeId, version: Option<String>) -> bool {
+        let (cur_online_nodes, prev_online_nodes) = if self.effect_cache == 0 {
+            (&mut self.online_nodes1, &mut self.online_nodes2)
+        } else {
+            (&mut self.online_nodes2, &mut self.online_nodes1)
+        };
+        if let Some(mut prev_node) = prev_online_nodes.remove(&node) {
+            prev_node.version = version;
+            prev_node.latest = Utc::now();
+            cur_online_nodes.insert(node.clone(), prev_node);
+            false
+        } else {
+            if let Some(node) = cur_online_nodes.get_mut(node) {
+                node.version = version;
+                node.latest = Utc::now();
+                false
+            } else {
+                cur_online_nodes.insert(node.clone(), OnlineNode::new(version, Utc::now()));
+                log::info!("node {} is online", node.to_base36());
+                true
+            }
+        }
+    }
+
+    pub fn get_offline_nodes(&mut self) -> Vec<NodeId> {
+        let (cur_online_nodes, prev_online_nodes) = if self.effect_cache == 0 {
+            (&mut self.online_nodes1, &mut self.online_nodes2)
+        } else {
+            (&mut self.online_nodes2, &mut self.online_nodes1)
+        };
+
+        let mut offline_nodes = Vec::new();
+        for (node_id, online) in prev_online_nodes.drain() {
+            if online.is_expire() {
+                log::info!("node {} is offline", node_id.to_base36());
+                offline_nodes.push(node_id);
+            } else {
+                cur_online_nodes.insert(node_id, online);
+            }
+        }
+        self.effect_cache = 1 - self.effect_cache;
+        offline_nodes
+    }
+
+    pub fn get_node(&self, node_id: &NodeId) -> Option<&OnlineNode> {
+        if self.effect_cache == 0 {
+            if let Some(node) = self.online_nodes1.get(node_id) {
+                Some(node)
+            } else {
+                self.online_nodes2.get(node_id)
+            }
+        } else {
+            if let Some(node) = self.online_nodes2.get(node_id) {
+                Some(node)
+            } else {
+                self.online_nodes1.get(node_id)
+            }
+        }
+    }
+}
+
 pub struct VpnServer<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> {
     network_manager: Arc<NetworkManager<S, F>>,
     node_manager: Arc<NodeManager<S, F>>,
     cmd_server: Arc<T>,
     version: u8,
-    online_nodes: Mutex<HashMap<NodeId, OnlineNode>>,
+    online_nodes: Mutex<OnlineNodesState>,
+    offline_monitor_handle: Mutex<Option<JoinHandle<()>>>,
 }
 pub type VpnServerRef<T, S, F> = Arc<VpnServer<T, S, F>>;
 
 impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
     pub fn new(cmd_server: Arc<T>,
                factory: Arc<F>) -> Arc<Self> {
+        let node_manager = NodeManager::new(factory.clone());
         Arc::new(Self {
-            network_manager: NetworkManager::new(factory.clone()),
-            node_manager: NodeManager::new(factory),
+            network_manager: NetworkManager::new(factory.clone(), node_manager.clone()),
+            node_manager,
             cmd_server,
             version: 0,
-            online_nodes: Mutex::new(HashMap::new()),
+            online_nodes: Mutex::new(OnlineNodesState::new()),
+            offline_monitor_handle: Mutex::new(None),
         })
     }
 
@@ -67,6 +158,25 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
 
     pub fn start(self: &Arc<Self>) {
         self.register_cmd_handler();
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            this.monitor_offline_nodes().await;
+        });
+        let mut handle_lock = self.offline_monitor_handle.lock().unwrap();
+        *handle_lock = Some(handle);
+    }
+
+    async fn monitor_offline_nodes(self: &Arc<Self>) {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(65)).await;
+            let offline_nodes = {
+                let mut online_nodes = self.online_nodes.lock().unwrap();
+                online_nodes.get_offline_nodes()
+            };
+            if let Err(e) = self.network_manager().node_offline(&offline_nodes).await {
+                log::error!("node_offline failed: {:?}", e);
+            }
+        }
     }
 
     fn register_cmd_handler(self: &Arc<Self>) {
@@ -77,11 +187,15 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
                 let data = body.read_all().await?;
                 let req = GetVpnInfoReq::clone_from_slice(data.as_slice()).map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
                 {
-                    let mut online_nodes = this.online_nodes.lock().unwrap();
-                    if let Some(node) = online_nodes.get_mut(&NodeId::from(peer_id.as_slice())) {
-                        node.latest = Utc::now();
-                    } else {
-                        online_nodes.insert(NodeId::from(peer_id.as_slice()), OnlineNode::new(req.client_version.clone(), Utc::now()));
+                    let node_id = NodeId::from(peer_id.as_slice());
+                    let is_new = {
+                        let mut online_nodes = this.online_nodes.lock().unwrap();
+                        online_nodes.update_online_node(&node_id, req.client_version.clone())
+                    };
+                    if is_new {
+                        if let Err(e) = this.network_manager().node_online(&vec![node_id]).await {
+                            log::error!("node_online failed: {:?}", e);
+                        }
                     }
                 }
                 let seq = req.seq;
@@ -183,14 +297,14 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
         }
     }
 
-    async fn handle_get_vpn_info_req(&self, peer_id: PeerId, info_version: u64) -> VpnResult<(u64, Vec<NodeVpnInfo>)> {
+    async fn handle_get_vpn_info_req(&self, peer_id: PeerId, info_version: Option<u16>) -> VpnResult<(u16, Vec<NodeVpnInfo>)> {
         let node_id = NodeId::from(peer_id.as_slice());
         let node =  self.node_manager.get_node(&node_id).await?;
         if node.is_none() {
             return Err(vpn_err!(VpnErrorCode::NotFoundNode));
         }
-        if node.as_ref().unwrap().info_version == info_version {
-            return Ok((info_version, vec![]));
+        if info_version.is_some() && node.as_ref().unwrap().info_version == info_version.unwrap() {
+            return Ok((info_version.unwrap(), vec![]));
         }
         let mut info_list = vec![];
         let node_networks = self.network_manager.get_networks_of_node(&node_id).await?;
@@ -199,7 +313,22 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
                 continue;
             }
 
-            let members = self.network_manager.get_network_member(&node_network.id).await?;
+            let members = self.network_manager.get_allowed_network_member(&node_network.id).await?;
+            let members = {
+                let online_nodes = self.online_nodes.lock().unwrap();
+                members.iter().filter(|member| member.id != node_id)
+                    .filter(|member| {
+                    if let Some(online_node) = online_nodes.get_node(&member.id) {
+                        if !online_node.is_expire() {
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                }).map(|member| member.clone()).collect()
+            };
             info_list.push(NodeVpnInfo {
                 node_info: node_network.clone(),
                 members,
@@ -216,9 +345,9 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
         self.cmd_server.get_peer_wan_ip(peer_id).await
     }
 
-    pub async fn get_node_online_state(&self, node_id: &NodeId) -> Option<(String, Vec<IpAddr>)> {
+    pub async fn get_node_online_state(&self, node_id: &NodeId) -> Option<(Option<String>, Vec<IpAddr>)> {
         let online_nodes = self.online_nodes.lock().unwrap();
-        if let Some(node) = online_nodes.get(node_id) {
+        if let Some(node) = online_nodes.get_node(node_id) {
             if!node.is_expire() {
                 let ips = self.cmd_server.get_peer_wan_ip(&PeerId::from(node_id.as_slice())).await.unwrap_or(vec![]);
                 if ips.is_empty() {
@@ -230,6 +359,15 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
             }
         } else {
             None
+        }
+    }
+}
+
+impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> Drop for VpnServer<T, S, F> {
+    fn drop(&mut self) {
+        let mut handle_lock = self.offline_monitor_handle.lock().unwrap();
+        if let Some(handle) = handle_lock.take() {
+            handle.abort();
         }
     }
 }

@@ -35,7 +35,7 @@ impl From<&[u8]> for NodeId {
 #[derive(Debug, Clone)]
 pub struct Node {
     pub id: NodeId,
-    pub info_version: u64,
+    pub info_version: u16,
 }
 
 #[async_trait::async_trait]
