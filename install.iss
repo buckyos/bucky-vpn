@@ -11,7 +11,7 @@ UninstallDisplayIcon={app}\bucky-vpn.exe
 Compression=lzma2
 SolidCompression=yes
 OutputDir=./dist
-OutputBaseFilename={#AppName}_{#AppVersion}_Setup
+OutputBaseFilename={#AppName}_{#AppVersion}_amd64_Setup
 VersionInfoVersion={#AppVersion}
 SetupIconFile=vpn-client/bucky-vpn.ico
 
