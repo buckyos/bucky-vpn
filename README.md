@@ -10,6 +10,8 @@ BuckyVPN是一个p2p实现的VPN工具，现在支持Windows、Debian/Ubuntu、M
 ### 服务端部署：
 
 ```sh
+docker pull harbor.mynode.site:8443/library/bucky-vpn-server
+
 docker run --rm -d -p 8888:80 -p 3424:3424/udp --name vpn-server \
 -e VPN_ADMIN_NAME=服务端管理用户名 \
 -e VPN_ADMIN_PASSWORD=服务端管理用户密码 \
