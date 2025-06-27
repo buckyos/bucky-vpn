@@ -3,12 +3,13 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 use p2p_frame::sn::service::SnServiceRef;
 use sfo_sql::errors::{SqlErrorCode};
 use sfo_sql::mysql::sql_query;
 use sfo_sql::sqlite::{SqlConnection, SqlPool, SqliteJournalMode};
 use sfo_sql::{Row};
-use vpn_frame::cmd_server::{CmdHandler, PeerId, TunnelId};
+use vpn_frame::cmd_server::{CmdBody, CmdHandler, PeerId, TunnelId};
 use vpn_frame::cmd_server::errors::CmdResult;
 use vpn_frame::cmd_server::server::CmdServer;
 use vpn_frame::errors::{into_vpn_err, vpn_err, VpnErrorCode, VpnResult};
@@ -580,16 +581,48 @@ impl CmdServer<u16, u8> for P2pSnCmdServer {
         self.sn_service.get_cmd_server().send(peer_id, cmd, version, body).await
     }
 
+    async fn send_with_resp(&self, peer_id: &PeerId, cmd: u8, version: u8, body: &[u8], timeout: Duration) -> CmdResult<CmdBody> {
+        self.sn_service.get_cmd_server().send_with_resp(peer_id, cmd, version, body, timeout).await
+    }
+
     async fn send2(&self, peer_id: &PeerId, cmd: u8, version: u8, body: &[&[u8]]) -> CmdResult<()> {
         self.sn_service.get_cmd_server().send2(peer_id, cmd, version, body).await
+    }
+
+    async fn send2_with_resp(&self, peer_id: &PeerId, cmd: u8, version: u8, body: &[&[u8]], timeout: Duration) -> CmdResult<CmdBody> {
+        self.sn_service.get_cmd_server().send2_with_resp(peer_id, cmd, version, body, timeout).await
+    }
+
+    async fn send_cmd(&self, peer_id: &PeerId, cmd: u8, version: u8, body: CmdBody) -> CmdResult<()> {
+        self.sn_service.get_cmd_server().send_cmd(peer_id, cmd, version, body).await
+    }
+
+    async fn send_cmd_with_resp(&self, peer_id: &PeerId, cmd: u8, version: u8, body: CmdBody, timeout: Duration) -> CmdResult<CmdBody> {
+        self.sn_service.get_cmd_server().send_cmd_with_resp(peer_id, cmd, version, body, timeout).await
     }
 
     async fn send_by_specify_tunnel(&self, peer_id: &PeerId, tunnel_id: TunnelId, cmd: u8, version: u8, body: &[u8]) -> CmdResult<()> {
         self.sn_service.get_cmd_server().send_by_specify_tunnel(peer_id, tunnel_id, cmd, version, body).await
     }
 
+    async fn send_by_specify_tunnel_with_resp(&self, peer_id: &PeerId, tunnel_id: TunnelId, cmd: u8, version: u8, body: &[u8], timeout: Duration) -> CmdResult<CmdBody> {
+        self.sn_service.get_cmd_server().send_by_specify_tunnel_with_resp(peer_id, tunnel_id, cmd, version, body, timeout).await
+    }
+
     async fn send2_by_specify_tunnel(&self, peer_id: &PeerId, tunnel_id: TunnelId, cmd: u8, version: u8, body: &[&[u8]]) -> CmdResult<()> {
         self.sn_service.get_cmd_server().send2_by_specify_tunnel(peer_id, tunnel_id, cmd, version, body).await
+    }
+
+    async fn send2_by_specify_tunnel_with_resp(&self, peer_id: &PeerId, tunnel_id: TunnelId, cmd: u8, version: u8, body: &[&[u8]], timeout: Duration) -> CmdResult<CmdBody> {
+        self.sn_service.get_cmd_server().send2_by_specify_tunnel_with_resp(peer_id, tunnel_id, cmd, version, body, timeout).await
+    }
+
+    async fn send_cmd_by_specify_tunnel(&self, peer_id: &PeerId, tunnel_id: TunnelId, cmd: u8, version: u8, body: CmdBody) -> CmdResult<()> {
+        self.sn_service.get_cmd_server().send_cmd_by_specify_tunnel(peer_id, tunnel_id, cmd, version, body).await
+    }
+
+    async fn send_cmd_by_specify_tunnel_with_resp(&self, peer_id: &PeerId, tunnel_id: TunnelId, cmd: u8, version: u8, body: CmdBody, timeout: Duration) -> CmdResult<CmdBody> {
+        self.sn_service.get_cmd_server().send_cmd_by_specify_tunnel_with_resp(peer_id, tunnel_id, cmd, version, body, timeout).await
     }
 
     async fn send_by_all_tunnels(&self, peer_id: &PeerId, cmd: u8, version: u8, body: &[u8]) -> CmdResult<()> {

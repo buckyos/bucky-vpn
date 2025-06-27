@@ -9,7 +9,7 @@ use sfo_pool::{into_pool_err, PoolErrorCode, PoolResult, Worker, WorkerFactory, 
 use tokio::io::{AsyncReadExt, AsyncWrite};
 use tokio::spawn;
 use tokio::task::JoinHandle;
-use crate::{VpnCmdCode, VpnCmdHeader, VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv, VpnTunnelSend};
+use crate::{DataHeader, VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv, VpnTunnelSend};
 use crate::errors::{into_vpn_err, vpn_err, VpnErrorCode, VpnResult};
 use crate::server::{NetworkGroupId, NetworkId, NetworkMember, NodeId};
 
@@ -215,24 +215,20 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
         let handle = spawn(async move {
             let _: VpnResult<()> = async move {
                 loop {
-                    let mut header = vec![0u8; VpnCmdHeader::raw_bytes().unwrap()];
+                    let mut header = vec![0u8; DataHeader::raw_bytes().unwrap()];
                     let n = recv.read_exact(header.as_mut()).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
                     if n == 0 {
                         break;
                     }
-                    let header = VpnCmdHeader::clone_from_slice(header.as_slice()).map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
-                    let mut buf = vec![0u8; header.pkg_len() as usize];
+                    let header = DataHeader::clone_from_slice(header.as_slice()).map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
+                    let mut buf = vec![0u8; header.pkg_len as usize];
                     let n = recv.read_exact(&mut buf).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
                     if n == 0 {
                         break;
                     }
 
-                    if header.cmd_code() == VpnCmdCode::Data as u8 {
-                        if let Err(e) = recv_listener.on_recv(buf).await {
-                            log::error!("recv_listener on_recv failed {}", e);
-                        }
-                    } else {
-                        log::error!("unexpected cmd code {}", header.cmd_code());
+                    if let Err(e) = recv_listener.on_recv(header.network_id, buf).await {
+                        log::error!("recv_listener on_recv failed {}", e);
                     }
                 }
                 Ok(())
@@ -261,7 +257,7 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
 
 #[callback_trait::callback_trait]
 pub trait TunnelPkgRecv: Send + Sync + 'static {
-    async fn on_recv(&self, data: Vec<u8>) -> VpnResult<()>;
+    async fn on_recv(&self, network_id: NetworkId, data: Vec<u8>) -> VpnResult<()>;
 }
 
 #[derive(Hash, Eq, PartialEq)]
@@ -347,7 +343,7 @@ impl<
                 pool
             }
         };
-        pool.get_worker().await.map_err(into_vpn_err!(VpnErrorCode::Failed, "get worker failed"))
+        pool.get_worker().await.map_err(into_vpn_err!(VpnErrorCode::Failed, "get worker failed.group {} network {} ip {}", network_group_id, network_id, target))
     }
 
     pub async fn get_all_send(&self, network_group_id: NetworkGroupId, network_id: NetworkId) -> VpnResult<Vec<WorkerGuard<PkgSend<S>, Factory<R, S, F, A>>>> {
@@ -372,7 +368,8 @@ impl<
                     pool
                 }
             };
-            let worker = pool.get_worker().await.map_err(into_vpn_err!(VpnErrorCode::Failed, "get worker failed"))?;
+            let worker = pool.get_worker().await
+                .map_err(into_vpn_err!(VpnErrorCode::Failed, "get worker failed.group {} network {}", network_group_id, network_id))?;
             list.push(worker);
         }
 

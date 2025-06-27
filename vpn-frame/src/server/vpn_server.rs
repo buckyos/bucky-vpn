@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicU16;
 use async_trait::async_trait;
 use bucky_raw_codec::{RawConvertTo, RawFrom};
 use chrono::{DateTime, TimeDelta, Utc};
-use sfo_cmd_server::{CmdBodyRead, PeerId};
+use sfo_cmd_server::{CmdBody, PeerId};
 use sfo_cmd_server::errors::{into_cmd_err, CmdErrorCode};
 use sfo_cmd_server::server::CmdServer;
 use tokio::task::JoinHandle;
@@ -181,7 +181,7 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
 
     fn register_cmd_handler(self: &Arc<Self>) {
         let this = self.clone();
-        self.cmd_server.register_cmd_handler(VpnCmdCode::GetVpnInfo as u8, move |peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBodyRead| {
+        self.cmd_server.register_cmd_handler(VpnCmdCode::GetVpnInfo as u8, move |peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
             let this = this.clone();
             async move {
                 let data = body.read_all().await?;
@@ -222,13 +222,13 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
                                      VpnCmdCode::GetVpnInfoResp as u8,
                                      this.version,
                                      resp.to_vec().map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?.as_slice()).await?;
-                Ok(())
+                Ok(None)
             }
         });
 
 
         let this = self.clone();
-        self.cmd_server.register_cmd_handler(VpnCmdCode::JoinNetworkGroup as u8, move |peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBodyRead| {
+        self.cmd_server.register_cmd_handler(VpnCmdCode::JoinNetworkGroup as u8, move |peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
             let this = this.clone();
             async move {
                 let data = body.read_all().await?;
@@ -250,12 +250,12 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
                                      VpnCmdCode::JoinNetworkGroupResp as u8,
                                      this.version,
                                      resp.to_vec().map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?.as_slice()).await?;
-                Ok(())
+                Ok(None)
             }
         });
 
         let this = self.clone();
-        self.cmd_server.register_cmd_handler(VpnCmdCode::QueryNode as u8, move |peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBodyRead| {
+        self.cmd_server.register_cmd_handler(VpnCmdCode::QueryNode as u8, move |peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
             let this = this.clone();
             async move {
                 let data = body.read_all().await?;
@@ -278,7 +278,7 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
                                      VpnCmdCode::QueryNodeResp as u8,
                                      this.version,
                                      resp.to_vec().map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?.as_slice()).await?;
-                Ok(())
+                Ok(None)
             }
         });
     }

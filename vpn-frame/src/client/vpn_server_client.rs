@@ -1,18 +1,21 @@
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use bucky_raw_codec::{RawConvertTo, RawFrom};
 use callback_result::CallbackWaiter;
 use num_traits::FromPrimitive;
-use sfo_cmd_server::client::CmdClient;
-use sfo_cmd_server::{CmdBodyRead, PeerId};
+use sfo_cmd_server::client::{CmdClient, CmdSend, SendGuard};
+use sfo_cmd_server::{CmdBody, CmdTunnelMeta, PeerId};
 use sfo_cmd_server::errors::{into_cmd_err, CmdErrorCode};
 use crate::{GetVpnInfoReq, GetVpnInfoResp, JoinNetworkGroupReq, JoinNetworkGroupResp, NodeVpnInfo, QueryNodeReq, QueryNodeResp, VpnTunnelId, VpnCmdCode, VpnCmdHeader};
 use crate::errors::{into_vpn_err, vpn_err, VpnErrorCode, VpnResult};
 use crate::sequence::{Sequence, SequenceGenerator};
 use crate::server::{NetworkGroupId, NetworkId, NodeId};
 
-pub struct VpnServerClient<T: CmdClient<u16, u8>> {
+pub struct VpnServerClient<M: CmdTunnelMeta,
+    S: CmdSend<M>,
+    G: SendGuard<M, S>,
+    T: CmdClient<u16, u8, M, S, G>> {
     cmd_client: Arc<T>,
     version: u8,
     conn_timeout: Duration,
@@ -20,9 +23,13 @@ pub struct VpnServerClient<T: CmdClient<u16, u8>> {
     join_resp_waiter: CallbackWaiter<Sequence, VpnResult<JoinNetworkGroupResp>>,
     get_vpn_info_resp_waiter: CallbackWaiter<Sequence, VpnResult<GetVpnInfoResp>>,
     query_node_resp_waiter: CallbackWaiter<Sequence, VpnResult<QueryNodeResp>>,
+    _p: std::marker::PhantomData<Arc<Mutex<(M, S, G)>>>,
 }
 
-impl<T: CmdClient<u16, u8>> VpnServerClient<T> {
+impl<M: CmdTunnelMeta,
+    S: CmdSend<M>,
+    G: SendGuard<M, S>,
+    T: CmdClient<u16, u8, M, S, G>> VpnServerClient<M, S, G, T> {
     pub fn new(cmd_client: Arc<T>, conn_timeout: Duration) -> Arc<Self> {
         let this = Arc::new(Self {
             cmd_client,
@@ -32,6 +39,7 @@ impl<T: CmdClient<u16, u8>> VpnServerClient<T> {
             join_resp_waiter: CallbackWaiter::new(),
             get_vpn_info_resp_waiter: CallbackWaiter::new(),
             query_node_resp_waiter: CallbackWaiter::new(),
+            _p: Default::default(),
         });
         this.register_cmd_handler();
         this
@@ -39,36 +47,36 @@ impl<T: CmdClient<u16, u8>> VpnServerClient<T> {
 
     fn register_cmd_handler(self: &Arc<Self>) {
         let this = self.clone();
-        self.cmd_client.register_cmd_handler(VpnCmdCode::JoinNetworkGroupResp as u8, move |_peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBodyRead| {
+        self.cmd_client.register_cmd_handler(VpnCmdCode::JoinNetworkGroupResp as u8, move |_peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
             let this = this.clone();
             async move {
                 let data = body.read_all().await?;
                 let resp = JoinNetworkGroupResp::clone_from_slice(data.as_slice()).map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
                 let _ = this.join_resp_waiter.set_result(resp.seq, Ok(resp));
-                Ok(())
+                Ok(None)
             }
         });
 
         let this = self.clone();
-        self.cmd_client.register_cmd_handler(VpnCmdCode::GetVpnInfoResp as u8, move |_peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBodyRead| {
+        self.cmd_client.register_cmd_handler(VpnCmdCode::GetVpnInfoResp as u8, move |_peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
             let this = this.clone();
             async move {
                 let data = body.read_all().await?;
                 let resp = GetVpnInfoResp::clone_from_slice(data.as_slice()).map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
                 let _ = this.get_vpn_info_resp_waiter.set_result(resp.seq, Ok(resp));
-                Ok(())
+                Ok(None)
             }
         });
 
         let this = self.clone();
-        self.cmd_client.register_cmd_handler(VpnCmdCode::QueryNodeResp as u8, move |_peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBodyRead| {
+        self.cmd_client.register_cmd_handler(VpnCmdCode::QueryNodeResp as u8, move |_peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
             let this = this.clone();
             async move {
                 let data = body.read_all().await?;
                 let resp = QueryNodeResp::clone_from_slice(data.as_slice()).map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
                 log::info!("recv query node resp: {:?}", resp.seq);
                 let _ = this.query_node_resp_waiter.set_result(resp.seq, Ok(resp));
-                Ok(())
+                Ok(None)
             }
         });
     }

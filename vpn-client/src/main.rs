@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use config::builder::DefaultState;
 use p2p_frame::endpoint::{Endpoint, Protocol};
-use p2p_frame::stack::{init_p2p, P2pConfig};
+use p2p_frame::stack::{create_p2p_env, P2pConfig};
 use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
 use sfo_http::http_server::HttpServerConfig;
 use sfo_http::tide_server::TideHttpServer;
@@ -65,9 +65,9 @@ async fn run_daemon() {
 
     let eps = vec![Endpoint::from((Protocol::Quic, SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, p2p_port))))];
     let p2p_config = P2pConfig::new(Arc::new(X509IdentityFactory), Arc::new(X509IdentityCertFactory), eps);
-    init_p2p(p2p_config).await.unwrap();
+    let p2p_env = create_p2p_env(p2p_config).await.unwrap();
 
-    init_p2p_vpn_client_manager(vpn_config_path.clone(), 34245, "1.0.0".to_string()).unwrap();
+    init_p2p_vpn_client_manager(p2p_env, vpn_config_path.clone(), 34245, "1.0.0".to_string()).unwrap();
 
     let setting = Arc::new(Setting::load(vpn_config_path.join("setting.toml").as_path()).await.unwrap());
     if let Some(records) = setting.get::<Vec<JoinRecord>>("joined_networks") {

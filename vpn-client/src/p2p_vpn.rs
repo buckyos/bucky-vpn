@@ -11,8 +11,8 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use p2p_frame::endpoint::{Endpoint, Protocol};
 use p2p_frame::p2p_identity::{P2pId, P2pIdentity, P2pIdentityFactory, P2pSn};
-use p2p_frame::sn::client::{SnCmdClient};
-use p2p_frame::stack::{create_p2p_stack, P2pStackConfig, P2pStackRef};
+use p2p_frame::sn::client::{SnClientTunnelFactory, SnCmdClient};
+use p2p_frame::stack::{create_p2p_stack, P2pEnvRef, P2pStackConfig, P2pStackRef};
 use p2p_frame::stream::{StreamListenerGuard, StreamRead, StreamWrite};
 use p2p_frame::x509;
 use p2p_frame::x509::X509IdentityFactory;
@@ -26,6 +26,9 @@ use vpn_frame::server::{NetworkGroupId, NodeId};
 use vpn_frame::serialize_u64_as_string;
 use vpn_frame::deserialize_u64_from_string;
 use base58::ToBase58;
+use p2p_frame::sn::types::{SnTunnelClassification, SnTunnelRead, SnTunnelWrite};
+use vpn_frame::cmd_server::ClassifiedCmdNodeSendGuard;
+use vpn_frame::cmd_server::client::{ClassifiedClientSendGuard, ClassifiedCmdSend, ClassifiedSendGuard};
 
 pub struct P2pVpnTunnelRecv {
     read: StreamRead,
@@ -134,17 +137,21 @@ impl VpnTunnelListener<P2pVpnTunnelRecv, P2pVpnTunnelSend> for P2pVpnTunnelListe
     }
 }
 
-pub type P2pVpnClientRef = Arc<VpnClient<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTunnelFactory, P2pVpnTunnelListener>>;
+pub type P2pCmdSend = ClassifiedCmdSend<SnTunnelClassification, (), SnTunnelRead, SnTunnelWrite, u16, u8>;
+pub type P2pCmdSendGuard = ClassifiedClientSendGuard<SnTunnelClassification, (), SnTunnelRead, SnTunnelWrite, SnClientTunnelFactory, u16, u8>;
+pub type P2pVpnClientRef = Arc<VpnClient<(), P2pCmdSend, P2pCmdSendGuard, SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTunnelFactory, P2pVpnTunnelListener>>;
 
 pub struct P2pVpnClientFactory {
+    p2p_env: P2pEnvRef,
     config_path: PathBuf,
     vpn_port: u16,
     client_version: String,
 }
 
 impl P2pVpnClientFactory {
-    pub fn new(config_path: PathBuf, vpn_port: u16, client_version: String) -> P2pVpnClientFactory {
+    pub fn new(p2p_env: P2pEnvRef, config_path: PathBuf, vpn_port: u16, client_version: String) -> P2pVpnClientFactory {
         P2pVpnClientFactory {
+            p2p_env,
             config_path,
             vpn_port,
             client_version,
@@ -153,7 +160,7 @@ impl P2pVpnClientFactory {
 }
 
 #[async_trait::async_trait]
-impl VpnClientFactory<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTunnelFactory, P2pVpnTunnelListener> for P2pVpnClientFactory {
+impl VpnClientFactory<(), P2pCmdSend, P2pCmdSendGuard, SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTunnelFactory, P2pVpnTunnelListener> for P2pVpnClientFactory {
     async fn create_client(&self, key: &str) -> VpnResult<P2pVpnClientRef> {
         let list: Vec<_> = key.split('_').collect();
         if list.len() != 2 {
@@ -195,7 +202,7 @@ impl VpnClientFactory<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTun
                                     SocketAddr::new(ip.ip(), sn_port)));
 
         let conn_timeout = Duration::from_secs(30);
-        let stack_config = P2pStackConfig::new(local_identity)
+        let stack_config = P2pStackConfig::new(self.p2p_env.clone(), local_identity)
             .set_conn_timeout(conn_timeout)
             .set_support_proxy(true)
             .add_sn(P2pSn::new(sn_id.clone(), sn_id.to_string(), vec![sn_ep]));
@@ -211,12 +218,12 @@ impl VpnClientFactory<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTun
     }
 }
 
-pub type P2pVpnClientManagerRef = Arc<VpnClientManager<SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTunnelFactory, P2pVpnTunnelListener, P2pVpnClientFactory>>;
+pub type P2pVpnClientManagerRef = Arc<VpnClientManager<(), P2pCmdSend, P2pCmdSendGuard, SnCmdClient, P2pVpnTunnelRecv, P2pVpnTunnelSend, P2pVpnTunnelFactory, P2pVpnTunnelListener, P2pVpnClientFactory>>;
 
 static VPN_CLIENT_MANAGER: OnceLock<P2pVpnClientManagerRef> = OnceLock::new();
-pub fn init_p2p_vpn_client_manager(config_path: PathBuf, vpn_port: u16, client_version: String) -> VpnResult<()> {
+pub fn init_p2p_vpn_client_manager(p2p_env: P2pEnvRef, config_path: PathBuf, vpn_port: u16, client_version: String) -> VpnResult<()> {
     VPN_CLIENT_MANAGER.get_or_init(|| {
-        Arc::new(VpnClientManager::new(Arc::new(P2pVpnClientFactory::new(config_path, vpn_port, client_version))))
+        Arc::new(VpnClientManager::new(Arc::new(P2pVpnClientFactory::new(p2p_env, config_path, vpn_port, client_version))))
     });
     Ok(())
 }

@@ -1,5 +1,5 @@
 use std::net::{IpAddr};
-use bucky_raw_codec::{RawDecode, RawEncode};
+use bucky_raw_codec::{RawDecode, RawEncode, RawFixedBytes};
 use serde::{Deserialize, Serialize};
 use sfo_cmd_server::CmdHeader;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -108,9 +108,14 @@ pub struct GetVpnInfoResp {
 
 #[derive(RawDecode, RawEncode)]
 pub struct DataHeader {
-    pub group_id: NetworkGroupId,
     pub network_id: NetworkId,
-    pub dest_ip: IpAddr,
+    pub pkg_len: u16,
+}
+
+impl RawFixedBytes for DataHeader {
+    fn raw_bytes() -> Option<usize> {
+        Some(NetworkId::raw_bytes().unwrap() + u16::raw_bytes().unwrap())
+    }
 }
 
 #[derive(RawDecode, RawEncode)]

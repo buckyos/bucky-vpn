@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex, Weak};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::time::Duration;
 use bucky_raw_codec::{RawConvertTo, RawDecode};
-use sfo_cmd_server::client::CmdClient;
+use sfo_cmd_server::client::{CmdClient, CmdSend, SendGuard};
+use sfo_cmd_server::CmdTunnelMeta;
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinHandle;
 use crate::client::{PacketRecv, VpnDevice, VpnServerClient};
@@ -68,13 +69,10 @@ impl<R: VpnTunnelRecv,
                 let all_send = self.tunnel_manager.get_all_send(self.network_group_id, self.network_id).await?;
                 for mut send in all_send {
                     let data_header = DataHeader {
-                        dest_ip: target,
                         network_id: self.network_id,
-                        group_id: self.network_group_id,
+                        pkg_len: packet.len() as u16,
                     };
                     let data_header = data_header.to_vec().map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
-                    let data_cmd = VpnCmdHeader::new(0, VpnCmdCode::Data as u8, (data_header.len() + packet.len()) as u16);
-                    send.write_all(data_cmd.to_vec().map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?.as_slice()).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
                     send.write_all(data_header.as_slice()).await.map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
                     send.write_all(packet).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
                     send.flush().await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
@@ -84,14 +82,10 @@ impl<R: VpnTunnelRecv,
         }
         let mut send = self.tunnel_manager.get_send(self.network_group_id, self.network_id, target).await?;
         let data_header = DataHeader {
-            dest_ip: target,
             network_id: self.network_id,
-            group_id: self.network_group_id,
+            pkg_len: packet.len() as u16,
         };
         let data_header = data_header.to_vec().map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
-        let data_cmd = VpnCmdHeader::new(0, VpnCmdCode::Data as u8, (data_header.len() + packet.len()) as u16);
-
-        send.write_all(data_cmd.to_vec().map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?.as_slice()).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
         send.write_all(data_header.as_slice()).await.map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
         send.write_all(packet).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
         send.flush().await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
@@ -100,20 +94,26 @@ impl<R: VpnTunnelRecv,
 }
 
 struct ClientTunnelPkgRecv<
-    T: CmdClient<u16, u8>,
+    M: CmdTunnelMeta,
+    CS: CmdSend<M>,
+    G: SendGuard<M, CS>,
+    T: CmdClient<u16, u8, M, CS, G>,
     R: VpnTunnelRecv,
     S: VpnTunnelSend,
     F: VpnTunnelFactory<R, S>,
     L: VpnTunnelListener<R, S>> {
-    vpn_client: Weak<VpnClient<T, R, S, F, L>>
+    vpn_client: Weak<VpnClient<M, CS, G, T, R, S, F, L>>
 }
 
-impl<T: CmdClient<u16, u8>,
+impl<M: CmdTunnelMeta,
+    CS: CmdSend<M>,
+    G: SendGuard<M, CS>,
+    T: CmdClient<u16, u8, M, CS, G>,
     R: VpnTunnelRecv,
     S: VpnTunnelSend,
     F: VpnTunnelFactory<R, S>,
-    L: VpnTunnelListener<R, S>> ClientTunnelPkgRecv<T, R, S, F, L> {
-    pub fn new(vpn_client: Weak<VpnClient<T, R, S, F, L>>) -> Self {
+    L: VpnTunnelListener<R, S>> ClientTunnelPkgRecv<M, CS, G, T, R, S, F, L> {
+    pub fn new(vpn_client: Weak<VpnClient<M, CS, G, T, R, S, F, L>>) -> Self {
         Self {
             vpn_client,
         }
@@ -121,26 +121,28 @@ impl<T: CmdClient<u16, u8>,
 }
 
 #[async_trait::async_trait]
-impl<T: CmdClient<u16, u8>,
+impl<M: CmdTunnelMeta,
+    CS: CmdSend<M>,
+    G: SendGuard<M, CS>,
+    T: CmdClient<u16, u8, M, CS, G>,
     R: VpnTunnelRecv,
     S: VpnTunnelSend,
     F: VpnTunnelFactory<R, S>,
-    L: VpnTunnelListener<R, S>> TunnelPkgRecv for ClientTunnelPkgRecv<T, R, S, F, L> {
-    async fn on_recv(&self, data: Vec<u8>) -> VpnResult<()> {
-        let (header, pkg) = DataHeader::raw_decode(data.as_slice()).map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
+    L: VpnTunnelListener<R, S>> TunnelPkgRecv for ClientTunnelPkgRecv<M, CS, G, T, R, S, F, L> {
+    async fn on_recv(&self, network_id: NetworkId, data: Vec<u8>) -> VpnResult<()> {
         if let Some(vpn_client) = self.vpn_client.upgrade() {
             let device = {
                 let vpn_devices = vpn_client.vpn_devices.lock().unwrap();
-                if let Some(device) = vpn_devices.as_ref().unwrap().get(&header.network_id) {
+                if let Some(device) = vpn_devices.as_ref().unwrap().get(&network_id) {
                     device.get_send()
                 } else {
                     None
                 }
             };
             if let Some(device) = device {
-                device.send(pkg).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+                device.send(data.as_slice()).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
             } else {
-                log::error!("device network {} ip {} unavailable", header.network_id, header.dest_ip.to_string());
+                log::error!("device network {} unavailable", network_id);
             }
             Ok(())
         } else {
@@ -148,8 +150,14 @@ impl<T: CmdClient<u16, u8>,
         }
     }
 }
-pub struct VpnClient<T: CmdClient<u16, u8>, R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, L: VpnTunnelListener<R, S>> {
-    server_client: Arc<VpnServerClient<T>>,
+pub struct VpnClient<M: CmdTunnelMeta,
+    CS: CmdSend<M>,
+    G: SendGuard<M, CS>,
+    T: CmdClient<u16, u8, M, CS, G>,
+    R: VpnTunnelRecv,
+    S: VpnTunnelSend,
+    F: VpnTunnelFactory<R, S>, L: VpnTunnelListener<R, S>> {
+    server_client: Arc<VpnServerClient<M, CS, G, T>>,
     vpn_devices: Mutex<Option<HashMap<NetworkId, VpnDevice<DevicePkgRecv<R, S, F, L>>>>>,
     tunnel_manager: Mutex<Option<Arc<TunnelManager<R, S, F, L>>>>,
     run_handle: Mutex<Option<JoinHandle<()>>>,
@@ -158,8 +166,15 @@ pub struct VpnClient<T: CmdClient<u16, u8>, R: VpnTunnelRecv, S: VpnTunnelSend, 
     client_version: String,
 }
 
-impl<T: CmdClient<u16, u8>, R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, L: VpnTunnelListener<R, S>> VpnClient<T, R, S, F, L> {
-    pub fn new(server_client: Arc<VpnServerClient<T>>, tunnel_factory: Arc<F>, tunnel_listener: Arc<L>, client_version: String) -> Arc<Self> {
+impl<M: CmdTunnelMeta,
+    CS: CmdSend<M>,
+    G: SendGuard<M, CS>,
+    T: CmdClient<u16, u8, M, CS, G>,
+    R: VpnTunnelRecv,
+    S: VpnTunnelSend,
+    F: VpnTunnelFactory<R, S>,
+    L: VpnTunnelListener<R, S>> VpnClient<M, CS, G, T, R, S, F, L> {
+    pub fn new(server_client: Arc<VpnServerClient<M, CS, G, T>>, tunnel_factory: Arc<F>, tunnel_listener: Arc<L>, client_version: String) -> Arc<Self> {
         let this = Arc::new(Self {
             server_client: server_client.clone(),
             vpn_devices: Mutex::new(Some(HashMap::new())),
@@ -259,11 +274,14 @@ impl<T: CmdClient<u16, u8>, R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFact
     }
 }
 
-impl<T: CmdClient<u16, u8>,
+impl<M: CmdTunnelMeta,
+    CS: CmdSend<M>,
+    G: SendGuard<M, CS>,
+    T: CmdClient<u16, u8, M, CS, G>,
     R: VpnTunnelRecv,
     S: VpnTunnelSend,
     F: VpnTunnelFactory<R, S>,
-    L: VpnTunnelListener<R, S>> Drop for VpnClient<T, R, S, F, L> {
+    L: VpnTunnelListener<R, S>> Drop for VpnClient<M, CS, G, T, R, S, F, L> {
     fn drop(&mut self) {
         log::info!("Vpn client dropped");
         let mut run_handle = self.run_handle.lock().unwrap();
