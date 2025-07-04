@@ -47,7 +47,17 @@ impl VpnTunnelRecv for P2pVpnTunnelRecv {
 
 impl AsyncRead for P2pVpnTunnelRecv {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(self.read.deref_mut()).poll_read(cx, buf)
+        match Pin::new(self.read.deref_mut()).poll_read(cx, buf) {
+            Poll::Ready(ret) => {
+                if ret.is_ok() {
+                    log::trace!("session {} read from {} len {} success", self.read.session_id(), self.read.remote_id().to_string(), buf.filled().len());
+                }
+                Poll::Ready(ret)
+            }
+            Poll::Pending => {
+                Poll::Pending
+            }
+        }
     }
 }
 
@@ -75,7 +85,17 @@ impl VpnTunnelSend for P2pVpnTunnelSend {
 
 impl AsyncWrite for P2pVpnTunnelSend {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, Error>> {
-        Pin::new(self.write.deref_mut()).poll_write(cx, buf)
+        match Pin::new(self.write.deref_mut()).poll_write(cx, buf) {
+            Poll::Ready(ret) => {
+                if ret.is_ok() {
+                    log::trace!("session {} write to {} len {} success", self.write.session_id(), self.write.remote_id().to_string(), buf.len());
+                }
+                Poll::Ready(ret)
+            },
+            Poll::Pending => {
+                Poll::Pending
+            }
+        }
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
@@ -133,6 +153,7 @@ impl P2pVpnTunnelListener {
 impl VpnTunnelListener<P2pVpnTunnelRecv, P2pVpnTunnelSend> for P2pVpnTunnelListener {
     async fn accept(&self) -> VpnResult<(P2pVpnTunnelRecv, P2pVpnTunnelSend)> {
         let (read, write) = self.listener.accept().await.map_err(into_vpn_err!(VpnErrorCode::Failed))?;
+        log::info!("accept a new connection {}", read.session_id());
         Ok((P2pVpnTunnelRecv::new(read), P2pVpnTunnelSend::new(write)))
     }
 }

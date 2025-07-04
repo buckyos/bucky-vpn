@@ -10,6 +10,7 @@ use std::fs::create_dir_all;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use config::builder::DefaultState;
 use p2p_frame::endpoint::{Endpoint, Protocol};
 use p2p_frame::stack::{create_p2p_env, P2pConfig};
@@ -64,7 +65,8 @@ async fn run_daemon() {
     }
 
     let eps = vec![Endpoint::from((Protocol::Quic, SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, p2p_port))))];
-    let p2p_config = P2pConfig::new(Arc::new(X509IdentityFactory), Arc::new(X509IdentityCertFactory), eps);
+    let p2p_config = P2pConfig::new(Arc::new(X509IdentityFactory), Arc::new(X509IdentityCertFactory), eps)
+        .set_quic_idle_time(Duration::from_secs(20));
     let p2p_env = create_p2p_env(p2p_config).await.unwrap();
 
     init_p2p_vpn_client_manager(p2p_env, vpn_config_path.clone(), 34245, "1.0.0".to_string()).unwrap();

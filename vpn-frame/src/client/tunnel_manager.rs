@@ -93,6 +93,13 @@ impl<S: VpnTunnelSend> PkgSend<S> {
     }
 }
 
+impl<S: VpnTunnelSend> Drop for PkgSend<S> {
+    fn drop(&mut self) {
+        log::info!("PkgSend Drop");
+        self.recv_handle.abort();
+    }
+}
+
 impl<S: VpnTunnelSend> Worker for PkgSend<S> {
     fn is_work(&self) -> bool {
         if self.is_work {
@@ -170,11 +177,8 @@ impl<S: VpnTunnelSend> PendingSendCache<S> {
         }
 
         if let Some(index) = index {
-            let mut send = None;
+            let send = Some(cache.remove(index));
             for i in delete_list.iter().rev() {
-                if *i < index && send.is_none() {
-                    send = Some(cache.remove(index));
-                }
                 cache.remove(*i);
             }
             send
@@ -213,7 +217,7 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
 
     fn create_handle(mut recv: R, recv_listener: Arc<dyn TunnelPkgRecv>) -> JoinHandle<()> {
         let handle = spawn(async move {
-            let _: VpnResult<()> = async move {
+            let ret: VpnResult<()> = async move {
                 loop {
                     let mut header = vec![0u8; DataHeader::raw_bytes().unwrap()];
                     let n = recv.read_exact(header.as_mut()).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
@@ -233,6 +237,9 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
                 }
                 Ok(())
             }.await;
+            if let Err(e) = ret {
+                log::error!("vpn recv handle exit {}", e);
+            }
         });
         handle
     }
@@ -243,6 +250,7 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
     async fn create(&self) -> PoolResult<PkgSend<S>> {
         {
             if let Some(send) = self.pending_sends.get_pending_send(&self.target) {
+                log::info!("get pending send");
                 return Ok(send);
             }
         }
