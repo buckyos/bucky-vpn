@@ -1,5 +1,5 @@
 #define AppName "BuckyVPN"
-#define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 
 [Setup]
 AppName={#AppName}
