@@ -8,95 +8,221 @@ import 'api.dart';
 import 'joined_nodes_page.dart';
 
 class Home extends StatefulWidget {
-  const Home({Key? key}) : super(key: key);
+  const Home({super.key});
 
   @override
-  createState() => _HomeState();
+  State<Home> createState() => _HomeState();
 }
 
 class _HomeState extends State<Home> with SingleTickerProviderStateMixin {
   UserInfo? _userInfo;
   Timer? _timer;
   late TabController _tabController;
+  int _activeTabIndex = 0;
 
   @override
   void initState() {
     super.initState();
-    Api.instance().getUserInfo().then((ret) {
-      var (result, resp) = ret;
-      if (result.isSuccess) {
-        _userInfo = resp;
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(() {
+      if (!mounted) {
+        return;
+      }
+      if (_activeTabIndex != _tabController.index) {
         setState(() {
-
+          _activeTabIndex = _tabController.index;
         });
-      } else {
-        if (mounted) {
-          context.go('/login');
-        }
       }
     });
-    _timer = Timer.periodic(Duration(seconds: 3000), (_timer) {
+
+    Api.instance().getUserInfo().then((ret) {
+      final (result, resp) = ret;
+      if (!mounted) {
+        return;
+      }
+      if (result.isSuccess) {
+        setState(() {
+          _userInfo = resp;
+        });
+      } else {
+        context.go('/login');
+      }
+    });
+
+    _timer = Timer.periodic(const Duration(seconds: 3000), (_) {
       Api.instance().refreshSession();
     });
-    _tabController = TabController(length: 2, vsync: this);
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _tabController.dispose();
     super.dispose();
+  }
+
+  void _logout() {
+    if (mounted) {
+      context.go('/login');
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     if (_userInfo == null) {
       return const Scaffold(
-        backgroundColor: Colors.white,
-        body: Center(
-          child: CircularProgressIndicator(),
-        ),
+        body: Center(child: CircularProgressIndicator()),
       );
-    } else {
-      return Scaffold(
-        backgroundColor: Colors.white,
-        body: Center(
-            child: Container(
-              width: 1024,
-              color: Colors.white,
-              child: Column(
-              mainAxisAlignment: MainAxisAlignment.start,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                const SizedBox(height: 30),
-                SelectableText(
-                  "Server Id: ${_userInfo!.serverId}",
-                  style: const TextStyle(fontSize: 30),
+    }
+
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0xFFEFF6F8), Color(0xFFF7FAFC)],
+          ),
+        ),
+        child: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1180),
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.fromLTRB(22, 20, 18, 20),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x100E2A3A),
+                            blurRadius: 20,
+                            offset: Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Server Dashboard',
+                                  style: TextStyle(
+                                    fontSize: 28,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFF0E2A3A),
+                                  ),
+                                ),
+                                const SizedBox(height: 10),
+                                SelectableText(
+                                  'Server ID: ${_userInfo!.serverId}',
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    color: Color(0xFF4B6675),
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                SelectableText(
+                                  'Network Group ID: ${_userInfo!.networkId}',
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    color: Color(0xFF4B6675),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          FilledButton.icon(
+                            onPressed: _logout,
+                            icon: const Icon(Icons.logout, size: 18),
+                            label: const Text('Logout'),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: const Color(0xFF14425A),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Expanded(
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: const [
+                            BoxShadow(
+                              color: Color(0x100E2A3A),
+                              blurRadius: 20,
+                              offset: Offset(0, 8),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          children: [
+                            TabBar(
+                              controller: _tabController,
+                              onTap: (index) {
+                                if (_activeTabIndex != index) {
+                                  setState(() {
+                                    _activeTabIndex = index;
+                                  });
+                                }
+                              },
+                              isScrollable: true,
+                              tabAlignment: TabAlignment.start,
+                              indicatorColor: const Color(0xFF0A7E8C),
+                              indicatorWeight: 2.5,
+                              indicatorSize: TabBarIndicatorSize.label,
+                              dividerColor: const Color(0xFFD9E6EC),
+                              labelColor: const Color(0xFF0E2A3A),
+                              labelStyle: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                              ),
+                              unselectedLabelColor: const Color(0xFF4B6675),
+                              unselectedLabelStyle: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              tabs: const [
+                                Tab(text: 'Joined Nodes'),
+                                Tab(text: 'My Networks'),
+                              ],
+                            ),
+                            const SizedBox(height: 14),
+                            Expanded(
+                              child: IndexedStack(
+                                index: _activeTabIndex,
+                                children: const [
+                                  JoinedNodesPage(),
+                                  NetworksPage()
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 30),
-                SelectableText(
-                  "Network Id: ${_userInfo!.networkId}",
-                  style: const TextStyle(fontSize: 30),
-                ),
-                const SizedBox(height: 30),
-                Expanded(
-                    child: Column(
-                      children: [
-                        TabBar(controller: _tabController, tabs: [
-                          Tab(text: "Joined Nodes"),
-                          Tab(text: "My Networks"),
-                        ]),
-                        Expanded(
-                            child: TabBarView(controller: _tabController, children: [
-                              JoinedNodesPage(),
-                              NetworksPage(),
-                            ]))
-                      ],
-                    ))
-              ],
+              ),
             ),
           ),
         ),
-      );
-    }
+      ),
+    );
   }
 }

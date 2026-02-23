@@ -97,7 +97,7 @@ impl<M: CmdTunnelMeta,
 
         let ret = future.await.map_err(into_vpn_err!(VpnErrorCode::Timeout))??;
         if ret.result != 0 {
-            Err(vpn_err!(VpnErrorCode::from_u8(ret.result).unwrap_or(VpnErrorCode::Failed)))
+            Err(vpn_err!(VpnErrorCode::Failed, "result = {}", ret.result))
         } else {
             Ok(())
         }
@@ -115,7 +115,7 @@ impl<M: CmdTunnelMeta,
 
         let ret = future.await.map_err(into_vpn_err!(VpnErrorCode::Timeout))??;
         if ret.result != 0 {
-            Err(vpn_err!(VpnErrorCode::from_u8(ret.result).unwrap_or(VpnErrorCode::Failed)))
+            Err(vpn_err!(VpnErrorCode::Failed, "result = {}", ret.result))
         } else {
             Ok((ret.info_version, ret.vpn_list))
         }

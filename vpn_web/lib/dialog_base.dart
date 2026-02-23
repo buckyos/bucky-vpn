@@ -1,25 +1,24 @@
 import 'package:flutter/material.dart';
+
 import 'dialog_button.dart';
-
-
-typedef ContentBuilder = Widget Function(BuildContext context);
 
 abstract class DialogBase extends StatelessWidget {
   final String title;
-  VoidCallback? onConfirm;
-  VoidCallback? onCancel;
+  final VoidCallback? onConfirm;
+  final VoidCallback? onCancel;
   final String? cancelText;
   final String? confirmText;
-   bool pop;
+  final bool pop;
 
-  DialogBase(
-      {super.key,
-        this.onConfirm,
-        this.onCancel,
-        required this.title,
-        this.cancelText,
-        this.confirmText,
-         this.pop = true});
+  const DialogBase({
+    super.key,
+    this.onConfirm,
+    this.onCancel,
+    required this.title,
+    this.cancelText,
+    this.confirmText,
+    this.pop = true,
+  });
 
   @protected
   Widget buildContent(BuildContext context);
@@ -27,54 +26,64 @@ abstract class DialogBase extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Dialog(
-      insetPadding: const EdgeInsets.symmetric(horizontal: 14.0),
-      child: SizedBox(
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(10.0),
-          ),
-          padding: const EdgeInsets.only(top: 17.0, bottom: 34),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Text(
-                title,
-                style:
-                const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 18),
+      backgroundColor: Colors.transparent,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 460),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x240E2A3A),
+              blurRadius: 24,
+              offset: Offset(0, 10),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF0E2A3A),
               ),
-              buildContent(context),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: <Widget>[
-                  DialogButton(
-                    onPressed: () {
-                      if (pop) {
-                        Navigator.of(context).pop();
-                      }
-                      if (onCancel != null) {
-                        onCancel!();
-                      }
-                    },
-                    text: cancelText == null ? "Cancel" : cancelText!,
-                  ),
-                  DialogButton(
-                    onPressed: () {
-                      if (pop) {
-                        Navigator.of(context).pop();
-                      }
-                      if (onConfirm != null) {
-                        onConfirm!();
-                      }
-                    },
-                    isDefault: true,
-                    text: confirmText == null ? "Ok" : confirmText!,
-                  ),
-                ],
-              ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 10),
+            buildContent(context),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                DialogButton(
+                  onPressed: () {
+                    if (pop) {
+                      Navigator.of(context).pop();
+                    }
+                    onCancel?.call();
+                  },
+                  text: cancelText ?? 'Cancel',
+                  width: 96,
+                ),
+                const SizedBox(width: 10),
+                DialogButton(
+                  onPressed: () {
+                    if (pop) {
+                      Navigator.of(context).pop();
+                    }
+                    onConfirm?.call();
+                  },
+                  isDefault: true,
+                  text: confirmText ?? 'Ok',
+                  width: 96,
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );

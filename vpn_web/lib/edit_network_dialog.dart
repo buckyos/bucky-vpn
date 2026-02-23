@@ -1,15 +1,23 @@
 import 'package:flutter/material.dart';
-import 'package:vpn_web/dialog_button.dart';
+
+import 'dialog_button.dart';
 
 class EditNetworkDialog extends StatefulWidget {
   final String? name;
   final String? address;
   final int? mask;
   final Function(String, String, int) onSave;
-  const EditNetworkDialog({super.key, this.name, this.address, this.mask, required this.onSave});
+
+  const EditNetworkDialog({
+    super.key,
+    this.name,
+    this.address,
+    this.mask,
+    required this.onSave,
+  });
 
   @override
-  createState() => _EditNetworkDialogState();
+  State<EditNetworkDialog> createState() => _EditNetworkDialogState();
 }
 
 class _EditNetworkDialogState extends State<EditNetworkDialog> {
@@ -20,65 +28,105 @@ class _EditNetworkDialogState extends State<EditNetworkDialog> {
   @override
   void initState() {
     super.initState();
-    _controllerName = TextEditingController(text: widget.name ?? "");
-    _controllerAddress = TextEditingController(text: widget.address ?? "");
-    _controllerMask = TextEditingController(text: widget.mask?.toString() ?? "");
+    _controllerName = TextEditingController(text: widget.name ?? '');
+    _controllerAddress = TextEditingController(text: widget.address ?? '');
+    _controllerMask =
+        TextEditingController(text: widget.mask?.toString() ?? '');
+  }
+
+  @override
+  void dispose() {
+    _controllerName.dispose();
+    _controllerAddress.dispose();
+    _controllerMask.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Dialog(
+      backgroundColor: Colors.transparent,
       child: Container(
-        width: 400,
-        height: 300,
-        padding: EdgeInsets.only(left: 30.0, top: 50, right: 30, bottom: 50),
+        constraints: const BoxConstraints(maxWidth: 460),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+        ),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.name == null ? 'Create Network' : 'Edit Network',
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF0E2A3A),
+              ),
+            ),
+            const SizedBox(height: 16),
             TextField(
               controller: _controllerName,
-              decoration: const InputDecoration(
-                labelText: 'Network Name',
-              ),
+              decoration: _inputDecoration('Network Name'),
             ),
+            const SizedBox(height: 10),
             TextField(
               controller: _controllerAddress,
-              decoration: const InputDecoration(
-                labelText: 'Network Address',
-              ),
+              decoration: _inputDecoration('Network Address'),
             ),
+            const SizedBox(height: 10),
             TextField(
               controller: _controllerMask,
-              decoration: const InputDecoration(
-                labelText: 'Network Mask',
-              ),
+              keyboardType: TextInputType.number,
+              decoration: _inputDecoration('Network Mask'),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 18),
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              mainAxisAlignment: MainAxisAlignment.end,
               children: [
                 DialogButton(
-                  onPressed: () {
-                    Navigator.of(context).pop();
-                    if (_controllerName.text.isNotEmpty && _controllerAddress.text.isNotEmpty && _controllerMask.text.isNotEmpty) {
-                      widget.onSave(_controllerName.text, _controllerAddress.text, int.parse(_controllerMask.text));
-                    }
-                  },
-                  text: 'Save',
+                  onPressed: () => Navigator.of(context).pop(),
+                  text: 'Cancel',
+                  width: 98,
                 ),
+                const SizedBox(width: 10),
                 DialogButton(
                   onPressed: () {
+                    final mask = int.tryParse(_controllerMask.text);
+                    if (_controllerName.text.isEmpty ||
+                        _controllerAddress.text.isEmpty ||
+                        mask == null) {
+                      return;
+                    }
                     Navigator.of(context).pop();
+                    widget.onSave(
+                      _controllerName.text,
+                      _controllerAddress.text,
+                      mask,
+                    );
                   },
-                  text: 'Cancel',
-                )
+                  isDefault: true,
+                  text: 'Save',
+                  width: 98,
+                ),
               ],
             )
-            ,
           ],
         ),
       ),
     );
   }
 
+  InputDecoration _inputDecoration(String label) {
+    return InputDecoration(
+      labelText: label,
+      filled: true,
+      fillColor: const Color(0xFFF7FBFD),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide.none,
+      ),
+    );
+  }
 }

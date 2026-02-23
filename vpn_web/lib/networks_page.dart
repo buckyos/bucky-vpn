@@ -1,43 +1,78 @@
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
-import 'package:vpn_web/dialog_button.dart';
-import 'package:vpn_web/edit_network_dialog.dart';
-import 'package:vpn_web/network_members_page.dart';
-import 'package:vpn_web/prompt_dialog.dart';
 
 import 'api.dart';
+import 'edit_network_dialog.dart';
+import 'network_members_page.dart';
+import 'prompt_dialog.dart';
 
 class NetworksPage extends StatefulWidget {
   const NetworksPage({super.key});
 
   @override
-  createState() => _NetworksPageState();
+  State<NetworksPage> createState() => _NetworksPageState();
 }
 
 class _NetworksPageState extends State<NetworksPage> {
   List<Network>? _networks;
 
-  void refreshNetworks() {
-    Api.instance().getNetworks().then((ret) {
-      var (result, resp) = ret;
-      if (result.isSuccess) {
-        if (mounted) {
-          setState(() {
-            _networks = resp ?? [];
-          });
-        }
-      } else {
-        Fluttertoast.showToast(
-            msg: result.msg ?? "Read networks failed",
-            toastLength: Toast.LENGTH_LONG,
-            gravity: ToastGravity.TOP,
-            backgroundColor: Colors.red,
-            textColor: Colors.white,
-            fontSize: 16.0,
-            timeInSecForIosWeb: 5);
-      }
-    });
+  Widget _actionLink({
+    required String label,
+    required VoidCallback onTap,
+    Color color = const Color(0xFF0A7E8C),
+  }) {
+    var isHovered = false;
+
+    return StatefulBuilder(
+      builder: (context, setState) {
+        return MouseRegion(
+          cursor: SystemMouseCursors.click,
+          onEnter: (_) => setState(() => isHovered = true),
+          onExit: (_) => setState(() => isHovered = false),
+          child: GestureDetector(
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: isHovered
+                      ? Color.lerp(color, Colors.black, 0.28)!
+                      : color,
+                  decoration: TextDecoration.underline,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
+
+  Future<void> refreshNetworks() async {
+    final (result, resp) = await Api.instance().getNetworks();
+    if (!mounted) {
+      return;
+    }
+
+    if (result.isSuccess) {
+      setState(() {
+        _networks = resp ?? [];
+      });
+      return;
+    }
+
+    Fluttertoast.showToast(
+      msg: result.msg ?? 'Read networks failed',
+      toastLength: Toast.LENGTH_LONG,
+      gravity: ToastGravity.TOP,
+      backgroundColor: Colors.red,
+      textColor: Colors.white,
+      fontSize: 16.0,
+      timeInSecForIosWeb: 5,
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -47,252 +82,218 @@ class _NetworksPageState extends State<NetworksPage> {
   @override
   Widget build(BuildContext context) {
     if (_networks == null) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
-    } else {
-      return Scaffold(
-        backgroundColor: Colors.white,
-        body: Container(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: <Widget>[
-              SizedBox(
-                height: 10,
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return Column(
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.device_hub_outlined,
+                size: 18, color: Color(0xFF4B6675)),
+            const SizedBox(width: 8),
+            const Text(
+              'Networks',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF204153),
               ),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.start,
-                children: [
-                  DialogButton(
-                    onPressed: () async {
-                      showDialog(
-                          context: context,
-                          builder: (context) {
-                            return EditNetworkDialog(
-                              name: "test",
-                              address: "192.168.18.0",
-                              mask: 24,
-                              onSave: (name, address, mask) async {
-                                var result = await Api.instance()
-                                    .addNetwork(name, address, mask);
-                                if (result.isSuccess) {
-                                  var (ret, resp) =
-                                      await Api.instance().getNetworks();
-                                  if (ret.isSuccess) {
-                                    if (mounted) {
-                                      setState(() {
-                                        _networks = resp ?? [];
-                                      });
-                                    }
-                                  }
-                                } else {
-                                  Fluttertoast.showToast(
-                                      msg: result.msg ?? "New network failed",
-                                      toastLength: Toast.LENGTH_LONG,
-                                      gravity: ToastGravity.TOP,
-                                      backgroundColor: Colors.red,
-                                      textColor: Colors.white,
-                                      fontSize: 16.0,
-                                      timeInSecForIosWeb: 5);
-                                }
-                              },
-                            );
-                          });
+            ),
+            const Spacer(),
+            FilledButton.icon(
+              onPressed: () {
+                showDialog(
+                  context: context,
+                  builder: (_) => EditNetworkDialog(
+                    name: '',
+                    address: '192.168.18.0',
+                    mask: 24,
+                    onSave: (name, address, mask) async {
+                      final result =
+                          await Api.instance().addNetwork(name, address, mask);
+                      if (result.isSuccess) {
+                        refreshNetworks();
+                        return;
+                      }
+                      Fluttertoast.showToast(
+                        msg: result.msg ?? 'New network failed',
+                        toastLength: Toast.LENGTH_LONG,
+                        gravity: ToastGravity.TOP,
+                        backgroundColor: Colors.red,
+                        textColor: Colors.white,
+                        fontSize: 16.0,
+                        timeInSecForIosWeb: 5,
+                      );
                     },
-                    text: 'New',
-                  )
-                ],
-              ),
-              const SizedBox(
-                height: 10,
-              ),
-              Expanded(
-                  child: Table(
-                      border: TableBorder.all(color: Colors.black),
-                      defaultVerticalAlignment:
-                          TableCellVerticalAlignment.middle,
-                      columnWidths: {
-                    0: FixedColumnWidth(120),
-                    1: FlexColumnWidth(),
-                    2: FixedColumnWidth(120),
-                    3: FixedColumnWidth(200),
-                  },
-                      children: [
-                    TableRow(
-                      children: [
-                        TableCell(
-                            child: Center(
-                          child: Text("Name"),
-                        )),
-                        TableCell(
-                            child: Center(
-                          child: Text("Address"),
-                        )),
-                        TableCell(
-                            child: Center(
-                          child: Text("Mask"),
-                        )),
-                        TableCell(
-                            child: Center(
-                          child: Text("Action"),
-                        )),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('New Network'),
+            ),
+            const SizedBox(width: 10),
+            OutlinedButton.icon(
+              onPressed: refreshNetworks,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('Refresh'),
+            ),
+            const SizedBox(width: 10),
+            Text(
+              '${_networks!.length} networks',
+              style: const TextStyle(color: Color(0xFF4B6675)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Expanded(
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FBFD),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFD9E6EC)),
+            ),
+            child: LayoutBuilder(
+              builder: (context, constraints) => SingleChildScrollView(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                    child: DataTable(
+                      columns: const [
+                        DataColumn(label: Text('Name')),
+                        DataColumn(label: Text('Address')),
+                        DataColumn(label: Text('Mask')),
+                        DataColumn(label: Text('Action')),
                       ],
+                      rows: _networks!
+                          .map(
+                            (network) => DataRow(
+                              cells: [
+                                DataCell(Text(network.name)),
+                                DataCell(Text(network.ipSeg ?? '-')),
+                                DataCell(Text(network.mask.toString())),
+                                DataCell(
+                                  Wrap(
+                                    spacing: 8,
+                                    children: [
+                                      _actionLink(
+                                        label: 'Members',
+                                        onTap: () {
+                                          showDialog(
+                                            context: context,
+                                            builder: (_) => Dialog(
+                                              backgroundColor:
+                                                  Colors.transparent,
+                                              child: Container(
+                                                constraints:
+                                                    const BoxConstraints(
+                                                        maxWidth: 760),
+                                                padding:
+                                                    const EdgeInsets.all(12),
+                                                decoration: BoxDecoration(
+                                                  color: Colors.white,
+                                                  borderRadius:
+                                                      BorderRadius.circular(16),
+                                                ),
+                                                child: NetworkMembersPage(
+                                                    network: network),
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                      _actionLink(
+                                        label: 'Edit',
+                                        onTap: () {
+                                          showDialog(
+                                            context: context,
+                                            builder: (_) => EditNetworkDialog(
+                                              name: network.name,
+                                              address: network.ipSeg,
+                                              mask: network.mask,
+                                              onSave:
+                                                  (name, address, mask) async {
+                                                final result =
+                                                    await Api.instance()
+                                                        .updateNetwork(
+                                                  network.id,
+                                                  name,
+                                                  address,
+                                                  mask,
+                                                );
+                                                if (result.isSuccess) {
+                                                  refreshNetworks();
+                                                  return;
+                                                }
+                                                Fluttertoast.showToast(
+                                                  msg: result.msg ??
+                                                      'Edit network failed',
+                                                  toastLength:
+                                                      Toast.LENGTH_LONG,
+                                                  gravity: ToastGravity.TOP,
+                                                  backgroundColor: Colors.red,
+                                                  textColor: Colors.white,
+                                                  fontSize: 16.0,
+                                                  timeInSecForIosWeb: 5,
+                                                );
+                                              },
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                      _actionLink(
+                                        label: 'Delete',
+                                        color: const Color(0xFFB42318),
+                                        onTap: () {
+                                          showDialog(
+                                            context: context,
+                                            builder: (_) => PromptDialog(
+                                              promptTitle: 'Delete Network',
+                                              prompt:
+                                                  'Are you sure to delete network ${network.name}?',
+                                              onConfirm: () async {
+                                                final result =
+                                                    await Api.instance()
+                                                        .deleteNetwork(
+                                                            network.id);
+                                                if (result.isSuccess) {
+                                                  refreshNetworks();
+                                                  return;
+                                                }
+                                                Fluttertoast.showToast(
+                                                  msg: result.msg ??
+                                                      'Delete network failed',
+                                                  toastLength:
+                                                      Toast.LENGTH_LONG,
+                                                  gravity: ToastGravity.TOP,
+                                                  backgroundColor: Colors.red,
+                                                  textColor: Colors.white,
+                                                  fontSize: 16.0,
+                                                  timeInSecForIosWeb: 5,
+                                                );
+                                              },
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )
+                          .toList(),
                     ),
-                    for (var network in _networks!)
-                      TableRow(
-                        children: [
-                          TableCell(
-                              child: Center(
-                            child: Text(network.name),
-                          )),
-                          TableCell(
-                              child: Center(
-                            child: Text(network.ipSeg!),
-                          )),
-                          TableCell(
-                              child: Center(
-                            child: Text(network.mask.toString()),
-                          )),
-                          TableCell(
-                              child: Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceAround,
-                                  children: [
-                                MouseRegion(
-                                    cursor: SystemMouseCursors.click,
-                                    child: InkWell(
-                                        onTap: () async {
-                                          showDialog(
-                                              context: context,
-                                              builder: (context) {
-                                                return Dialog(
-                                                  child: SizedBox(
-                                                    width: 1024,
-                                                    child: NetworkMembersPage(
-                                                        network: network),
-                                                  ),
-                                                );
-                                              });
-                                        },
-                                        child: Text(
-                                          "members",
-                                          style: TextStyle(
-                                              color: Colors.blue,
-                                              decoration:
-                                                  TextDecoration.underline),
-                                        ))),
-                                    MouseRegion(
-                                        cursor: SystemMouseCursors.click,
-                                        child: InkWell(
-                                            onTap: () async {
-                                              showDialog(
-                                                  context: context,
-                                                  builder: (context) {
-                                                    return EditNetworkDialog(
-                                                      name: network.name,
-                                                      address: network.ipSeg!,
-                                                      mask: network.mask,
-                                                      onSave: (name, address, mask) async {
-                                                        var result = await Api.instance()
-                                                            .updateNetwork(network.id, name, address, mask);
-                                                        if (result.isSuccess) {
-                                                          var (ret, resp) =
-                                                          await Api.instance().getNetworks();
-                                                          if (ret.isSuccess) {
-                                                            if (mounted) {
-                                                              setState(() {
-                                                                _networks = resp ?? [];
-                                                              });
-                                                            }
-                                                          }
-                                                        } else {
-                                                          Fluttertoast.showToast(
-                                                              msg: result.msg ?? "Edit network failed",
-                                                              toastLength: Toast.LENGTH_LONG,
-                                                              gravity: ToastGravity.TOP,
-                                                              backgroundColor: Colors.red,
-                                                              textColor: Colors.white,
-                                                              fontSize: 16.0,
-                                                              timeInSecForIosWeb: 5);
-                                                        }
-                                                      },
-                                                    );
-                                                  });
-                                            },
-                                            child: Text(
-                                              "edit",
-                                              style: TextStyle(
-                                                  color: Colors.blue,
-                                                  decoration:
-                                                  TextDecoration.underline),
-                                            ))),
-                                MouseRegion(
-                                    cursor: SystemMouseCursors.click,
-                                    child: InkWell(
-                                        onTap: () async {
-                                          showDialog(
-                                              context: context,
-                                              builder: (context) {
-                                                return Dialog(
-                                                  backgroundColor:
-                                                      Colors.transparent,
-                                                  child: SizedBox(
-                                                      width: 400,
-                                                      height: 300,
-                                                      child: PromptDialog(
-                                                        promptTitle:
-                                                            "Delete Network",
-                                                        prompt:
-                                                            "Are you sure to delete networ ${network.name}?",
-                                                        onConfirm: () async {
-                                                          var result = await Api
-                                                                  .instance()
-                                                              .deleteNetwork(
-                                                                  network.id);
-                                                          if (result
-                                                              .isSuccess) {
-                                                            refreshNetworks();
-                                                          } else {
-                                                            Fluttertoast.showToast(
-                                                                msg: result
-                                                                        .msg ??
-                                                                    "delete failed",
-                                                                toastLength: Toast
-                                                                    .LENGTH_LONG,
-                                                                gravity:
-                                                                    ToastGravity
-                                                                        .TOP,
-                                                                backgroundColor:
-                                                                    Colors.red,
-                                                                textColor:
-                                                                    Colors
-                                                                        .white,
-                                                                fontSize: 16.0,
-                                                                timeInSecForIosWeb:
-                                                                    5);
-                                                          }
-                                                        },
-                                                      )),
-                                                );
-                                              });
-                                        },
-                                        child: Text(
-                                          "delete",
-                                          style: TextStyle(
-                                              color: Colors.blue,
-                                              decoration:
-                                                  TextDecoration.underline),
-                                        ))),
-                              ])),
-                        ],
-                      )
-                  ]))
-            ],
+                  ),
+                ),
+              ),
+            ),
           ),
         ),
-      );
-    }
+      ],
+    );
   }
 }

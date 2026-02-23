@@ -9,238 +9,348 @@ class NetworkMembersPage extends StatefulWidget {
   const NetworkMembersPage({super.key, required this.network});
 
   @override
-  createState() => _NetworkMembersPageState();
+  State<NetworkMembersPage> createState() => _NetworkMembersPageState();
 }
 
 class _NetworkMembersPageState extends State<NetworkMembersPage> {
-  late List<NetworkMember> _networkMembers = [];
-  late List<JoinedNode> _joinedNodes = [];
+  List<NetworkMember> _networkMembers = [];
+  List<JoinedNode> _joinedNodes = [];
   JoinedNode? addingNode;
-  TextEditingController _ipController = TextEditingController();
+  final TextEditingController _ipController = TextEditingController();
+
+  Widget _actionLink({
+    required String label,
+    required VoidCallback onTap,
+    Color color = const Color(0xFF0A7E8C),
+  }) {
+    var isHovered = false;
+
+    return StatefulBuilder(
+      builder: (context, setState) {
+        return MouseRegion(
+          cursor: SystemMouseCursors.click,
+          onEnter: (_) => setState(() => isHovered = true),
+          onExit: (_) => setState(() => isHovered = false),
+          child: GestureDetector(
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: isHovered
+                      ? Color.lerp(color, Colors.black, 0.28)!
+                      : color,
+                  decoration: TextDecoration.underline,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
 
   @override
   void initState() {
     super.initState();
-    _ipController.text = widget.network.ipSeg ?? "";
-    Api.instance().getNetworkMember(widget.network.id).then((ret) {
-      var (result, resp) = ret;
-      if (result.isSuccess) {
-        if (mounted) {
-          setState(() {
-            _networkMembers = resp ?? [];
-          });
-        }
-      } else {
-        Fluttertoast.showToast(
-            msg: result.msg ?? "Read network member failed",
-            toastLength: Toast.LENGTH_LONG,
-            gravity: ToastGravity.TOP,
-            backgroundColor: Colors.red,
-            textColor: Colors.white,
-            fontSize: 16.0,
-            timeInSecForIosWeb: 5);
-      }
-    });
-    Api.instance().getJoinedNodes().then((ret) {
-      var (result, resp) = ret;
-      if (result.isSuccess) {
-        if (mounted) {
-          setState(() {
-            _joinedNodes = resp ?? [];
-          });
-        }
-      }
-    });
+    _ipController.text = widget.network.ipSeg ?? '';
+    _loadData();
+  }
+
+  Future<void> _loadData() async {
+    final (memberResult, members) =
+        await Api.instance().getNetworkMember(widget.network.id);
+    final (joinedResult, joinedNodes) = await Api.instance().getJoinedNodes();
+
+    if (!mounted) {
+      return;
+    }
+
+    if (memberResult.isSuccess) {
+      setState(() {
+        _networkMembers = members ?? [];
+      });
+    } else {
+      Fluttertoast.showToast(
+        msg: memberResult.msg ?? 'Read network member failed',
+        toastLength: Toast.LENGTH_LONG,
+        gravity: ToastGravity.TOP,
+        backgroundColor: Colors.red,
+        textColor: Colors.white,
+        fontSize: 16.0,
+        timeInSecForIosWeb: 5,
+      );
+    }
+
+    if (joinedResult.isSuccess) {
+      setState(() {
+        _joinedNodes = joinedNodes ?? [];
+      });
+    }
   }
 
   String? getNodeName(String nodeId) {
-    for (var node in _joinedNodes) {
+    for (final node in _joinedNodes) {
       if (node.nodeId == nodeId) {
-        return node.comment.isNotEmpty ? node.comment : node.name.isNotEmpty? node.name : node.nodeId;
+        return node.comment.isNotEmpty
+            ? node.comment
+            : (node.name.isNotEmpty ? node.name : node.nodeId);
       }
     }
     return null;
   }
 
+  Future<void> _removeMember(NetworkMember member) async {
+    final result = await Api.instance()
+        .deleteNetworkMember(widget.network.id, member.nodeId);
+    if (result.isSuccess) {
+      Fluttertoast.showToast(
+        msg: 'Remove member success',
+        toastLength: Toast.LENGTH_SHORT,
+        gravity: ToastGravity.TOP,
+        backgroundColor: Colors.black,
+        textColor: Colors.white,
+        fontSize: 16.0,
+      );
+      if (mounted) {
+        setState(() {
+          _networkMembers.remove(member);
+        });
+      }
+      return;
+    }
+
+    Fluttertoast.showToast(
+      msg: result.msg ?? 'Remove member failed',
+      toastLength: Toast.LENGTH_SHORT,
+      gravity: ToastGravity.TOP,
+      backgroundColor: Colors.black,
+      textColor: Colors.white,
+      fontSize: 16.0,
+    );
+  }
+
+  Future<void> _addMember() async {
+    if (addingNode == null) {
+      Fluttertoast.showToast(
+        msg: 'Please select a node',
+        toastLength: Toast.LENGTH_SHORT,
+        gravity: ToastGravity.TOP,
+        backgroundColor: Colors.black,
+        textColor: Colors.white,
+        fontSize: 16.0,
+      );
+      return;
+    }
+
+    if (_networkMembers
+        .where((member) => member.nodeId == addingNode!.nodeId)
+        .isNotEmpty) {
+      Fluttertoast.showToast(
+        msg: 'Node already in network',
+        toastLength: Toast.LENGTH_SHORT,
+        gravity: ToastGravity.TOP,
+        backgroundColor: Colors.black,
+        textColor: Colors.white,
+        fontSize: 16.0,
+      );
+      return;
+    }
+
+    final result = await Api.instance().addNetworkMember(
+      widget.network.id,
+      addingNode!.nodeId,
+      _ipController.text,
+    );
+
+    if (result.isSuccess) {
+      Fluttertoast.showToast(
+        msg: 'Add member success',
+        toastLength: Toast.LENGTH_SHORT,
+        gravity: ToastGravity.TOP,
+        backgroundColor: Colors.black,
+        textColor: Colors.white,
+        fontSize: 16.0,
+      );
+      setState(() {
+        _networkMembers.add(
+          NetworkMember(
+            nodeId: addingNode!.nodeId,
+            ipAddr: _ipController.text,
+            isOnline: false,
+          ),
+        );
+      });
+      return;
+    }
+
+    Fluttertoast.showToast(
+      msg: result.msg ?? 'Add member failed',
+      toastLength: Toast.LENGTH_SHORT,
+      gravity: ToastGravity.TOP,
+      backgroundColor: Colors.black,
+      textColor: Colors.white,
+      fontSize: 16.0,
+    );
+  }
+
+  @override
+  void dispose() {
+    _ipController.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      body: Center(
-        child: Container(
-          width: 600,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.start,
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: <Widget>[
-              SizedBox(
-                height: 40,
+    return Padding(
+      padding: const EdgeInsets.all(10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.group_outlined,
+                  size: 18, color: Color(0xFF4B6675)),
+              const SizedBox(width: 8),
+              Text(
+                'Members of ${widget.network.name}',
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF0E2A3A),
+                ),
               ),
-              Table(
-                      border: TableBorder.all(color: Colors.black),
-                      defaultVerticalAlignment:
-                      TableCellVerticalAlignment.middle,
-                      children: [
-                TableRow(children: [
-                  TableCell(child: Center(child: Text("Name"))),
-                  TableCell(child: Center(child: Text("Ip"))),
-                  TableCell(child: Center(child: Text("Action"))),
-                ]),
-                for (var member in _networkMembers)
-                  TableRow(children: [
-                    TableCell(child: Center(child: SelectableText(getNodeName(member.nodeId)?? member.nodeId))),
-                        TableCell(
-                            child:
-                                Center(child: SelectableText(member.ipAddr))),
-                        TableCell(
-                            child: Center(
-                                child: MouseRegion(
-                                    cursor: SystemMouseCursors.click,
-                                    child: InkWell(
-                                      onTap: () async {
-                                        final result = await Api.instance()
-                                            .deleteNetworkMember(
-                                                widget.network.id,
-                                                member.nodeId);
-                                        if (result.isSuccess) {
-                                          Fluttertoast.showToast(
-                                            msg: "Remove member success",
-                                            toastLength: Toast.LENGTH_SHORT,
-                                            gravity: ToastGravity.TOP,
-                                            backgroundColor: Colors.black,
-                                            textColor: Colors.white,
-                                            fontSize: 16.0,
-                                          );
-                                          setState(() {
-                                            _networkMembers.remove(member);
-                                          });
-                                        } else {
-                                          Fluttertoast.showToast(
-                                            msg: result.msg ??
-                                                "Remove member failed",
-                                            toastLength: Toast.LENGTH_SHORT,
-                                            gravity: ToastGravity.TOP,
-                                            backgroundColor: Colors.black,
-                                            textColor: Colors.white,
-                                            fontSize: 16.0,
-                                          );
-                                        }
-                                      },
-                                      child: Text(
-                                        "Remove",
-                                        style: TextStyle(
-                                            color: Colors.blue,
-                                            decoration:
-                                                TextDecoration.underline),
-                                      ),
-                                    ))))
-                      ]),
-                    TableRow(children: [
-                      TableCell(
-                    child: Center(
-                        child: Container(
-                          padding: EdgeInsets.all(3),
-                      height: 40,
-                      child: DropdownButton<JoinedNode>(
-                        value: addingNode,
-                        onChanged: (JoinedNode? newValue) {
-                          setState(() {
-                            addingNode = newValue;
-                          });
-                        },
-                        items: _joinedNodes
-                            .map<DropdownMenuItem<JoinedNode>>((JoinedNode node) {
-                          return DropdownMenuItem<JoinedNode>(
-                            value: node,
-                            child: Text(node.comment.isNotEmpty ? node.comment : node.name.isNotEmpty? node.name : node.nodeId),
-                          );
-                        }).toList(),
-                      ),
-                    )),
-                  ),
-                  TableCell(
-                    child: Center(
-                        child: Container(
-                          padding: EdgeInsets.all(3),
-                      child: TextField(
-                        controller: _ipController,
-                        textAlignVertical: TextAlignVertical.center,
-                        decoration: InputDecoration(
-                          border: OutlineInputBorder().copyWith(gapPadding: 1),
-                          hintText: 'IP',
-                        ),
-                      ),
-                    )),
-                  ),
-                  TableCell(
-                      child: Center(
-                    child: MouseRegion(
-                        cursor: SystemMouseCursors.click,
-                        child: InkWell(
-                            onTap: () async {
-                              if (addingNode == null) {
-                                Fluttertoast.showToast(
-                                  msg: "Please select a node",
-                                  toastLength: Toast.LENGTH_SHORT,
-                                  gravity: ToastGravity.TOP,
-                                  backgroundColor: Colors.black,
-                                  textColor: Colors.white,
-                                  fontSize: 16.0,
-                                );
-                                return;
-                              }
-
-                              if (_networkMembers.where((member) => member.nodeId == addingNode!.nodeId).toList().length == 1) {
-                                Fluttertoast.showToast(
-                                  msg: "Node already in network",
-                                  toastLength: Toast.LENGTH_SHORT,
-                                  gravity: ToastGravity.TOP,
-                                  backgroundColor: Colors.black,
-                                  textColor: Colors.white,
-                                  fontSize: 16.0,
-                                );
-                                return;
-                              }
-
-                              final result = await Api.instance().addNetworkMember(
-                                  widget.network.id, addingNode!.nodeId, _ipController.text);
-                              if (result.isSuccess) {
-                                Fluttertoast.showToast(
-                                  msg: "Add member success",
-                                  toastLength: Toast.LENGTH_SHORT,
-                                  gravity: ToastGravity.TOP,
-                                  backgroundColor: Colors.black,
-                                  textColor: Colors.white,
-                                  fontSize: 16.0,
-                                );
-                                setState(() {
-                                  _networkMembers.add(NetworkMember(
-                                      nodeId: addingNode!.nodeId,
-                                      ipAddr: _ipController.text, isOnline: false));
-                                });
-                              } else {
-                                Fluttertoast.showToast(
-                                  msg: result.msg ?? "Add member failed",
-                                  toastLength: Toast.LENGTH_SHORT,
-                                  gravity: ToastGravity.TOP,
-                                  backgroundColor: Colors.black,
-                                  textColor: Colors.white,
-                                  fontSize: 16.0,
-                                );
-                              }
-                            },
-                            child: Text(
-                              "Add",
-                              style: TextStyle(
-                                  color: Colors.blue,
-                                  decoration: TextDecoration.underline),
-                            ))),
-                  ))
-                ])
-              ])
+              const Spacer(),
+              OutlinedButton.icon(
+                onPressed: _loadData,
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Refresh'),
+              ),
             ],
           ),
-        ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8FBFD),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFD9E6EC)),
+              ),
+              child: LayoutBuilder(
+                builder: (context, constraints) => SingleChildScrollView(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: ConstrainedBox(
+                      constraints:
+                          BoxConstraints(minWidth: constraints.maxWidth),
+                      child: DataTable(
+                        columns: const [
+                          DataColumn(label: Text('Name')),
+                          DataColumn(label: Text('IP')),
+                          DataColumn(label: Text('Action')),
+                        ],
+                        rows: _networkMembers
+                            .map(
+                              (member) => DataRow(
+                                cells: [
+                                  DataCell(
+                                    SelectableText(getNodeName(member.nodeId) ??
+                                        member.nodeId),
+                                  ),
+                                  DataCell(SelectableText(member.ipAddr)),
+                                  DataCell(
+                                    _actionLink(
+                                      label: 'Remove',
+                                      color: const Color(0xFFB42318),
+                                      onTap: () => _removeMember(member),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                            .toList(),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FBFD),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFD9E6EC)),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  flex: 3,
+                  child: DropdownButtonFormField<JoinedNode>(
+                    initialValue: addingNode,
+                    decoration: InputDecoration(
+                      labelText: 'Node',
+                      filled: true,
+                      fillColor: Colors.white,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    items: _joinedNodes.map((node) {
+                      return DropdownMenuItem<JoinedNode>(
+                        value: node,
+                        child: Text(
+                          node.comment.isNotEmpty
+                              ? node.comment
+                              : (node.name.isNotEmpty
+                                  ? node.name
+                                  : node.nodeId),
+                        ),
+                      );
+                    }).toList(),
+                    onChanged: (newValue) {
+                      setState(() {
+                        addingNode = newValue;
+                      });
+                    },
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  flex: 2,
+                  child: TextField(
+                    controller: _ipController,
+                    decoration: InputDecoration(
+                      labelText: 'IP Address',
+                      filled: true,
+                      fillColor: Colors.white,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                FilledButton(
+                  onPressed: _addMember,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF0A7E8C),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Text('Add'),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
