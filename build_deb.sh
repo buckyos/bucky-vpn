@@ -6,4 +6,4 @@ cp target/x86_64-unknown-linux-musl/release/bucky-vpn ./vpn_deb/usr/bin/bucky-vp
 chmod +x vpn_deb/usr/bin/bucky-vpn
 
 mkdir -p ./dist
-dpkg-deb -b vpn_deb ./dist/bucky-vpn_1.0.0_amd64.deb
+dpkg-deb -b vpn_deb ./dist/bucky-vpn_1.1.0_amd64.deb
