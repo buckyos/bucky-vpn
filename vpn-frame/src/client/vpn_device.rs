@@ -101,6 +101,7 @@ impl<S: PacketRecv> VpnDevice<S> {
         self.create_device()?;
         let dev = self.dev.clone().unwrap();
         let network = self.network.clone();
+        self.recv = Some(recv.clone());
         let handle = tokio::spawn(async move {
             let mut buf = [0;65535];
             loop {
@@ -168,8 +169,9 @@ impl<S: PacketRecv> VpnDevice<S> {
 
         self.dev.take();
 
-        let recv = self.recv.take().unwrap();
-        self.start(recv)?;
+        if let Some(recv) = self.recv.take() {
+            self.start(recv)?;
+        }
         Ok(())
     }
 }
