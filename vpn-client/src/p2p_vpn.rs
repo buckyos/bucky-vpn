@@ -222,7 +222,7 @@ impl VpnClientFactory<(), P2pCmdSend, P2pCmdSendGuard, SnCmdClient, P2pVpnTunnel
         let sn_ep = Endpoint::from((Protocol::Quic,
                                     SocketAddr::new(ip.ip(), sn_port)));
 
-        let conn_timeout = Duration::from_secs(30);
+        let conn_timeout = Duration::from_secs(5);
         let stack_config = P2pStackConfig::new(self.p2p_env.clone(), local_identity)
             .set_conn_timeout(conn_timeout)
             .set_support_proxy(true)
