@@ -47,7 +47,7 @@ impl<M: CmdTunnelMeta,
 
     fn register_cmd_handler(self: &Arc<Self>) {
         let this = self.clone();
-        self.cmd_client.register_cmd_handler(VpnCmdCode::JoinNetworkGroupResp as u8, move |_peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
+        self.cmd_client.register_cmd_handler(VpnCmdCode::JoinNetworkGroupResp as u8, move |_local_id: PeerId, _peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
             let this = this.clone();
             async move {
                 let data = body.read_all().await?;
@@ -58,7 +58,7 @@ impl<M: CmdTunnelMeta,
         });
 
         let this = self.clone();
-        self.cmd_client.register_cmd_handler(VpnCmdCode::GetVpnInfoResp as u8, move |_peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
+        self.cmd_client.register_cmd_handler(VpnCmdCode::GetVpnInfoResp as u8, move |_local_id: PeerId, _peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
             let this = this.clone();
             async move {
                 let data = body.read_all().await?;
@@ -69,7 +69,7 @@ impl<M: CmdTunnelMeta,
         });
 
         let this = self.clone();
-        self.cmd_client.register_cmd_handler(VpnCmdCode::QueryNodeResp as u8, move |_peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
+        self.cmd_client.register_cmd_handler(VpnCmdCode::QueryNodeResp as u8, move |_local_id: PeerId, _peer_id: PeerId, _tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
             let this = this.clone();
             async move {
                 let data = body.read_all().await?;

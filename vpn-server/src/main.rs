@@ -6,6 +6,7 @@ use base58::ToBase58;
 use config::builder::DefaultState;
 use p2p_frame::endpoint::{Endpoint, Protocol};
 use p2p_frame::p2p_identity::{P2pIdentity, P2pIdentityFactory};
+use p2p_frame::pn::PnServer;
 use p2p_frame::sn::service::{create_sn_service, SnServiceConfig};
 use p2p_frame::x509;
 use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
@@ -106,7 +107,7 @@ async fn main() {
         let local_identity = X509IdentityFactory.create(&data).unwrap();
         local_identity
     } else {
-        let local_identity = x509::generate_x509_identity(None).unwrap();
+        let local_identity = x509::generate_rsa_x509_identity(None).unwrap();
         let data = local_identity.get_encoded_identity().unwrap();
         tokio::fs::write(identity_file.as_path(), data).await.unwrap();
         Arc::new(local_identity)
@@ -117,9 +118,12 @@ async fn main() {
         local_identity,
         Arc::new(X509IdentityFactory),
         Arc::new(X509IdentityCertFactory)
-    ).set_support_proxy(true);
+    );
     let sn_service = create_sn_service(sn_config).await;
     sn_service.start().await.unwrap();
+
+    let pn_server = PnServer::new(sn_service.ttp_server());
+    pn_server.start().await.unwrap();
 
     let vpn_server = VpnServer::new(Arc::new(P2pSnCmdServer::new(sn_service.clone())), store_factory.clone());
     let network_manager = vpn_server.network_manager().clone();

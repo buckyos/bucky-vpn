@@ -343,7 +343,7 @@ impl<
                 if node.is_none() {
                     return Err(vpn_err!(VpnErrorCode::NotFoundNode, "group {} network {} ip {}", network_group_id, network_id, target));
                 }
-                let pool = WorkerPool::new(5, Factory::new(node.unwrap(),
+                let pool = WorkerPool::new(20, Factory::new(node.unwrap(),
                                                            self.tunnel_factory.clone(),
                                                            self.pending_send_cache.clone(),
                                                            self.pkg_listener.clone(), ));
@@ -368,7 +368,7 @@ impl<
                 if let Some(pool) = tunnels.get(&key) {
                     pool.clone()
                 } else {
-                    let pool = WorkerPool::new(5, Factory::new(node_id,
+                    let pool = WorkerPool::new(20, Factory::new(node_id,
                                                                self.tunnel_factory.clone(),
                                                                self.pending_send_cache.clone(),
                                                                self.pkg_listener.clone(), ));

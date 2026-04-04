@@ -1,6 +1,6 @@
 #!/bin/bash
 APP_NAME="BuckyVPN"
-VERSION="1.1.0"
+VERSION="1.2.0"
 PKG_NAME="${APP_NAME}-${VERSION}.pkg"
 PKG_DIR="./vpn_macos"
 

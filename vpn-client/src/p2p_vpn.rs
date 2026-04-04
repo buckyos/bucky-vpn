@@ -26,6 +26,7 @@ use vpn_frame::server::{NetworkGroupId, NodeId};
 use vpn_frame::serialize_u64_as_string;
 use vpn_frame::deserialize_u64_from_string;
 use base58::ToBase58;
+use p2p_frame::networks::TunnelPurpose;
 use p2p_frame::sn::types::{SnTunnelClassification, SnTunnelRead, SnTunnelWrite};
 use vpn_frame::cmd_server::ClassifiedCmdNodeSendGuard;
 use vpn_frame::cmd_server::client::{ClassifiedClientSendGuard, ClassifiedCmdSend, ClassifiedSendGuard};
@@ -125,7 +126,7 @@ impl P2pVpnTunnelFactory {
 impl VpnTunnelFactory<P2pVpnTunnelRecv, P2pVpnTunnelSend> for P2pVpnTunnelFactory {
     async fn create_tunnel(&self, node_id: &NodeId) -> VpnResult<(P2pVpnTunnelRecv, P2pVpnTunnelSend)> {
         let (read, write) = self.stack.stream_manager()
-            .connect_from_id(&P2pId::from(node_id.as_slice()), self.vpn_port).await
+            .connect_from_id(&P2pId::from(node_id.as_slice()), TunnelPurpose::from_value(&self.vpn_port).unwrap()).await
             .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
         Ok((P2pVpnTunnelRecv::new(read), P2pVpnTunnelSend::new(write)))
     }
@@ -140,7 +141,7 @@ pub struct P2pVpnTunnelListener {
 impl P2pVpnTunnelListener {
     pub async fn new(stack: P2pStackRef,
                      vpn_port: u16,) -> VpnResult<P2pVpnTunnelListener> {
-        let listener = stack.stream_manager().listen(vpn_port).await.map_err(into_vpn_err!(VpnErrorCode::Failed, "create listener failed"))?;
+        let listener = stack.stream_manager().listen(TunnelPurpose::from_value(&vpn_port).unwrap()).await.map_err(into_vpn_err!(VpnErrorCode::Failed, "create listener failed"))?;
         Ok(P2pVpnTunnelListener {
             stack,
             vpn_port,
@@ -210,7 +211,7 @@ impl VpnClientFactory<(), P2pCmdSend, P2pCmdSendGuard, SnCmdClient, P2pVpnTunnel
             local_identity
         } else {
             create_dir_all(server_config.as_path()).await.map_err(into_vpn_err!(VpnErrorCode::Failed, "create {} failed", server_config.to_string_lossy().to_string()))?;
-            let local_identity = x509::generate_x509_identity(None).map_err(into_vpn_err!(VpnErrorCode::Failed, "create identity failed"))?;
+            let local_identity = x509::generate_rsa_x509_identity(None).map_err(into_vpn_err!(VpnErrorCode::Failed, "create identity failed"))?;
             let data = local_identity.get_encoded_identity().map_err(into_vpn_err!(VpnErrorCode::Failed))?;
             tokio::fs::write(identity_file.as_path(), data).await.map_err(into_vpn_err!(VpnErrorCode::Failed, "write {} failed", identity_file.to_string_lossy().to_string()))?;
             Arc::new(local_identity)

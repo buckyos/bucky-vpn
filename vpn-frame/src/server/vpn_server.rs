@@ -181,7 +181,7 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
 
     fn register_cmd_handler(self: &Arc<Self>) {
         let this = self.clone();
-        self.cmd_server.register_cmd_handler(VpnCmdCode::GetVpnInfo as u8, move |peer_id: PeerId, tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
+        self.cmd_server.register_cmd_handler(VpnCmdCode::GetVpnInfo as u8, move |_local_id: PeerId, peer_id: PeerId, tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
             let this = this.clone();
             async move {
                 let data = body.read_all().await?;
@@ -229,7 +229,7 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
 
 
         let this = self.clone();
-        self.cmd_server.register_cmd_handler(VpnCmdCode::JoinNetworkGroup as u8, move |peer_id: PeerId, tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
+        self.cmd_server.register_cmd_handler(VpnCmdCode::JoinNetworkGroup as u8, move |_local_id: PeerId, peer_id: PeerId, tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
             let this = this.clone();
             async move {
                 let data = body.read_all().await?;
@@ -257,7 +257,7 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
         });
 
         let this = self.clone();
-        self.cmd_server.register_cmd_handler(VpnCmdCode::QueryNode as u8, move |peer_id: PeerId, tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
+        self.cmd_server.register_cmd_handler(VpnCmdCode::QueryNode as u8, move |_local_id: PeerId, peer_id: PeerId, tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
             let this = this.clone();
             async move {
                 let data = body.read_all().await?;

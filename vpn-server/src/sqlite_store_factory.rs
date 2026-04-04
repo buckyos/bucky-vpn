@@ -4,14 +4,14 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use p2p_frame::sn::service::SnServiceRef;
+use p2p_frame::cmd_server::server::CmdServer;
+use p2p_frame::sn::service::{SnServerRef, SnServiceRef};
 use sfo_sql::errors::{SqlErrorCode};
 use sfo_sql::mysql::sql_query;
 use sfo_sql::sqlite::{SqlConnection, SqlPool, SqliteJournalMode};
 use sfo_sql::{Row};
 use vpn_frame::cmd_server::{CmdBody, CmdHandler, PeerId, TunnelId};
 use vpn_frame::cmd_server::errors::CmdResult;
-use vpn_frame::cmd_server::server::CmdServer;
 use vpn_frame::errors::{into_vpn_err, vpn_err, VpnErrorCode, VpnResult};
 use vpn_frame::NodeNetwork;
 use vpn_frame::server::{JoinedNode, Network, NetworkGroupId, NetworkId, NetworkManager, NetworkMember, NetworkStore, Node, NodeId, NodeManager, NodeStore, VpnCmdServer, VpnServer, VpnStore, VpnStoreFactory, VpnStoreGuard};
@@ -560,11 +560,11 @@ impl VpnStoreFactory<SqliteVpnStore> for SqliteStoreFactory {
 }
 
 pub struct P2pSnCmdServer {
-    sn_service: SnServiceRef,
+    sn_service: SnServerRef,
 }
 
 impl P2pSnCmdServer {
-    pub fn new(sn_service: SnServiceRef) -> Self {
+    pub fn new(sn_service: SnServerRef) -> Self {
         Self {
             sn_service,
         }
@@ -637,7 +637,7 @@ impl CmdServer<u16, u8> for P2pSnCmdServer {
 #[async_trait::async_trait]
 impl VpnCmdServer for P2pSnCmdServer {
     async fn get_peer_wan_ip(&self, peer_id: &PeerId) -> VpnResult<Vec<IpAddr>> {
-        let list = self.sn_service.get_peer_wan_ep(&peer_id).await.iter().map(|ep| ep.addr().ip().clone()).collect();
+        let list = self.sn_service.service().get_peer_wan_ep(&peer_id).await.iter().map(|ep| ep.addr().ip().clone()).collect();
         Ok(list)
     }
 }
