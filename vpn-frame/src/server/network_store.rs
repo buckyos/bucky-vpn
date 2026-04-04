@@ -1,8 +1,8 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use bucky_raw_codec::{RawDecode, RawEncode};
-use crate::errors::VpnResult;
 use crate::NodeNetwork;
+use crate::errors::VpnResult;
 use crate::server::node_store::NodeId;
+use bucky_raw_codec::{RawDecode, RawEncode};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 pub struct JoinedNode {
     pub group_id: NetworkGroupId,
@@ -65,8 +65,16 @@ pub trait NetworkStore: 'static + Send + Sync {
     async fn exist_network_group(&mut self, group_id: &NetworkGroupId) -> VpnResult<bool>;
     async fn has_joined(&mut self, group_id: &NetworkGroupId, node_id: &NodeId) -> VpnResult<bool>;
     async fn add_joined_node(&mut self, node: &JoinedNode) -> VpnResult<()>;
-    async fn del_joined_node(&mut self, group_id: &NetworkGroupId, node_id: &NodeId) -> VpnResult<()>;
-    async fn get_joined_node(&mut self, group_id: &NetworkGroupId, node_id: &NodeId) -> VpnResult<Option<JoinedNode>>;
+    async fn del_joined_node(
+        &mut self,
+        group_id: &NetworkGroupId,
+        node_id: &NodeId,
+    ) -> VpnResult<()>;
+    async fn get_joined_node(
+        &mut self,
+        group_id: &NetworkGroupId,
+        node_id: &NodeId,
+    ) -> VpnResult<Option<JoinedNode>>;
     async fn get_joined_nodes(&mut self, group_id: &NetworkGroupId) -> VpnResult<Vec<JoinedNode>>;
     async fn update_joined_node(&mut self, node: &JoinedNode) -> VpnResult<()>;
     async fn get_joined_network_group(&mut self, node_id: &NodeId) -> VpnResult<Vec<JoinedNode>>;
@@ -76,12 +84,24 @@ pub trait NetworkStore: 'static + Send + Sync {
     async fn get_network(&mut self, network_id: &NetworkId) -> VpnResult<Option<Network>>;
     async fn update_network(&mut self, network: &Network) -> VpnResult<()>;
     async fn exist_network(&mut self, network_id: &NetworkId) -> VpnResult<bool>;
-    async fn add_member(&mut self, network_id: &NetworkId, member: &NetworkMember) -> VpnResult<()>;
+    async fn add_member(&mut self, network_id: &NetworkId, member: &NetworkMember)
+    -> VpnResult<()>;
     async fn del_member(&mut self, network_id: &NetworkId, member: &NodeId) -> VpnResult<()>;
     async fn has_member(&mut self, network_id: &NetworkId, member: &NodeId) -> VpnResult<bool>;
-    async fn update_member(&mut self, network_id: &NetworkId, member: &NetworkMember) -> VpnResult<()>;
+    async fn update_member(
+        &mut self,
+        network_id: &NetworkId,
+        member: &NetworkMember,
+    ) -> VpnResult<()>;
     async fn get_members(&mut self, network_id: &NetworkId) -> VpnResult<Vec<NetworkMember>>;
-    async fn get_allowed_members(&mut self, network_id: &NetworkId) -> VpnResult<Vec<NetworkMember>>;
-    async fn get_member(&mut self, network_id: &NetworkId, ip_addr: &IpAddr) -> VpnResult<Option<NetworkMember>>;
+    async fn get_allowed_members(
+        &mut self,
+        network_id: &NetworkId,
+    ) -> VpnResult<Vec<NetworkMember>>;
+    async fn get_member(
+        &mut self,
+        network_id: &NetworkId,
+        ip_addr: &IpAddr,
+    ) -> VpnResult<Option<NetworkMember>>;
     async fn get_networks_of_node(&mut self, node_id: &NodeId) -> VpnResult<Vec<NodeNetwork>>;
 }

@@ -1,8 +1,8 @@
+use bucky_raw_codec::{RawDecode, RawEncode};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use bucky_raw_codec::{RawDecode, RawEncode};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, RawEncode, RawDecode)]
 pub struct Sequence(u32);
@@ -35,10 +35,12 @@ pub struct SequenceGenerator {
     cur: AtomicU32,
 }
 
-
 impl SequenceGenerator {
     pub fn new() -> Self {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u32;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u32;
         Self {
             cur: AtomicU32::new(now),
         }

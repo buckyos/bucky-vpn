@@ -1,13 +1,16 @@
-
+use crate::run_daemon;
 use std::ffi::OsString;
 use std::process::exit;
 use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
-use windows_service::{Result, service_dispatcher, define_windows_service, service_control_handler};
-use windows_service::service::{ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType};
+use windows_service::service::{
+    ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
+};
 use windows_service::service_control_handler::ServiceControlHandlerResult;
-use crate::run_daemon;
+use windows_service::{
+    Result, define_windows_service, service_control_handler, service_dispatcher,
+};
 
 define_windows_service!(ffi_service_main, my_service_main);
 static SERVICE_NAME: &str = "bucky-vpn";
@@ -47,7 +50,6 @@ fn run_service(_arguments: Vec<OsString>) -> Result<()> {
         wait_hint: Duration::default(),
         process_id: None,
     })?;
-
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()

@@ -1,20 +1,17 @@
-use std::net::{IpAddr};
-use bucky_raw_codec::{RawDecode, RawEncode, RawFixedBytes};
-use serde::{Deserialize, Serialize};
-use sfo_cmd_server::CmdHeader;
-use tokio::io::{AsyncRead, AsyncWrite};
 use crate::errors::{VpnError, VpnErrorCode, VpnResult};
 use crate::sequence::Sequence;
 use crate::server::{NetworkGroupId, NetworkId, NetworkMember, NodeId};
+use bucky_raw_codec::{RawDecode, RawEncode, RawFixedBytes};
+use serde::{Deserialize, Serialize};
+use sfo_cmd_server::CmdHeader;
+use std::net::IpAddr;
+use tokio::io::{AsyncRead, AsyncWrite};
 
-pub trait  VpnTunnelSend: AsyncWrite + Send + 'static + Unpin {
+pub trait VpnTunnelSend: AsyncWrite + Send + 'static + Unpin {
     fn is_target_tunnel(&self, target: &NodeId) -> bool;
 }
 
-pub trait  VpnTunnelRecv: AsyncRead + Send + 'static + Unpin {
-
-}
-
+pub trait VpnTunnelRecv: AsyncRead + Send + 'static + Unpin {}
 
 #[async_trait::async_trait]
 pub trait VpnTunnelFactory<R: VpnTunnelRecv, S: VpnTunnelSend>: Send + Sync + 'static {
@@ -37,7 +34,6 @@ pub enum VpnCmdCode {
     QueryNodeResp = 0x96,
     Data = 0x97,
 }
-
 
 impl TryFrom<u8> for VpnCmdCode {
     type Error = VpnError;

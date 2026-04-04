@@ -1,18 +1,23 @@
-use std::collections::HashMap;
-use std::net::IpAddr;
-use std::ops::Add;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::AtomicU16;
+use crate::errors::{VpnErrorCode, VpnResult, vpn_err};
+use crate::server::{
+    NetworkGroupId, NetworkId, NetworkManager, NodeId, NodeManager, VpnStore, VpnStoreFactory,
+};
+use crate::{
+    GetVpnInfoReq, GetVpnInfoResp, JoinNetworkGroupReq, JoinNetworkGroupResp, NodeVpnInfo,
+    QueryNodeReq, QueryNodeResp, VpnCmdCode, VpnCmdHeader, VpnTunnelId,
+};
 use async_trait::async_trait;
 use bucky_raw_codec::{RawConvertTo, RawFrom};
 use chrono::{DateTime, TimeDelta, Utc};
-use sfo_cmd_server::{CmdBody, PeerId};
-use sfo_cmd_server::errors::{into_cmd_err, CmdErrorCode};
+use sfo_cmd_server::errors::{CmdErrorCode, into_cmd_err};
 use sfo_cmd_server::server::CmdServer;
+use sfo_cmd_server::{CmdBody, PeerId};
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::ops::Add;
+use std::sync::atomic::AtomicU16;
+use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
-use crate::errors::{vpn_err, VpnErrorCode, VpnResult};
-use crate::{GetVpnInfoReq, GetVpnInfoResp, JoinNetworkGroupReq, JoinNetworkGroupResp, NodeVpnInfo, QueryNodeReq, QueryNodeResp, VpnTunnelId, VpnCmdCode, VpnCmdHeader};
-use crate::server::{NetworkGroupId, NetworkId, NetworkManager, NodeId, NodeManager, VpnStore, VpnStoreFactory};
 
 #[derive(Debug)]
 pub struct OnlineNode {
@@ -31,11 +36,13 @@ impl OnlineNode {
     }
 
     pub fn change(&self) {
-        self.change_version.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.change_version
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn get_change_version(&self) -> u16 {
-        self.change_version.load(std::sync::atomic::Ordering::SeqCst)
+        self.change_version
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn is_expire(&self) -> bool {
@@ -135,8 +142,7 @@ pub struct VpnServer<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> {
 pub type VpnServerRef<T, S, F> = Arc<VpnServer<T, S, F>>;
 
 impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
-    pub fn new(cmd_server: Arc<T>,
-               factory: Arc<F>) -> Arc<Self> {
+    pub fn new(cmd_server: Arc<T>, factory: Arc<F>) -> Arc<Self> {
         let node_manager = NodeManager::new(factory.clone());
         Arc::new(Self {
             network_manager: NetworkManager::new(factory.clone(), node_manager.clone()),
@@ -181,128 +187,193 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
 
     fn register_cmd_handler(self: &Arc<Self>) {
         let this = self.clone();
-        self.cmd_server.register_cmd_handler(VpnCmdCode::GetVpnInfo as u8, move |_local_id: PeerId, peer_id: PeerId, tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
-            let this = this.clone();
-            async move {
-                let data = body.read_all().await?;
-                let req = GetVpnInfoReq::clone_from_slice(data.as_slice()).map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
-                {
-                    let node_id = NodeId::from(peer_id.as_slice());
-                    let is_new = {
-                        let mut online_nodes = this.online_nodes.lock().unwrap();
-                        online_nodes.update_online_node(&node_id, req.client_version.clone())
-                    };
-                    if is_new {
-                        if let Err(e) = this.network_manager().node_online(&vec![node_id]).await {
-                            log::error!("node_online failed: {:?}", e);
+        self.cmd_server.register_cmd_handler(
+            VpnCmdCode::GetVpnInfo as u8,
+            move |_local_id: PeerId,
+                  peer_id: PeerId,
+                  tunnel_id: VpnTunnelId,
+                  _header: VpnCmdHeader,
+                  mut body: CmdBody| {
+                let this = this.clone();
+                async move {
+                    let data = body.read_all().await?;
+                    let req = GetVpnInfoReq::clone_from_slice(data.as_slice())
+                        .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
+                    {
+                        let node_id = NodeId::from(peer_id.as_slice());
+                        let is_new = {
+                            let mut online_nodes = this.online_nodes.lock().unwrap();
+                            online_nodes.update_online_node(&node_id, req.client_version.clone())
+                        };
+                        if is_new {
+                            if let Err(e) = this.network_manager().node_online(&vec![node_id]).await
+                            {
+                                log::error!("node_online failed: {:?}", e);
+                            }
                         }
                     }
-                }
-                let seq = req.seq;
-                let resp = match this.handle_get_vpn_info_req(peer_id.clone(), req.info_version).await {
-                    Ok((version, result)) => {
-                        GetVpnInfoResp {
+                    let seq = req.seq;
+                    let resp = match this
+                        .handle_get_vpn_info_req(peer_id.clone(), req.info_version)
+                        .await
+                    {
+                        Ok((version, result)) => GetVpnInfoResp {
                             seq,
                             result: 0,
                             info_version: version,
                             vpn_list: result,
+                        },
+                        Err(e) => {
+                            log::error!("handle_get_vpn_info_req failed: {:?}", e);
+                            GetVpnInfoResp {
+                                seq,
+                                result: e.code() as u8,
+                                info_version: 0,
+                                vpn_list: vec![],
+                            }
                         }
-                    }
-                    Err(e) => {
-                        log::error!("handle_get_vpn_info_req failed: {:?}", e);
-                        GetVpnInfoResp {
+                    };
+                    this.cmd_server
+                        .send_by_specify_tunnel(
+                            &peer_id,
+                            tunnel_id,
+                            VpnCmdCode::GetVpnInfoResp as u8,
+                            this.version,
+                            resp.to_vec()
+                                .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?
+                                .as_slice(),
+                        )
+                        .await?;
+                    Ok(None)
+                }
+            },
+        );
+
+        let this = self.clone();
+        self.cmd_server.register_cmd_handler(
+            VpnCmdCode::JoinNetworkGroup as u8,
+            move |_local_id: PeerId,
+                  peer_id: PeerId,
+                  tunnel_id: VpnTunnelId,
+                  _header: VpnCmdHeader,
+                  mut body: CmdBody| {
+                let this = this.clone();
+                async move {
+                    let data = body.read_all().await?;
+                    let req = JoinNetworkGroupReq::clone_from_slice(data.as_slice())
+                        .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
+                    let seq = req.seq;
+                    let resp = if let Err(e) = this
+                        .handle_join_network_group_req(peer_id.clone(), req)
+                        .await
+                    {
+                        log::error!("handle_join_network_group_req failed: {:?}", e);
+                        JoinNetworkGroupResp {
                             seq,
                             result: e.code() as u8,
-                            info_version: 0,
-                            vpn_list: vec![],
                         }
-                    }
-                };
-                this.cmd_server.send_by_specify_tunnel(&peer_id,
-                                                       tunnel_id,
-                                                       VpnCmdCode::GetVpnInfoResp as u8,
-                                                       this.version,
-                                                       resp.to_vec().map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?.as_slice()).await?;
-                Ok(None)
-            }
-        });
-
-
-        let this = self.clone();
-        self.cmd_server.register_cmd_handler(VpnCmdCode::JoinNetworkGroup as u8, move |_local_id: PeerId, peer_id: PeerId, tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
-            let this = this.clone();
-            async move {
-                let data = body.read_all().await?;
-                let req = JoinNetworkGroupReq::clone_from_slice(data.as_slice()).map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
-                let seq = req.seq;
-                let resp = if let Err(e) = this.handle_join_network_group_req(peer_id.clone(), req).await {
-                    log::error!("handle_join_network_group_req failed: {:?}", e);
-                    JoinNetworkGroupResp {
-                        seq,
-                        result: e.code() as u8,
-                    }
-                } else {
-                    JoinNetworkGroupResp {
-                        seq,
-                        result: 0,
-                    }
-                };
-                this.cmd_server.send_by_specify_tunnel(&peer_id,
-                                                       tunnel_id,
-                                                       VpnCmdCode::JoinNetworkGroupResp as u8,
-                                                       this.version,
-                                                       resp.to_vec().map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?.as_slice()).await?;
-                Ok(None)
-            }
-        });
+                    } else {
+                        JoinNetworkGroupResp { seq, result: 0 }
+                    };
+                    this.cmd_server
+                        .send_by_specify_tunnel(
+                            &peer_id,
+                            tunnel_id,
+                            VpnCmdCode::JoinNetworkGroupResp as u8,
+                            this.version,
+                            resp.to_vec()
+                                .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?
+                                .as_slice(),
+                        )
+                        .await?;
+                    Ok(None)
+                }
+            },
+        );
 
         let this = self.clone();
-        self.cmd_server.register_cmd_handler(VpnCmdCode::QueryNode as u8, move |_local_id: PeerId, peer_id: PeerId, tunnel_id: VpnTunnelId, _header: VpnCmdHeader, mut body: CmdBody| {
-            let this = this.clone();
-            async move {
-                let data = body.read_all().await?;
-                let req = QueryNodeReq::clone_from_slice(data.as_slice()).map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
-                let seq = req.seq;
-                let resp = match this.handle_query_node_req(req.group_id, req.network_id, req.ip).await {
-                    Ok(result) => QueryNodeResp {
-                        seq,
-                        node_id: result,
-                    },
-                    Err(e) => {
-                        log::error!("handle_query_node_req failed: {:?}", e);
-                        QueryNodeResp {
+        self.cmd_server.register_cmd_handler(
+            VpnCmdCode::QueryNode as u8,
+            move |_local_id: PeerId,
+                  peer_id: PeerId,
+                  tunnel_id: VpnTunnelId,
+                  _header: VpnCmdHeader,
+                  mut body: CmdBody| {
+                let this = this.clone();
+                async move {
+                    let data = body.read_all().await?;
+                    let req = QueryNodeReq::clone_from_slice(data.as_slice())
+                        .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
+                    let seq = req.seq;
+                    let resp = match this
+                        .handle_query_node_req(req.group_id, req.network_id, req.ip)
+                        .await
+                    {
+                        Ok(result) => QueryNodeResp {
                             seq,
-                            node_id: None,
+                            node_id: result,
+                        },
+                        Err(e) => {
+                            log::error!("handle_query_node_req failed: {:?}", e);
+                            QueryNodeResp { seq, node_id: None }
                         }
-                    }
-                };
-                this.cmd_server.send_by_specify_tunnel(&peer_id,
-                                                       tunnel_id,
-                                                       VpnCmdCode::QueryNodeResp as u8,
-                                                       this.version,
-                                                       resp.to_vec().map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?.as_slice()).await?;
-                Ok(None)
-            }
-        });
+                    };
+                    this.cmd_server
+                        .send_by_specify_tunnel(
+                            &peer_id,
+                            tunnel_id,
+                            VpnCmdCode::QueryNodeResp as u8,
+                            this.version,
+                            resp.to_vec()
+                                .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?
+                                .as_slice(),
+                        )
+                        .await?;
+                    Ok(None)
+                }
+            },
+        );
     }
 
-    async fn handle_join_network_group_req(&self, peer_id: PeerId, req: JoinNetworkGroupReq) -> VpnResult<()> {
-        log::info!("join peer base58 {} base36 {} to group {}", peer_id.to_base58(), peer_id.to_base36(), req.group_id.to_string());
+    async fn handle_join_network_group_req(
+        &self,
+        peer_id: PeerId,
+        req: JoinNetworkGroupReq,
+    ) -> VpnResult<()> {
+        log::info!(
+            "join peer base58 {} base36 {} to group {}",
+            peer_id.to_base58(),
+            peer_id.to_base36(),
+            req.group_id.to_string()
+        );
         let node_id = NodeId::from(peer_id.as_slice());
-        let exist = self.network_manager.exist_network_group(&req.group_id).await?;
+        let exist = self
+            .network_manager
+            .exist_network_group(&req.group_id)
+            .await?;
         if !exist {
             Err(vpn_err!(VpnErrorCode::NetworkGroupNotExist))
         } else {
-            if !self.network_manager.has_joined(&req.group_id, &node_id).await? {
-                self.network_manager.add_joined_node(&req.group_id, &node_id, req.name.clone()).await?;
+            if !self
+                .network_manager
+                .has_joined(&req.group_id, &node_id)
+                .await?
+            {
+                self.network_manager
+                    .add_joined_node(&req.group_id, &node_id, req.name.clone())
+                    .await?;
             }
             Ok(())
         }
     }
 
-    async fn handle_get_vpn_info_req(&self, peer_id: PeerId, info_version: Option<u16>) -> VpnResult<(u16, Vec<NodeVpnInfo>)> {
+    async fn handle_get_vpn_info_req(
+        &self,
+        peer_id: PeerId,
+        info_version: Option<u16>,
+    ) -> VpnResult<(u16, Vec<NodeVpnInfo>)> {
         let node_id = NodeId::from(peer_id.as_slice());
-        let node =  self.node_manager.get_node(&node_id).await?;
+        let node = self.node_manager.get_node(&node_id).await?;
         if node.is_none() {
             return Err(vpn_err!(VpnErrorCode::NotFoundNode));
         }
@@ -316,21 +387,28 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
                 continue;
             }
 
-            let members = self.network_manager.get_allowed_network_member(&node_network.id).await?;
+            let members = self
+                .network_manager
+                .get_allowed_network_member(&node_network.id)
+                .await?;
             let members = {
                 let online_nodes = self.online_nodes.lock().unwrap();
-                members.iter().filter(|member| member.id != node_id)
+                members
+                    .iter()
+                    .filter(|member| member.id != node_id)
                     .filter(|member| {
-                    if let Some(online_node) = online_nodes.get_node(&member.id) {
-                        if !online_node.is_expire() {
-                            true
+                        if let Some(online_node) = online_nodes.get_node(&member.id) {
+                            if !online_node.is_expire() {
+                                true
+                            } else {
+                                false
+                            }
                         } else {
                             false
                         }
-                    } else {
-                        false
-                    }
-                }).map(|member| member.clone()).collect()
+                    })
+                    .map(|member| member.clone())
+                    .collect()
             };
             info_list.push(NodeVpnInfo {
                 node_info: node_network.clone(),
@@ -340,19 +418,33 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
         Ok((node.as_ref().unwrap().info_version, info_list))
     }
 
-    async fn handle_query_node_req(&self, group_id: NetworkGroupId, network_id: NetworkId, dest_ip: IpAddr) -> VpnResult<Option<NodeId>> {
-        self.network_manager.get_member_of_ip(&group_id, &network_id, &dest_ip).await
+    async fn handle_query_node_req(
+        &self,
+        group_id: NetworkGroupId,
+        network_id: NetworkId,
+        dest_ip: IpAddr,
+    ) -> VpnResult<Option<NodeId>> {
+        self.network_manager
+            .get_member_of_ip(&group_id, &network_id, &dest_ip)
+            .await
     }
 
     pub async fn get_peer_ip_list(&self, peer_id: &PeerId) -> VpnResult<Vec<IpAddr>> {
         self.cmd_server.get_peer_wan_ip(peer_id).await
     }
 
-    pub async fn get_node_online_state(&self, node_id: &NodeId) -> Option<(Option<String>, Vec<IpAddr>)> {
+    pub async fn get_node_online_state(
+        &self,
+        node_id: &NodeId,
+    ) -> Option<(Option<String>, Vec<IpAddr>)> {
         let online_nodes = self.online_nodes.lock().unwrap();
         if let Some(node) = online_nodes.get_node(node_id) {
-            if!node.is_expire() {
-                let ips = self.cmd_server.get_peer_wan_ip(&PeerId::from(node_id.as_slice())).await.unwrap_or(vec![]);
+            if !node.is_expire() {
+                let ips = self
+                    .cmd_server
+                    .get_peer_wan_ip(&PeerId::from(node_id.as_slice()))
+                    .await
+                    .unwrap_or(vec![]);
                 if ips.is_empty() {
                     return None;
                 }

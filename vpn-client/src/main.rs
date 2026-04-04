@@ -6,21 +6,21 @@ mod setting;
 #[cfg(target_os = "windows")]
 mod windows_main;
 
+use crate::api::Api;
+use crate::cli::Cli;
+use crate::p2p_vpn::{JoinRecord, init_p2p_vpn_client_manager, vpn_client_manager};
+use crate::setting::Setting;
+use config::builder::DefaultState;
+use p2p_frame::endpoint::{Endpoint, Protocol};
+use p2p_frame::stack::{P2pConfig, create_p2p_env};
+use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
+use sfo_http::http_server::HttpServerConfig;
+use sfo_http::tide_server::TideHttpServer;
 use std::fs::create_dir_all;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use config::builder::DefaultState;
-use p2p_frame::endpoint::{Endpoint, Protocol};
-use p2p_frame::stack::{create_p2p_env, P2pConfig};
-use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
-use sfo_http::http_server::HttpServerConfig;
-use sfo_http::tide_server::TideHttpServer;
-use crate::api::Api;
-use crate::cli::Cli;
-use crate::p2p_vpn::{init_p2p_vpn_client_manager, vpn_client_manager, JoinRecord};
-use crate::setting::Setting;
 
 const SN_PORT: u16 = 3624;
 
@@ -35,13 +35,18 @@ async fn run_daemon() {
         Err(_) => {
             #[cfg(target_os = "windows")]
             {
-                std::env::current_exe().unwrap().parent().unwrap().join("data")
+                std::env::current_exe()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("data")
             }
             #[cfg(target_os = "macos")]
             {
                 PathBuf::from("/Library/Application Support/BuckyVPN")
             }
-            #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))] {
+            #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+            {
                 PathBuf::from("/var/bucky_vpn")
             }
         }
@@ -54,31 +59,61 @@ async fn run_daemon() {
     }
 
     let log = config.get_bool("log").unwrap_or(true);
-    let log_level = config.get_string("log.level").unwrap_or(String::from("info"));
+    let log_level = config
+        .get_string("log.level")
+        .unwrap_or(String::from("info"));
     if log {
         sfo_log::Logger::new("bucky-vpn")
             .set_log_to_file(true)
             .set_log_file_count(5)
-            .set_log_path(vpn_config_path.join("logs").to_string_lossy().to_string().as_str())
+            .set_log_path(
+                vpn_config_path
+                    .join("logs")
+                    .to_string_lossy()
+                    .to_string()
+                    .as_str(),
+            )
             .set_log_level(log_level.as_str())
-            .start().unwrap();
+            .start()
+            .unwrap();
     }
 
-    let eps = vec![Endpoint::from((Protocol::Quic, SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, p2p_port))))];
-    let p2p_config = P2pConfig::new(Arc::new(X509IdentityFactory), Arc::new(X509IdentityCertFactory), eps)
-        .set_quic_connect_timeout(Duration::from_secs(8))
-        .set_quic_idle_time(Duration::from_secs(30));
+    let eps = vec![Endpoint::from((
+        Protocol::Quic,
+        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, p2p_port)),
+    ))];
+    let p2p_config = P2pConfig::new(
+        Arc::new(X509IdentityFactory),
+        Arc::new(X509IdentityCertFactory),
+        eps,
+    )
+    .set_quic_connect_timeout(Duration::from_secs(8))
+    .set_quic_idle_time(Duration::from_secs(30));
     let p2p_env = create_p2p_env(p2p_config).await.unwrap();
 
-    init_p2p_vpn_client_manager(p2p_env, vpn_config_path.clone(), 34245, "1.0.0".to_string()).unwrap();
+    init_p2p_vpn_client_manager(p2p_env, vpn_config_path.clone(), 34245, "1.0.0".to_string())
+        .unwrap();
 
-    let setting = Arc::new(Setting::load(vpn_config_path.join("setting.toml").as_path()).await.unwrap());
+    let setting = Arc::new(
+        Setting::load(vpn_config_path.join("setting.toml").as_path())
+            .await
+            .unwrap(),
+    );
     if let Some(records) = setting.get::<Vec<JoinRecord>>("joined_networks") {
         for record in records {
             tokio::spawn(async move {
                 let mut interval = 5;
                 loop {
-                    let vpn_client = match vpn_client_manager().get_client(format!("{}_{}:{}", record.server_id, record.server_ip, record.server_port).as_str()).await {
+                    let vpn_client = match vpn_client_manager()
+                        .get_client(
+                            format!(
+                                "{}_{}:{}",
+                                record.server_id, record.server_ip, record.server_port
+                            )
+                            .as_str(),
+                        )
+                        .await
+                    {
                         Ok(v) => v,
                         Err(_) => {
                             log::error!("get client failed");
@@ -115,32 +150,44 @@ fn main() {
     let matches = clap::Command::new("bucky-vpn")
         .about("bucky-vpn")
         .arg_required_else_help(true)
-        .subcommand(clap::Command::new("join")
-            .about("join a vpn network")
-            .arg(clap::Arg::new("server")
-                .long("server")
-                .short('s')
-                .help("The vpn server ip or domain")
-                .required(true))
-            .arg(clap::Arg::new("port")
-                .long("port")
-                .short('p')
-                .help("The vpn server port")
-                .required(false))
-            .arg(clap::Arg::new("server_id")
-                .long("server_id")
-                .help("The vpn server identity ID")
-                .required(true))
-            .arg(clap::Arg::new("network_id")
-                .long("network_id")
-                .value_parser(clap::value_parser!(u64))
-                .help("The network id you want to join")
-                .required(true))
-            .arg(clap::Arg::new("name")
-                .long("name")
-                .short('n')
-                .help("The name of the node seen on the server")
-                .required(false)))
+        .subcommand(
+            clap::Command::new("join")
+                .about("join a vpn network")
+                .arg(
+                    clap::Arg::new("server")
+                        .long("server")
+                        .short('s')
+                        .help("The vpn server ip or domain")
+                        .required(true),
+                )
+                .arg(
+                    clap::Arg::new("port")
+                        .long("port")
+                        .short('p')
+                        .help("The vpn server port")
+                        .required(false),
+                )
+                .arg(
+                    clap::Arg::new("server_id")
+                        .long("server_id")
+                        .help("The vpn server identity ID")
+                        .required(true),
+                )
+                .arg(
+                    clap::Arg::new("network_id")
+                        .long("network_id")
+                        .value_parser(clap::value_parser!(u64))
+                        .help("The network id you want to join")
+                        .required(true),
+                )
+                .arg(
+                    clap::Arg::new("name")
+                        .long("name")
+                        .short('n')
+                        .help("The name of the node seen on the server")
+                        .required(false),
+                ),
+        )
         // .subcommand(clap::Command::new("state"))
         .subcommand(clap::Command::new("daemon").about("Run as vpn service"))
         .get_matches();
@@ -167,10 +214,8 @@ fn main() {
                     }
                 });
             return;
-        },
-        Some(("state", _)) => {
-
-        },
+        }
+        Some(("state", _)) => {}
         Some(("daemon", _)) => {
             #[cfg(all(target_os = "windows", not(debug_assertions)))]
             {
@@ -186,8 +231,6 @@ fn main() {
                     .block_on(run_daemon());
             }
         }
-        _ => {
-        }
+        _ => {}
     }
-
 }

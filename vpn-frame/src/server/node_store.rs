@@ -1,6 +1,6 @@
+use crate::errors::{VpnErrorCode, VpnResult, vpn_err};
 use base58::{FromBase58, ToBase58};
 use bucky_raw_codec::{RawDecode, RawEncode};
-use crate::errors::{vpn_err, VpnErrorCode, VpnResult};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, RawEncode, RawDecode)]
 pub struct NodeId(Vec<u8>);
@@ -10,7 +10,9 @@ impl NodeId {
     }
 
     pub fn from_base58(base58: &str) -> VpnResult<Self> {
-        Ok(Self(base58.from_base58().map_err(|_e|vpn_err!(VpnErrorCode::InvalidParam, "invalid node id {}", base58))?))
+        Ok(Self(base58.from_base58().map_err(|_e| {
+            vpn_err!(VpnErrorCode::InvalidParam, "invalid node id {}", base58)
+        })?))
     }
 
     pub fn to_base36(&self) -> String {
@@ -18,7 +20,9 @@ impl NodeId {
     }
 
     pub fn from_base36(base36: &str) -> VpnResult<Self> {
-        Ok(Self(base36::decode(base36).map_err(|_e|vpn_err!(VpnErrorCode::InvalidParam, "invalid node id {}", base36))?))
+        Ok(Self(base36::decode(base36).map_err(|_e| {
+            vpn_err!(VpnErrorCode::InvalidParam, "invalid node id {}", base36)
+        })?))
     }
 
     pub fn as_slice(&self) -> &[u8] {

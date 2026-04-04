@@ -1,30 +1,30 @@
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
-use std::sync::Arc;
+use crate::api::Api;
+use crate::sqlite_store_factory::{P2pSnCmdServer, SqliteStoreFactory};
+use crate::user_store::{SqliteUserStore, User};
 use base58::ToBase58;
 use config::builder::DefaultState;
 use p2p_frame::endpoint::{Endpoint, Protocol};
 use p2p_frame::p2p_identity::{P2pIdentity, P2pIdentityFactory};
 use p2p_frame::pn::PnServer;
-use p2p_frame::sn::service::{create_sn_service, SnServiceConfig};
+use p2p_frame::sn::service::{SnServiceConfig, create_sn_service};
 use p2p_frame::x509;
 use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
-use sfo_account::{hash_data, AccountServer, AccountStore, DefaultAccountManager};
+use sfo_account::{AccountServer, AccountStore, DefaultAccountManager, hash_data};
 use sfo_http::http_server::HttpServerConfig;
 use sfo_http::openapi::OpenApiServer;
 use sfo_http::openapi::utoipa;
 use sfo_http::openapi::utoipa::OpenApi;
 use sfo_http::tide_server::TideHttpServer;
 use sfo_sql::sqlite::{SqlPool, SqliteJournalMode};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::sync::Arc;
 use vpn_frame::server::{VpnServer, VpnStoreFactory};
-use crate::api::Api;
-use crate::sqlite_store_factory::{P2pSnCmdServer, SqliteStoreFactory};
-use crate::user_store::{SqliteUserStore, User};
 
-mod user_store;
-mod sqlite_store_factory;
 mod api;
+mod sqlite_store_factory;
+mod user_store;
 
 #[derive(utoipa::OpenApi)]
 #[openapi(paths(), components())]
@@ -33,27 +33,39 @@ struct ApiDoc;
 #[tokio::main]
 async fn main() {
     let data_folder = std::env::current_dir().unwrap();
-    let default_config = data_folder.join("config.toml").to_string_lossy().to_string();
+    let default_config = data_folder
+        .join("config.toml")
+        .to_string_lossy()
+        .to_string();
     let matches = clap::Command::new("vpn-server")
         .version("0.1.0")
         .about("vpn server")
-        .arg(clap::Arg::new("config")
-            .short('c')
-            .long("config")
-            .value_name("FILE")
-            .help("Sets a custom config file")
-            .required(false))
+        .arg(
+            clap::Arg::new("config")
+                .short('c')
+                .long("config")
+                .value_name("FILE")
+                .help("Sets a custom config file")
+                .required(false),
+        )
         .get_matches();
 
-    let config_file: String = matches.get_one::<String>("config").unwrap_or(&default_config).clone();
+    let config_file: String = matches
+        .get_one::<String>("config")
+        .unwrap_or(&default_config)
+        .clone();
     let mut config = config::ConfigBuilder::<DefaultState>::default()
-        .set_default("ip", "0.0.0.0").unwrap()
-        .set_default("port", 3624).unwrap()
-        .set_default("http.ip", "0.0.0.0").unwrap()
-        .set_default("http.port", 3445).unwrap();
-        // .set_default("jwt_key", "sdfasdgdfgsdfgsdfgsdfg").unwrap()
-        // .set_default("admin.name", "wugren").unwrap()
-        // .set_default("admin.password", "123456").unwrap();
+        .set_default("ip", "0.0.0.0")
+        .unwrap()
+        .set_default("port", 3624)
+        .unwrap()
+        .set_default("http.ip", "0.0.0.0")
+        .unwrap()
+        .set_default("http.port", 3445)
+        .unwrap();
+    // .set_default("jwt_key", "sdfasdgdfgsdfgsdfgsdfg").unwrap()
+    // .set_default("admin.name", "wugren").unwrap()
+    // .set_default("admin.password", "123456").unwrap();
     if Path::new(config_file.as_str()).exists() {
         config = config.add_source(config::File::from(Path::new(config_file.as_str())));
     }
@@ -69,27 +81,30 @@ async fn main() {
     let jwt_key = config.get_string("jwt.key").unwrap().to_string();
     let data_dir = match config.get_string("data.dir") {
         Ok(dir) => PathBuf::from(dir),
-        Err(_) => {
-            dirs::data_dir().unwrap().join("bucky-vpn-server")
-        }
+        Err(_) => dirs::data_dir().unwrap().join("bucky-vpn-server"),
     };
 
     let log = config.get_bool("log").unwrap_or(true);
-    let log_level = config.get_string("log.level").unwrap_or(String::from("info"));
+    let log_level = config
+        .get_string("log.level")
+        .unwrap_or(String::from("info"));
     if log {
         sfo_log::Logger::new("vpn-server")
             .set_log_to_file(true)
             .set_log_file_count(5)
             .set_log_path(data_dir.join("logs").to_string_lossy().to_string().as_str())
             .set_log_level(log_level.as_str())
-            .start().unwrap();
+            .start()
+            .unwrap();
     }
 
     if !data_dir.exists() {
         tokio::fs::create_dir_all(data_dir.as_path()).await.unwrap();
     }
     let db_path = data_dir.join("vpn.db").to_string_lossy().to_string();
-    let pool = SqlPool::open(db_path.as_str(), 300, Some(SqliteJournalMode::Wal)).await.unwrap();
+    let pool = SqlPool::open(db_path.as_str(), 300, Some(SqliteJournalMode::Wal))
+        .await
+        .unwrap();
 
     let user_store = SqliteUserStore::new(pool.clone());
     user_store.init_user_store().await.unwrap();
@@ -99,7 +114,13 @@ async fn main() {
         let mut store = store_factory.get_vpn_store().await.unwrap();
         store.init_db().await.unwrap();
     }
-    let eps = vec![Endpoint::from((Protocol::Quic, SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from_str(ip.as_str()).unwrap(), port))))];
+    let eps = vec![Endpoint::from((
+        Protocol::Quic,
+        SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::from_str(ip.as_str()).unwrap(),
+            port,
+        )),
+    ))];
 
     let identity_file = data_dir.join("identity");
     let identity = if identity_file.exists() {
@@ -109,7 +130,9 @@ async fn main() {
     } else {
         let local_identity = x509::generate_rsa_x509_identity(None).unwrap();
         let data = local_identity.get_encoded_identity().unwrap();
-        tokio::fs::write(identity_file.as_path(), data).await.unwrap();
+        tokio::fs::write(identity_file.as_path(), data)
+            .await
+            .unwrap();
         Arc::new(local_identity)
     };
     let local_identity = identity.update_endpoints(eps);
@@ -117,7 +140,7 @@ async fn main() {
     let sn_config = SnServiceConfig::new(
         local_identity,
         Arc::new(X509IdentityFactory),
-        Arc::new(X509IdentityCertFactory)
+        Arc::new(X509IdentityCertFactory),
     );
     let sn_service = create_sn_service(sn_config).await;
     sn_service.start().await.unwrap();
@@ -125,15 +148,24 @@ async fn main() {
     let pn_server = PnServer::new(sn_service.ttp_server());
     pn_server.start().await.unwrap();
 
-    let vpn_server = VpnServer::new(Arc::new(P2pSnCmdServer::new(sn_service.clone())), store_factory.clone());
+    let vpn_server = VpnServer::new(
+        Arc::new(P2pSnCmdServer::new(sn_service.clone())),
+        store_factory.clone(),
+    );
     let network_manager = vpn_server.network_manager().clone();
 
-    user_store.update_password(&admin_name, hash_data(vec![admin_name.as_bytes(), admin_password.as_bytes()].as_slice()).to_base58().as_str());
+    user_store.update_password(
+        &admin_name,
+        hash_data(vec![admin_name.as_bytes(), admin_password.as_bytes()].as_slice())
+            .to_base58()
+            .as_str(),
+    );
     if user_store.get_account(&admin_name).await.unwrap().is_none() {
         let network_id = network_manager.new_network_group().await.unwrap();
         let user = User {
             id: admin_name.clone(),
-            password: hash_data(vec![admin_name.as_bytes(), admin_password.as_bytes()].as_slice()).to_base58(),
+            password: hash_data(vec![admin_name.as_bytes(), admin_password.as_bytes()].as_slice())
+                .to_base58(),
             network_id,
             server_id: local_id.to_string(),
         };

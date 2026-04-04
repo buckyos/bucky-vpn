@@ -1,17 +1,20 @@
+use crate::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
+use crate::server::{NetworkGroupId, NetworkId, NetworkMember, NodeId};
+use crate::{DataHeader, VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv, VpnTunnelSend};
+use bucky_raw_codec::{RawFixedBytes, RawFrom};
+use sfo_pool::{
+    PoolErrorCode, PoolResult, Worker, WorkerFactory, WorkerGuard, WorkerPool, WorkerPoolRef,
+    into_pool_err,
+};
 use std::collections::HashMap;
 use std::io::Error;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
-use bucky_raw_codec::{RawFixedBytes, RawFrom};
-use sfo_pool::{into_pool_err, PoolErrorCode, PoolResult, Worker, WorkerFactory, WorkerGuard, WorkerPool, WorkerPoolRef};
 use tokio::io::{AsyncReadExt, AsyncWrite};
 use tokio::spawn;
 use tokio::task::JoinHandle;
-use crate::{DataHeader, VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv, VpnTunnelSend};
-use crate::errors::{into_vpn_err, vpn_err, VpnErrorCode, VpnResult};
-use crate::server::{NetworkGroupId, NetworkId, NetworkMember, NodeId};
 
 pub(crate) struct VpnRouter {
     routers: Mutex<HashMap<NetworkGroupId, HashMap<NetworkId, HashMap<IpAddr, NodeId>>>>,
@@ -20,11 +23,16 @@ pub(crate) struct VpnRouter {
 impl VpnRouter {
     pub fn new() -> Self {
         Self {
-            routers: Mutex::new(HashMap::new())
+            routers: Mutex::new(HashMap::new()),
         }
     }
 
-    pub fn get_node(&self, network_group_id: NetworkGroupId, network_id: NetworkId, target: IpAddr) -> Option<NodeId> {
+    pub fn get_node(
+        &self,
+        network_group_id: NetworkGroupId,
+        network_id: NetworkId,
+        target: IpAddr,
+    ) -> Option<NodeId> {
         let routers = self.routers.lock().unwrap();
         if let Some(networks) = routers.get(&network_group_id) {
             if let Some(nodes) = networks.get(&network_id) {
@@ -36,7 +44,11 @@ impl VpnRouter {
         None
     }
 
-    pub fn get_all_nodes(&self, network_group_id: NetworkGroupId, network_id: NetworkId) -> Vec<(IpAddr, NodeId)> {
+    pub fn get_all_nodes(
+        &self,
+        network_group_id: NetworkGroupId,
+        network_id: NetworkId,
+    ) -> Vec<(IpAddr, NodeId)> {
         let routers = self.routers.lock().unwrap();
         let mut list = Vec::new();
         if let Some(group) = routers.get(&network_group_id) {
@@ -49,7 +61,12 @@ impl VpnRouter {
         list
     }
 
-    pub fn add_network(&self, network_group_id: NetworkGroupId, network_id: NetworkId, members: Vec<NetworkMember>) {
+    pub fn add_network(
+        &self,
+        network_group_id: NetworkGroupId,
+        network_id: NetworkId,
+        members: Vec<NetworkMember>,
+    ) {
         let mut routers = self.routers.lock().unwrap();
         let network = routers.entry(network_group_id).or_insert(HashMap::new());
         let member_map = network.entry(network_id).or_insert(HashMap::new());
@@ -80,7 +97,7 @@ impl VpnRouter {
 pub(crate) struct PkgSend<S: VpnTunnelSend> {
     recv_handle: JoinHandle<()>,
     send: S,
-    is_work: bool
+    is_work: bool,
 }
 
 impl<S: VpnTunnelSend> PkgSend<S> {
@@ -111,7 +128,11 @@ impl<S: VpnTunnelSend> Worker for PkgSend<S> {
 }
 
 impl<S: VpnTunnelSend> AsyncWrite for PkgSend<S> {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, Error>> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, Error>> {
         match Pin::new(&mut self.send).poll_write(cx, buf) {
             Poll::Ready(ret) => {
                 if let Err(e) = ret {
@@ -120,9 +141,7 @@ impl<S: VpnTunnelSend> AsyncWrite for PkgSend<S> {
                 }
                 Poll::Ready(ret)
             }
-            Poll::Pending => {
-                Poll::Pending
-            }
+            Poll::Pending => Poll::Pending,
         }
     }
 
@@ -135,9 +154,7 @@ impl<S: VpnTunnelSend> AsyncWrite for PkgSend<S> {
                 }
                 Poll::Ready(ret)
             }
-            Poll::Pending => {
-                Poll::Pending
-            }
+            Poll::Pending => Poll::Pending,
         }
     }
 
@@ -147,13 +164,13 @@ impl<S: VpnTunnelSend> AsyncWrite for PkgSend<S> {
 }
 
 pub struct PendingSendCache<S: VpnTunnelSend> {
-    cache: Mutex<Vec<PkgSend<S>>>
+    cache: Mutex<Vec<PkgSend<S>>>,
 }
 
 impl<S: VpnTunnelSend> PendingSendCache<S> {
     pub fn new() -> Self {
         Self {
-            cache: Mutex::new(Vec::new())
+            cache: Mutex::new(Vec::new()),
         }
     }
 
@@ -191,19 +208,28 @@ impl<S: VpnTunnelSend> PendingSendCache<S> {
     }
 }
 
-pub(crate) struct Factory<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnelListener<R, S>> {
+pub(crate) struct Factory<
+    R: VpnTunnelRecv,
+    S: VpnTunnelSend,
+    F: VpnTunnelFactory<R, S>,
+    A: VpnTunnelListener<R, S>,
+> {
     target: NodeId,
     tunnel_factory: Arc<F>,
     pending_sends: Arc<PendingSendCache<S>>,
     pkg_listener: Arc<dyn TunnelPkgRecv>,
-    _p: Mutex<std::marker::PhantomData<(R, A)>>
+    _p: Mutex<std::marker::PhantomData<(R, A)>>,
 }
 
-impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnelListener<R, S>> Factory<R, S, F, A> {
-    pub fn new(target: NodeId,
-               tunnel_factory: Arc<F>,
-               pending_sends: Arc<PendingSendCache<S>>,
-               pkg_listener: Arc<dyn TunnelPkgRecv>,) -> Self {
+impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnelListener<R, S>>
+    Factory<R, S, F, A>
+{
+    pub fn new(
+        target: NodeId,
+        tunnel_factory: Arc<F>,
+        pending_sends: Arc<PendingSendCache<S>>,
+        pkg_listener: Arc<dyn TunnelPkgRecv>,
+    ) -> Self {
         let this = Self {
             target,
             tunnel_factory,
@@ -220,13 +246,20 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
             let ret: VpnResult<()> = async move {
                 loop {
                     let mut header = vec![0u8; DataHeader::raw_bytes().unwrap()];
-                    let n = recv.read_exact(header.as_mut()).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+                    let n = recv
+                        .read_exact(header.as_mut())
+                        .await
+                        .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
                     if n == 0 {
                         break;
                     }
-                    let header = DataHeader::clone_from_slice(header.as_slice()).map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
+                    let header = DataHeader::clone_from_slice(header.as_slice())
+                        .map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
                     let mut buf = vec![0u8; header.pkg_len as usize];
-                    let n = recv.read_exact(&mut buf).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+                    let n = recv
+                        .read_exact(&mut buf)
+                        .await
+                        .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
                     if n == 0 {
                         break;
                     }
@@ -236,7 +269,8 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
                     }
                 }
                 Ok(())
-            }.await;
+            }
+            .await;
             if let Err(e) = ret {
                 log::error!("vpn recv handle exit {}", e);
             }
@@ -246,7 +280,9 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
 }
 
 #[async_trait::async_trait]
-impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnelListener<R, S>> WorkerFactory<PkgSend<S>> for Factory<R, S, F, A> {
+impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnelListener<R, S>>
+    WorkerFactory<PkgSend<S>> for Factory<R, S, F, A>
+{
     async fn create(&self) -> PoolResult<PkgSend<S>> {
         {
             if let Some(send) = self.pending_sends.get_pending_send(&self.target) {
@@ -254,8 +290,14 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
                 return Ok(send);
             }
         }
-        let (recv, send) = self.tunnel_factory.create_tunnel(&self.target).await
-            .map_err(into_pool_err!(PoolErrorCode::Failed, "create tunnel failed"))?;
+        let (recv, send) = self
+            .tunnel_factory
+            .create_tunnel(&self.target)
+            .await
+            .map_err(into_pool_err!(
+                PoolErrorCode::Failed,
+                "create tunnel failed"
+            ))?;
         let recv_listener = self.pkg_listener.clone();
         let handle = Self::create_handle(recv, recv_listener);
 
@@ -272,13 +314,15 @@ pub trait TunnelPkgRecv: Send + Sync + 'static {
 struct Target {
     ip: IpAddr,
     network_group_id: NetworkGroupId,
-    network_id: NetworkId
+    network_id: NetworkId,
 }
 
 pub struct TunnelManager<
     R: VpnTunnelRecv,
     S: VpnTunnelSend,
-    F: VpnTunnelFactory<R, S>, A: VpnTunnelListener<R, S>> {
+    F: VpnTunnelFactory<R, S>,
+    A: VpnTunnelListener<R, S>,
+> {
     tunnel_factory: Arc<F>,
     tunnels: Mutex<HashMap<Target, WorkerPoolRef<PkgSend<S>, Factory<R, S, F, A>>>>,
     pending_send_cache: Arc<PendingSendCache<S>>,
@@ -287,14 +331,14 @@ pub struct TunnelManager<
     router: Arc<VpnRouter>,
 }
 
-impl<
-    R: VpnTunnelRecv,
-    S: VpnTunnelSend,
-    F: VpnTunnelFactory<R, S>,
-    A: VpnTunnelListener<R, S>> TunnelManager<R, S, F, A> {
-    pub fn new(tunnel_factory: Arc<F>,
-               tunnel_listener: Arc<A>,
-               pkg_listener: Arc<dyn TunnelPkgRecv>,) -> Self {
+impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnelListener<R, S>>
+    TunnelManager<R, S, F, A>
+{
+    pub fn new(
+        tunnel_factory: Arc<F>,
+        tunnel_listener: Arc<A>,
+        pkg_listener: Arc<dyn TunnelPkgRecv>,
+    ) -> Self {
         let pending_send_cache = Arc::new(PendingSendCache::new());
         let tmp_send_cache = pending_send_cache.clone();
         let tmp_recv_listener = pkg_listener.clone();
@@ -303,7 +347,8 @@ impl<
             loop {
                 match tmp_tunnel_listener.accept().await {
                     Ok((recv, send)) => {
-                        let handle = Factory::<R, S, F, A>::create_handle(recv, tmp_recv_listener.clone());
+                        let handle =
+                            Factory::<R, S, F, A>::create_handle(recv, tmp_recv_listener.clone());
                         tmp_send_cache.push(PkgSend::new(handle, send));
                     }
                     Err(e) => {
@@ -328,11 +373,16 @@ impl<
         &self.router
     }
 
-    pub async fn get_send(&self, network_group_id: NetworkGroupId, network_id: NetworkId, target: IpAddr) -> VpnResult<WorkerGuard<PkgSend<S>, Factory<R, S, F, A>>> {
+    pub async fn get_send(
+        &self,
+        network_group_id: NetworkGroupId,
+        network_id: NetworkId,
+        target: IpAddr,
+    ) -> VpnResult<WorkerGuard<PkgSend<S>, Factory<R, S, F, A>>> {
         let key = Target {
             ip: target.clone(),
             network_group_id,
-            network_id
+            network_id,
         };
         let pool = {
             let mut tunnels = self.tunnels.lock().unwrap();
@@ -341,43 +391,73 @@ impl<
             } else {
                 let node = self.router.get_node(network_group_id, network_id, target);
                 if node.is_none() {
-                    return Err(vpn_err!(VpnErrorCode::NotFoundNode, "group {} network {} ip {}", network_group_id, network_id, target));
+                    return Err(vpn_err!(
+                        VpnErrorCode::NotFoundNode,
+                        "group {} network {} ip {}",
+                        network_group_id,
+                        network_id,
+                        target
+                    ));
                 }
-                let pool = WorkerPool::new(20, Factory::new(node.unwrap(),
-                                                           self.tunnel_factory.clone(),
-                                                           self.pending_send_cache.clone(),
-                                                           self.pkg_listener.clone(), ));
+                let pool = WorkerPool::new(
+                    20,
+                    Factory::new(
+                        node.unwrap(),
+                        self.tunnel_factory.clone(),
+                        self.pending_send_cache.clone(),
+                        self.pkg_listener.clone(),
+                    ),
+                );
                 tunnels.insert(key, pool.clone());
                 pool
             }
         };
-        pool.get_worker().await.map_err(into_vpn_err!(VpnErrorCode::Failed, "get worker failed.group {} network {} ip {}", network_group_id, network_id, target))
+        pool.get_worker().await.map_err(into_vpn_err!(
+            VpnErrorCode::Failed,
+            "get worker failed.group {} network {} ip {}",
+            network_group_id,
+            network_id,
+            target
+        ))
     }
 
-    pub async fn get_all_send(&self, network_group_id: NetworkGroupId, network_id: NetworkId) -> VpnResult<Vec<WorkerGuard<PkgSend<S>, Factory<R, S, F, A>>>> {
+    pub async fn get_all_send(
+        &self,
+        network_group_id: NetworkGroupId,
+        network_id: NetworkId,
+    ) -> VpnResult<Vec<WorkerGuard<PkgSend<S>, Factory<R, S, F, A>>>> {
         let nodes = self.router.get_all_nodes(network_group_id, network_id);
         let mut list = vec![];
         for (ip, node_id) in nodes {
             let key = Target {
                 ip,
                 network_group_id,
-                network_id
+                network_id,
             };
             let pool = {
                 let mut tunnels = self.tunnels.lock().unwrap();
                 if let Some(pool) = tunnels.get(&key) {
                     pool.clone()
                 } else {
-                    let pool = WorkerPool::new(20, Factory::new(node_id,
-                                                               self.tunnel_factory.clone(),
-                                                               self.pending_send_cache.clone(),
-                                                               self.pkg_listener.clone(), ));
+                    let pool = WorkerPool::new(
+                        20,
+                        Factory::new(
+                            node_id,
+                            self.tunnel_factory.clone(),
+                            self.pending_send_cache.clone(),
+                            self.pkg_listener.clone(),
+                        ),
+                    );
                     tunnels.insert(key, pool.clone());
                     pool
                 }
             };
-            let worker = pool.get_worker().await
-                .map_err(into_vpn_err!(VpnErrorCode::Failed, "get worker failed.group {} network {}", network_group_id, network_id))?;
+            let worker = pool.get_worker().await.map_err(into_vpn_err!(
+                VpnErrorCode::Failed,
+                "get worker failed.group {} network {}",
+                network_group_id,
+                network_id
+            ))?;
             list.push(worker);
         }
 
@@ -385,10 +465,9 @@ impl<
     }
 }
 
-impl<R: VpnTunnelRecv,
-    S: VpnTunnelSend,
-    F: VpnTunnelFactory<R, S>,
-    A: VpnTunnelListener<R, S>> Drop for TunnelManager<R, S, F, A> {
+impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnelListener<R, S>> Drop
+    for TunnelManager<R, S, F, A>
+{
     fn drop(&mut self) {
         log::info!("vpn TunnelManager drop");
         self.recv_handle.abort();

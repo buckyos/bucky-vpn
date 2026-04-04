@@ -1,11 +1,11 @@
-use std::net::IpAddr;
-use std::sync::Arc;
+use crate::NodeNetwork;
+use crate::errors::{VpnErrorCode, VpnResult, into_vpn_err};
 use pnet_packet::ipv4::Ipv4Packet;
 use pnet_packet::ipv6::Ipv6Packet;
+use std::net::IpAddr;
+use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tun_rs::{AsyncDevice, Layer, ToIpv4Address, ToIpv6Address};
-use crate::errors::{into_vpn_err, VpnErrorCode, VpnResult};
-use crate::NodeNetwork;
 
 #[async_trait::async_trait]
 pub trait PacketRecv: Send + Sync + 'static {
@@ -23,13 +23,14 @@ pub struct DeviceSend {
 
 impl DeviceSend {
     pub fn new(dev: Arc<AsyncDevice>) -> Self {
-        Self {
-            dev
-        }
+        Self { dev }
     }
 
     pub async fn send(&self, packet: &[u8]) -> VpnResult<()> {
-        self.dev.send(packet).await.map_err(into_vpn_err!(VpnErrorCode::Failed))?;
+        self.dev
+            .send(packet)
+            .await
+            .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
         Ok(())
     }
 }
@@ -59,11 +60,22 @@ impl<S: PacketRecv> VpnDevice<S> {
         let mut config = tun_rs::DeviceBuilder::new();
 
         if self.network.ip.is_some() {
-            log::info!("create tun device {} ip {}", self.network.name, self.network.ip.as_ref().unwrap().to_string());
-            config = config.ipv4(self.network.ip.as_ref().unwrap().clone(), self.network.mask, None);
+            log::info!(
+                "create tun device {} ip {}",
+                self.network.name,
+                self.network.ip.as_ref().unwrap().to_string()
+            );
+            config = config.ipv4(
+                self.network.ip.as_ref().unwrap().clone(),
+                self.network.mask,
+                None,
+            );
         }
         if self.network.ipv6.is_some() {
-            config = config.ipv6(self.network.ipv6.as_ref().unwrap().clone(), self.network.mask);
+            config = config.ipv6(
+                self.network.ipv6.as_ref().unwrap().clone(),
+                self.network.mask,
+            );
         }
 
         #[cfg(windows)]
@@ -72,26 +84,27 @@ impl<S: PacketRecv> VpnDevice<S> {
         }
 
         let truncated_name = if cfg!(target_os = "macos") {
-            let name =  format!("utun{}", self.network.id);
+            let name = format!("utun{}", self.network.id);
             // MacOS: 15 chars max
             name[..std::cmp::min(name.len(), 8)].to_string()
         } else if cfg!(target_os = "linux") {
-            let name =  format!("tun_{}", self.network.id);
+            let name = format!("tun_{}", self.network.id);
             // Linux: 15 chars max
             name[..std::cmp::min(name.len(), 15)].to_string()
         } else if cfg!(windows) {
-            let name =  format!("tun_{}", self.network.id);
+            let name = format!("tun_{}", self.network.id);
             // Windows: 32 chars max for compatibility (even though wintun allows 128)
             name[..std::cmp::min(name.len(), 32)].to_string()
         } else {
-            let name =  format!("tun_{}", self.network.id);
+            let name = format!("tun_{}", self.network.id);
             name[..std::cmp::min(name.len(), 15)].to_string()
         };
         let dev = config
             .name(truncated_name)
             .mtu(1400)
             .layer(Layer::L3)
-            .build_async().map_err(into_vpn_err!(VpnErrorCode::Failed))?;
+            .build_async()
+            .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
         self.dev = Some(Arc::new(dev));
 
         Ok(())
@@ -103,7 +116,7 @@ impl<S: PacketRecv> VpnDevice<S> {
         let network = self.network.clone();
         self.recv = Some(recv.clone());
         let handle = tokio::spawn(async move {
-            let mut buf = [0;65535];
+            let mut buf = [0; 65535];
             loop {
                 match dev.recv(&mut buf).await {
                     Ok(size) => {
@@ -114,10 +127,15 @@ impl<S: PacketRecv> VpnDevice<S> {
                                     let mask = u32::MAX << (32 - network.mask);
                                     if let Some(ip_pkg) = Ipv4Packet::new(packet) {
                                         let target = ip_pkg.get_destination();
-                                        if network.ip.as_ref().unwrap().ipv4().unwrap().to_bits() & mask != target.to_bits() & mask {
+                                        if network.ip.as_ref().unwrap().ipv4().unwrap().to_bits()
+                                            & mask
+                                            != target.to_bits() & mask
+                                        {
                                             continue;
                                         }
-                                        if let Err(e) = recv.on_recv(IpAddr::V4(target), packet).await {
+                                        if let Err(e) =
+                                            recv.on_recv(IpAddr::V4(target), packet).await
+                                        {
                                             log::error!("failed to process packet: {:?}", e);
                                         }
                                     }
@@ -128,10 +146,16 @@ impl<S: PacketRecv> VpnDevice<S> {
                                     let mask = u128::MAX << (128 - network.ipv6_mask);
                                     if let Some(ip_pkg) = Ipv6Packet::new(packet) {
                                         let target = ip_pkg.get_destination();
-                                        if u128::from(network.ipv6.as_ref().unwrap().ipv6().unwrap()) & mask != u128::from(target) & mask {
+                                        if u128::from(
+                                            network.ipv6.as_ref().unwrap().ipv6().unwrap(),
+                                        ) & mask
+                                            != u128::from(target) & mask
+                                        {
                                             continue;
                                         }
-                                        if let Err(e) = recv.on_recv(IpAddr::V6(target), packet).await {
+                                        if let Err(e) =
+                                            recv.on_recv(IpAddr::V6(target), packet).await
+                                        {
                                             log::error!("failed to process packet: {:?}", e);
                                         }
                                     }
@@ -182,7 +206,11 @@ impl<S: PacketRecv> Drop for VpnDevice<S> {
             handle.abort();
         }
 
-        log::info!("drop tun device {} ip {}", self.network.name, self.network.ip.as_ref().unwrap().to_string());
+        log::info!(
+            "drop tun device {} ip {}",
+            self.network.name,
+            self.network.ip.as_ref().unwrap().to_string()
+        );
         let _ = self.dev.take();
     }
 }

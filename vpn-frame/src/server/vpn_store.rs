@@ -1,6 +1,6 @@
-use std::ops::{Deref, DerefMut};
 use crate::errors::VpnResult;
 use crate::server::{NetworkStore, NodeStore};
+use std::ops::{Deref, DerefMut};
 
 #[async_trait::async_trait]
 pub trait VpnStore: NetworkStore + NodeStore {
@@ -16,7 +16,10 @@ pub struct VpnStoreGuard<T: VpnStore> {
 
 impl<T: VpnStore> VpnStoreGuard<T> {
     pub fn new(store: T) -> Self {
-        Self { store, is_transaction: false }
+        Self {
+            store,
+            is_transaction: false,
+        }
     }
 
     pub async fn begin_transaction(&mut self) -> VpnResult<()> {

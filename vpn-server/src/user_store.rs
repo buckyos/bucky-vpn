@@ -1,16 +1,19 @@
+use base58::ToBase58;
+use serde::{Deserialize, Serialize};
+use sfo_account::{
+    Account, AccountErrorCode, AccountResult, AccountStore, DefaultAccountManager, account_err,
+    hash_data, into_account_err,
+};
+use sfo_http::openapi::utoipa;
+use sfo_sql::Row;
+use sfo_sql::errors::SqlErrorCode;
+use sfo_sql::sqlite::{SqlPool, sql_query};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use base58::ToBase58;
-use sfo_account::{account_err, hash_data, into_account_err, Account, AccountErrorCode, AccountResult, AccountStore, DefaultAccountManager};
-use serde::{Deserialize, Serialize};
-use sfo_http::openapi::utoipa;
-use sfo_sql::{Row};
-use sfo_sql::errors::SqlErrorCode;
-use sfo_sql::sqlite::{sql_query, SqlPool};
-use vpn_frame::errors::{into_vpn_err, VpnErrorCode, VpnResult};
-use vpn_frame::server::NetworkGroupId;
-use vpn_frame::serialize_u64_as_string;
 use vpn_frame::deserialize_u64_from_string;
+use vpn_frame::errors::{VpnErrorCode, VpnResult, into_vpn_err};
+use vpn_frame::serialize_u64_as_string;
+use vpn_frame::server::NetworkGroupId;
 
 pub type UserId = String;
 #[derive(Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -18,7 +21,10 @@ pub struct User {
     pub id: String,
     #[serde(skip)]
     pub password: String,
-    #[serde(serialize_with = "serialize_u64_as_string", deserialize_with = "deserialize_u64_from_string")]
+    #[serde(
+        serialize_with = "serialize_u64_as_string",
+        deserialize_with = "deserialize_u64_from_string"
+    )]
     pub network_id: NetworkGroupId,
     pub server_id: String,
 }
@@ -47,11 +53,18 @@ pub struct SqliteUserStore {
 
 impl SqliteUserStore {
     pub fn new(pool: SqlPool) -> Self {
-        Self { pool, password_cache: Mutex::new(Default::default()) }
+        Self {
+            pool,
+            password_cache: Mutex::new(Default::default()),
+        }
     }
 
     pub async fn init_user_store(&self) -> VpnResult<()> {
-        let mut conn = self.pool.get_conn().await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        let mut conn = self
+            .pool
+            .get_conn()
+            .await
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
         conn.execute_sql(sql_query("CREATE TABLE IF NOT EXISTS user (id varchar(64) PRIMARY KEY, network_id integer, server_id TEXT)")).await.map_err(into_vpn_err!(VpnErrorCode::IoError))?;
         Ok(())
     }
@@ -70,8 +83,15 @@ impl SqliteUserStore {
 #[async_trait::async_trait]
 impl AccountStore<User> for SqliteUserStore {
     async fn get_account(&self, account_id: &<User as Account>::Id) -> AccountResult<Option<User>> {
-        let mut conn = self.pool.get_conn().await.map_err(into_account_err!(AccountErrorCode::IoError))?;
-        match conn.query_one(sql_query("SELECT * FROM user WHERE id = ?").bind(account_id)).await {
+        let mut conn = self
+            .pool
+            .get_conn()
+            .await
+            .map_err(into_account_err!(AccountErrorCode::IoError))?;
+        match conn
+            .query_one(sql_query("SELECT * FROM user WHERE id = ?").bind(account_id))
+            .await
+        {
             Ok(row) => {
                 let id: String = row.get("id");
                 let network_id: i64 = row.get("network_id");
@@ -82,7 +102,12 @@ impl AccountStore<User> for SqliteUserStore {
                     }
                 };
                 let server_id: String = row.get("server_id");
-                Ok(Some(User { id, password, network_id: network_id as u64, server_id }))
+                Ok(Some(User {
+                    id,
+                    password,
+                    network_id: network_id as u64,
+                    server_id,
+                }))
             }
             Err(e) => {
                 if e.code() == SqlErrorCode::NotFound {
@@ -95,8 +120,15 @@ impl AccountStore<User> for SqliteUserStore {
     }
 
     async fn get_account_by_name(&self, account_name: &str) -> AccountResult<Option<User>> {
-        let mut conn = self.pool.get_conn().await.map_err(into_account_err!(AccountErrorCode::IoError))?;
-        match conn.query_one(sql_query("SELECT * FROM user WHERE id = ?").bind(account_name)).await {
+        let mut conn = self
+            .pool
+            .get_conn()
+            .await
+            .map_err(into_account_err!(AccountErrorCode::IoError))?;
+        match conn
+            .query_one(sql_query("SELECT * FROM user WHERE id = ?").bind(account_name))
+            .await
+        {
             Ok(row) => {
                 let id: String = row.get("id");
                 let network_id: i64 = row.get("network_id");
@@ -107,7 +139,12 @@ impl AccountStore<User> for SqliteUserStore {
                     }
                 };
                 let server_id: String = row.get("server_id");
-                Ok(Some(User { id, password, network_id: network_id as u64, server_id }))
+                Ok(Some(User {
+                    id,
+                    password,
+                    network_id: network_id as u64,
+                    server_id,
+                }))
             }
             Err(e) => {
                 if e.code() == SqlErrorCode::NotFound {
@@ -120,18 +157,32 @@ impl AccountStore<User> for SqliteUserStore {
     }
 
     async fn remove_account(&self, account_id: &<User as Account>::Id) -> AccountResult<()> {
-        let mut conn = self.pool.get_conn().await.map_err(into_account_err!(AccountErrorCode::IoError))?;
-        conn.execute_sql(sql_query("DELETE FROM user WHERE id = ?").bind(account_id)).await.map_err(into_account_err!(AccountErrorCode::IoError))?;
+        let mut conn = self
+            .pool
+            .get_conn()
+            .await
+            .map_err(into_account_err!(AccountErrorCode::IoError))?;
+        conn.execute_sql(sql_query("DELETE FROM user WHERE id = ?").bind(account_id))
+            .await
+            .map_err(into_account_err!(AccountErrorCode::IoError))?;
         Ok(())
     }
 
     async fn add_account(&self, account: &User) -> AccountResult<<User as Account>::Id> {
-        let mut conn = self.pool.get_conn().await.map_err(into_account_err!(AccountErrorCode::IoError))?;
+        let mut conn = self
+            .pool
+            .get_conn()
+            .await
+            .map_err(into_account_err!(AccountErrorCode::IoError))?;
         self.update_password(&account.id, &account.password);
-        conn.execute_sql(sql_query("INSERT INTO user (id, network_id, server_id) VALUES (?, ?, ?)")
-            .bind(&account.id)
-            .bind(account.network_id as i64)
-            .bind(account.server_id.as_str())).await.map_err(into_account_err!(AccountErrorCode::IoError))?;
+        conn.execute_sql(
+            sql_query("INSERT INTO user (id, network_id, server_id) VALUES (?, ?, ?)")
+                .bind(&account.id)
+                .bind(account.network_id as i64)
+                .bind(account.server_id.as_str()),
+        )
+        .await
+        .map_err(into_account_err!(AccountErrorCode::IoError))?;
         Ok(account.id.clone())
     }
 

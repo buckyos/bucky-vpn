@@ -1,14 +1,14 @@
 pub mod client;
-pub mod server;
 pub mod errors;
-mod vpn_protocol;
 mod sequence;
+pub mod server;
+mod vpn_protocol;
 
-use std::fmt;
-use serde::{de, Deserializer, Serializer};
 use serde::de::Visitor;
-pub use vpn_protocol::*;
+use serde::{Deserializer, Serializer, de};
 pub use sfo_cmd_server as cmd_server;
+use std::fmt;
+pub use vpn_protocol::*;
 
 pub fn serialize_u64_as_string<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
 where

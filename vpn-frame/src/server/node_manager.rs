@@ -1,8 +1,8 @@
+use crate::errors::VpnResult;
+use crate::server::{Node, NodeId, VpnStore, VpnStoreFactory};
+use mini_moka::sync::Cache;
 use std::sync::Arc;
 use std::time::Duration;
-use mini_moka::sync::Cache;
-use crate::errors::{VpnResult};
-use crate::server::{Node, NodeId, VpnStore, VpnStoreFactory};
 
 pub struct NodeManager<S: VpnStore, F: VpnStoreFactory<S>> {
     store_factory: Arc<F>,
