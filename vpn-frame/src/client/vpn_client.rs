@@ -1,14 +1,15 @@
 #![allow(unused)]
 
+use crate::client::PacketDispatcherConfig;
+use crate::client::packet_dispatcher::PacketDispatcher;
 use crate::client::tunnel_manager::{TunnelManager, TunnelPkgRecv};
 use crate::client::{PacketRecv, VpnDevice, VpnServerClient};
 use crate::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
 use crate::server::{NetworkGroupId, NetworkId};
 use crate::{
-    DataHeader, VpnCmdCode, VpnCmdHeader, VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv,
-    VpnTunnelSend,
+    VpnCmdCode, VpnCmdHeader, VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv, VpnTunnelSend,
 };
-use bucky_raw_codec::{RawConvertTo, RawDecode};
+use bucky_raw_codec::RawDecode;
 use sfo_cmd_server::CmdTunnelMeta;
 use sfo_cmd_server::client::{CmdClient, CmdSend, SendGuard};
 use std::collections::HashMap;
@@ -16,7 +17,6 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
 use tokio::task::JoinHandle;
 
 struct DevicePkgRecv<
@@ -25,7 +25,7 @@ struct DevicePkgRecv<
     F: VpnTunnelFactory<R, S>,
     L: VpnTunnelListener<R, S>,
 > {
-    tunnel_manager: Arc<TunnelManager<R, S, F, L>>,
+    packet_dispatcher: Arc<PacketDispatcher<R, S, F, L>>,
     network_group_id: NetworkGroupId,
     network_id: NetworkId,
     ipv4_mask: u8,
@@ -36,14 +36,14 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, L: VpnTunnel
     DevicePkgRecv<R, S, F, L>
 {
     pub fn new(
-        tunnel_manager: Arc<TunnelManager<R, S, F, L>>,
+        packet_dispatcher: Arc<PacketDispatcher<R, S, F, L>>,
         network_group_id: NetworkGroupId,
         network_id: NetworkId,
         ipv4_mask: u8,
         ipv6_mask: u8,
     ) -> Self {
         Self {
-            tunnel_manager,
+            packet_dispatcher,
             network_group_id,
             network_id,
             ipv4_mask,
@@ -57,65 +57,15 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, L: VpnTunnel
     PacketRecv for DevicePkgRecv<R, S, F, L>
 {
     async fn on_recv(&self, target: IpAddr, packet: &[u8]) -> VpnResult<()> {
-        // 首先判断目标ip地址是否是广播地址
-        if let IpAddr::V4(ipv4) = target {
-            let is_broadcast = if self.ipv4_mask < 32 {
-                // Calculate the broadcast address using the netmask
-                let host_bits = 32 - self.ipv4_mask;
-                let host_mask = (1u32 << host_bits) - 1;
-                let addr_bits = u32::from_be_bytes(ipv4.octets());
-                (addr_bits & host_mask) == host_mask
-            } else {
-                false
-            };
-
-            if is_broadcast || target.is_multicast() {
-                let all_send = self
-                    .tunnel_manager
-                    .get_all_send(self.network_group_id, self.network_id)
-                    .await?;
-                for mut send in all_send {
-                    let data_header = DataHeader {
-                        network_id: self.network_id,
-                        pkg_len: packet.len() as u16,
-                    };
-                    let data_header = data_header
-                        .to_vec()
-                        .map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
-                    send.write_all(data_header.as_slice())
-                        .await
-                        .map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
-                    send.write_all(packet)
-                        .await
-                        .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
-                    send.flush()
-                        .await
-                        .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
-                }
-                return Ok(());
-            }
-        }
-        let mut send = self
-            .tunnel_manager
-            .get_send(self.network_group_id, self.network_id, target)
-            .await?;
-        let data_header = DataHeader {
-            network_id: self.network_id,
-            pkg_len: packet.len() as u16,
-        };
-        let data_header = data_header
-            .to_vec()
-            .map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
-        send.write_all(data_header.as_slice())
+        self.packet_dispatcher
+            .dispatch(
+                self.network_group_id,
+                self.network_id,
+                target,
+                packet,
+                is_broadcast_or_multicast(target, self.ipv4_mask),
+            )
             .await
-            .map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
-        send.write_all(packet)
-            .await
-            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
-        send.flush()
-            .await
-            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
-        Ok(())
     }
 }
 
@@ -197,6 +147,7 @@ pub struct VpnClient<
     server_client: Arc<VpnServerClient<M, CS, G, T>>,
     vpn_devices: Mutex<Option<HashMap<NetworkId, VpnDevice<DevicePkgRecv<R, S, F, L>>>>>,
     tunnel_manager: Mutex<Option<Arc<TunnelManager<R, S, F, L>>>>,
+    packet_dispatcher: Mutex<Option<Arc<PacketDispatcher<R, S, F, L>>>>,
     run_handle: Mutex<Option<JoinHandle<()>>>,
     cur_version: AtomicU16,
     is_first: AtomicBool,
@@ -220,10 +171,27 @@ impl<
         tunnel_listener: Arc<L>,
         client_version: String,
     ) -> Arc<Self> {
+        Self::new_with_packet_dispatcher_config(
+            server_client,
+            tunnel_factory,
+            tunnel_listener,
+            client_version,
+            PacketDispatcherConfig::default(),
+        )
+    }
+
+    pub fn new_with_packet_dispatcher_config(
+        server_client: Arc<VpnServerClient<M, CS, G, T>>,
+        tunnel_factory: Arc<F>,
+        tunnel_listener: Arc<L>,
+        client_version: String,
+        packet_dispatcher_config: PacketDispatcherConfig,
+    ) -> Arc<Self> {
         let this = Arc::new(Self {
             server_client: server_client.clone(),
             vpn_devices: Mutex::new(Some(HashMap::new())),
             tunnel_manager: Mutex::new(None),
+            packet_dispatcher: Mutex::new(None),
             run_handle: Mutex::new(None),
             cur_version: AtomicU16::new(0),
             is_first: AtomicBool::new(true),
@@ -234,7 +202,12 @@ impl<
             tunnel_listener,
             Arc::new(ClientTunnelPkgRecv::new(Arc::downgrade(&this))),
         );
-        *this.tunnel_manager.lock().unwrap() = Some(Arc::new(tunnel_manager));
+        let tunnel_manager = Arc::new(tunnel_manager);
+        *this.packet_dispatcher.lock().unwrap() = Some(PacketDispatcher::new(
+            tunnel_manager.clone(),
+            packet_dispatcher_config,
+        ));
+        *this.tunnel_manager.lock().unwrap() = Some(tunnel_manager);
         this
     }
 
@@ -302,12 +275,12 @@ impl<
             let vpn_device = vpn_devices.remove(&vpn_info.node_info.id);
             if vpn_device.is_none() {
                 let mut vpn_device = VpnDevice::new(vpn_info.node_info.clone());
-                let tunnel_manager = {
-                    let tunnel_manager = self.tunnel_manager.lock().unwrap();
-                    tunnel_manager.as_ref().unwrap().clone()
+                let packet_dispatcher = {
+                    let packet_dispatcher = self.packet_dispatcher.lock().unwrap();
+                    packet_dispatcher.as_ref().unwrap().clone()
                 };
                 if let Ok(_) = vpn_device.start(Arc::new(DevicePkgRecv::new(
-                    tunnel_manager,
+                    packet_dispatcher,
                     vpn_info.node_info.group_id,
                     vpn_info.node_info.id,
                     vpn_info.node_info.mask,
@@ -341,6 +314,23 @@ impl<
             .join_network_group(network_group_id, name)
             .await
     }
+}
+
+fn is_broadcast_or_multicast(target: IpAddr, ipv4_mask: u8) -> bool {
+    if target.is_multicast() {
+        return true;
+    }
+
+    if let IpAddr::V4(ipv4) = target {
+        if ipv4_mask < 32 {
+            let host_bits = 32 - ipv4_mask;
+            let host_mask = (1u32 << host_bits) - 1;
+            let addr_bits = u32::from_be_bytes(ipv4.octets());
+            return (addr_bits & host_mask) == host_mask;
+        }
+    }
+
+    false
 }
 
 impl<
