@@ -74,6 +74,7 @@ async fn run_daemon() {
                     .as_str(),
             )
             .set_log_level(log_level.as_str())
+            .add_filter("quinn")
             .start()
             .unwrap();
     }

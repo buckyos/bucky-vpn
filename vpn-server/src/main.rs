@@ -94,6 +94,7 @@ async fn main() {
             .set_log_file_count(5)
             .set_log_path(data_dir.join("logs").to_string_lossy().to_string().as_str())
             .set_log_level(log_level.as_str())
+            .add_filter("quinn")
             .start()
             .unwrap();
     }
