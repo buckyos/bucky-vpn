@@ -190,7 +190,7 @@ impl Api {
                             let (client_version, ip_list) = online.unwrap();
                             ret_nodes.push(JsonJoinedNode {
                                 group_id: node.group_id,
-                                node_id: node.node_id.to_base58(),
+                                node_id: node.node_id.to_base36(),
                                 allow_join: node.allow_join,
                                 name: node.name.clone(),
                                 comment: node.comment.clone(),
@@ -201,7 +201,7 @@ impl Api {
                         } else {
                             ret_nodes.push(JsonJoinedNode {
                                 group_id: node.group_id,
-                                node_id: node.node_id.to_base58(),
+                                node_id: node.node_id.to_base36(),
                                 allow_join: node.allow_join,
                                 name: node.name.clone(),
                                 comment: node.comment.clone(),
