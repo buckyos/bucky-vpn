@@ -1,4 +1,5 @@
 use crate::api::Api;
+use crate::pn_connection_validator::SqlitePnConnectionValidator;
 use crate::sqlite_store_factory::{P2pSnCmdServer, SqliteStoreFactory};
 use crate::user_store::{SqliteUserStore, User};
 use base58::ToBase58;
@@ -23,6 +24,7 @@ use std::sync::Arc;
 use vpn_frame::server::{VpnServer, VpnStoreFactory};
 
 mod api;
+mod pn_connection_validator;
 mod sqlite_store_factory;
 mod user_store;
 
@@ -146,7 +148,10 @@ async fn main() {
     let sn_service = create_sn_service(sn_config).await;
     sn_service.start().await.unwrap();
 
-    let pn_server = PnServer::new(sn_service.ttp_server());
+    let pn_server = PnServer::new_with_connection_validator(
+        sn_service.ttp_server(),
+        SqlitePnConnectionValidator::new(store_factory.clone()),
+    );
     pn_server.start().await.unwrap();
 
     let vpn_server = VpnServer::new(
