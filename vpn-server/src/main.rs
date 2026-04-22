@@ -1,5 +1,6 @@
 use crate::api::Api;
 use crate::pn_connection_validator::SqlitePnConnectionValidator;
+use crate::pn_traffic_service::PnTrafficService;
 use crate::sqlite_store_factory::{P2pSnCmdServer, SqliteStoreFactory};
 use crate::user_store::{SqliteUserStore, User};
 use base58::ToBase58;
@@ -25,6 +26,7 @@ use vpn_frame::server::{VpnServer, VpnStoreFactory};
 
 mod api;
 mod pn_connection_validator;
+mod pn_traffic_service;
 mod sqlite_store_factory;
 mod user_store;
 
@@ -153,6 +155,8 @@ async fn main() {
         SqlitePnConnectionValidator::new(store_factory.clone()),
     );
     pn_server.start().await.unwrap();
+    let traffic_service = PnTrafficService::new(pn_server.clone(), store_factory.clone());
+    traffic_service.start_background_flush(std::time::Duration::from_secs(1));
 
     let vpn_server = VpnServer::new(
         Arc::new(P2pSnCmdServer::new(sn_service.clone())),
@@ -192,7 +196,12 @@ async fn main() {
     http_server.enable_api_doc(true);
 
     AccountServer::register_server(&mut http_server, user_manager.clone());
-    Api::register_api(&mut http_server, user_manager.clone(), vpn_server.clone());
+    Api::register_api(
+        &mut http_server,
+        user_manager.clone(),
+        vpn_server.clone(),
+        traffic_service.clone(),
+    );
 
     http_server.run().await.unwrap();
 

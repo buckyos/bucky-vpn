@@ -59,9 +59,9 @@ impl PnConnectionValidator for SqlitePnConnectionValidator {
             .map(|joined| joined.group_id)
             .collect::<HashSet<_>>();
 
-        let has_common_allowed_group = source_groups.iter().any(|joined| {
-            joined.allow_join && allowed_target_groups.contains(&joined.group_id)
-        });
+        let has_common_allowed_group = source_groups
+            .iter()
+            .any(|joined| joined.allow_join && allowed_target_groups.contains(&joined.group_id));
 
         if has_common_allowed_group {
             Ok(ValidateResult::Accept)
@@ -100,8 +100,11 @@ mod tests {
         std::fs::create_dir_all(&db_dir).unwrap();
 
         let db_path = db_dir.join("vpn.db");
-        let store_factory =
-            Arc::new(SqliteStoreFactory::create(db_path.to_str().unwrap()).await.unwrap());
+        let store_factory = Arc::new(
+            SqliteStoreFactory::create(db_path.to_str().unwrap())
+                .await
+                .unwrap(),
+        );
         {
             let mut store = store_factory.get_vpn_store().await.unwrap();
             store.init_db().await.unwrap();
@@ -146,7 +149,10 @@ mod tests {
         add_joined_node(&store_factory, 1, 1, true).await;
         add_joined_node(&store_factory, 1, 2, true).await;
 
-        let result = validator.validate(&new_validate_context(1, 2)).await.unwrap();
+        let result = validator
+            .validate(&new_validate_context(1, 2))
+            .await
+            .unwrap();
         assert!(matches!(result, ValidateResult::Accept));
 
         drop(validator);
@@ -160,7 +166,10 @@ mod tests {
         add_joined_node(&store_factory, 1, 1, true).await;
         add_joined_node(&store_factory, 2, 2, true).await;
 
-        let result = validator.validate(&new_validate_context(1, 2)).await.unwrap();
+        let result = validator
+            .validate(&new_validate_context(1, 2))
+            .await
+            .unwrap();
         assert!(matches!(result, ValidateResult::Reject(_)));
 
         drop(validator);
@@ -174,7 +183,10 @@ mod tests {
         add_joined_node(&store_factory, 1, 1, false).await;
         add_joined_node(&store_factory, 1, 2, true).await;
 
-        let result = validator.validate(&new_validate_context(1, 2)).await.unwrap();
+        let result = validator
+            .validate(&new_validate_context(1, 2))
+            .await
+            .unwrap();
         assert!(matches!(result, ValidateResult::Reject(_)));
 
         drop(validator);
@@ -188,7 +200,10 @@ mod tests {
         add_joined_node(&store_factory, 1, 1, true).await;
         add_joined_node(&store_factory, 1, 2, false).await;
 
-        let result = validator.validate(&new_validate_context(1, 2)).await.unwrap();
+        let result = validator
+            .validate(&new_validate_context(1, 2))
+            .await
+            .unwrap();
         assert!(matches!(result, ValidateResult::Reject(_)));
 
         drop(validator);

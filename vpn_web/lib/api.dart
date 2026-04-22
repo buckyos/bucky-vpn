@@ -18,9 +18,13 @@ class LoginReq {
   String password;
   int timestamp;
 
-  LoginReq({required this.userName, required this.password, required this.timestamp});
+  LoginReq(
+      {required this.userName,
+      required this.password,
+      required this.timestamp});
 
-  factory LoginReq.fromJson(Map<String, dynamic> json) => _$LoginReqFromJson(json);
+  factory LoginReq.fromJson(Map<String, dynamic> json) =>
+      _$LoginReqFromJson(json);
   Map<String, dynamic> toJson() => _$LoginReqToJson(this);
 }
 
@@ -34,10 +38,38 @@ class UserInfo {
   @JsonKey(name: 'server_id')
   String serverId;
 
-  UserInfo({required this.id, required this.networkId, required this.sessionId, required this.serverId});
+  UserInfo(
+      {required this.id,
+      required this.networkId,
+      required this.sessionId,
+      required this.serverId});
 
-  factory UserInfo.fromJson(Map<String, dynamic> json) => _$UserInfoFromJson(json);
+  factory UserInfo.fromJson(Map<String, dynamic> json) =>
+      _$UserInfoFromJson(json);
   Map<String, dynamic> toJson() => _$UserInfoToJson(this);
+}
+
+@JsonSerializable()
+class TrafficStats {
+  @JsonKey(name: 'tx_bytes')
+  String txBytes;
+  @JsonKey(name: 'tx_speed')
+  String txSpeed;
+  @JsonKey(name: 'rx_bytes')
+  String rxBytes;
+  @JsonKey(name: 'rx_speed')
+  String rxSpeed;
+
+  TrafficStats({
+    required this.txBytes,
+    required this.txSpeed,
+    required this.rxBytes,
+    required this.rxSpeed,
+  });
+
+  factory TrafficStats.fromJson(Map<String, dynamic> json) =>
+      _$TrafficStatsFromJson(json);
+  Map<String, dynamic> toJson() => _$TrafficStatsToJson(this);
 }
 
 @JsonSerializable()
@@ -56,6 +88,14 @@ class JoinedNode {
   String? clientVersion;
   @JsonKey(name: 'ip_list')
   List<String>? ipList;
+  @JsonKey(name: 'tx_bytes')
+  String txBytes;
+  @JsonKey(name: 'tx_speed')
+  String txSpeed;
+  @JsonKey(name: 'rx_bytes')
+  String rxBytes;
+  @JsonKey(name: 'rx_speed')
+  String rxSpeed;
 
   JoinedNode(
       {required this.groupId,
@@ -65,9 +105,14 @@ class JoinedNode {
       required this.comment,
       required this.isOnline,
       this.clientVersion,
-      this.ipList});
+      this.ipList,
+      required this.txBytes,
+      required this.txSpeed,
+      required this.rxBytes,
+      required this.rxSpeed});
 
-  factory JoinedNode.fromJson(Map<String, dynamic> json) => _$JoinedNodeFromJson(json);
+  factory JoinedNode.fromJson(Map<String, dynamic> json) =>
+      _$JoinedNodeFromJson(json);
   Map<String, dynamic> toJson() => _$JoinedNodeToJson(this);
 }
 
@@ -85,15 +130,17 @@ class Network {
   @JsonKey(name: 'ipv6_mask')
   int ipv6Mask;
 
-  Network({required this.id,
-    required this.groupId,
-    required this.name,
-    this.ipSeg,
-    required this.mask,
-    this.ipv6Seg,
-    required this.ipv6Mask});
+  Network(
+      {required this.id,
+      required this.groupId,
+      required this.name,
+      this.ipSeg,
+      required this.mask,
+      this.ipv6Seg,
+      required this.ipv6Mask});
 
-  factory Network.fromJson(Map<String, dynamic> json) => _$NetworkFromJson(json);
+  factory Network.fromJson(Map<String, dynamic> json) =>
+      _$NetworkFromJson(json);
   Map<String, dynamic> toJson() => _$NetworkToJson(this);
 }
 
@@ -109,13 +156,25 @@ class NetworkMember {
   String? clientVersion;
   @JsonKey(name: 'ip_list')
   List<String>? ipList;
+  @JsonKey(name: 'tx_bytes')
+  String txBytes;
+  @JsonKey(name: 'tx_speed')
+  String txSpeed;
+  @JsonKey(name: 'rx_bytes')
+  String rxBytes;
+  @JsonKey(name: 'rx_speed')
+  String rxSpeed;
 
   NetworkMember(
       {required this.nodeId,
-        required this.ipAddr,
-        required this.isOnline,
-        this.clientVersion,
-        this.ipList});
+      required this.ipAddr,
+      required this.isOnline,
+      this.clientVersion,
+      this.ipList,
+      required this.txBytes,
+      required this.txSpeed,
+      required this.rxBytes,
+      required this.rxSpeed});
 
   factory NetworkMember.fromJson(Map<String, dynamic> json) =>
       _$NetworkMemberFromJson(json);
@@ -133,7 +192,7 @@ class Api {
   HttpClient _client;
   static Api? _instance;
 
-  Api._internal(String baseUrl): _client = HttpClient(baseUrl);
+  Api._internal(String baseUrl) : _client = HttpClient(baseUrl);
 
   static Api instance() {
     if (_instance == null) {
@@ -157,7 +216,8 @@ class Api {
     String hashedPassword = calculateSha256("$userName$password");
     var timestamp = DateTime.now().millisecondsSinceEpoch;
     String saltPassword = calculateSha256("$hashedPassword$timestamp");
-    final req = LoginReq(userName: userName, password: saltPassword, timestamp: timestamp);
+    final req = LoginReq(
+        userName: userName, password: saltPassword, timestamp: timestamp);
     var (result, resp) = await _client.postJson("/account/login", req.toJson());
     if (result.isSuccess) {
       if (resp is Map) {
@@ -183,7 +243,8 @@ class Api {
       return (HttpResult(-1), null);
     }
 
-    var (result, resp) = await _client.getJson("/account/get_account_info", headers: {"authorization": "Bearer $session"});
+    var (result, resp) = await _client.getJson("/account/get_account_info",
+        headers: {"authorization": "Bearer $session"});
     if (result.isSuccess) {
       if (resp is Map) {
         if (resp["err"] == 0) {
@@ -205,12 +266,41 @@ class Api {
       return (HttpResult(-1), null);
     }
 
-    var (result, resp) = await _client.getJson("/get_joined_nodes", headers: {"authorization": "Bearer $session"});
+    var (result, resp) = await _client.getJson("/get_joined_nodes",
+        headers: {"authorization": "Bearer $session"});
     if (result.isSuccess) {
       if (resp is Map) {
         if (resp["err"] == 0) {
           var data = resp["result"] as List;
-          return (HttpResult(0), data.map((e) => JoinedNode.fromJson(e as Map<String, dynamic>)).toList());
+          return (
+            HttpResult(0),
+            data
+                .map((e) => JoinedNode.fromJson(e as Map<String, dynamic>))
+                .toList()
+          );
+        } else {
+          return (HttpResult(resp["err"], msg: resp["msg"] as String), null);
+        }
+      } else {
+        return (HttpResult(-1), null);
+      }
+    } else {
+      return (result, null);
+    }
+  }
+
+  Future<(HttpResult, TrafficStats?)> getUserTrafficStats() async {
+    String? session = window.localStorage["session"];
+    if (session == null) {
+      return (HttpResult(-1), null);
+    }
+
+    var (result, resp) = await _client.getJson("/get_user_traffic_stats",
+        headers: {"authorization": "Bearer $session"});
+    if (result.isSuccess) {
+      if (resp is Map) {
+        if (resp["err"] == 0) {
+          return (HttpResult(0), TrafficStats.fromJson(resp["result"]));
         } else {
           return (HttpResult(resp["err"], msg: resp["msg"] as String), null);
         }
@@ -228,12 +318,18 @@ class Api {
       return (HttpResult(-1), null);
     }
 
-    var (result, resp) = await _client.getJson("/get_networks", headers: {"authorization": "Bearer $session"});
+    var (result, resp) = await _client.getJson("/get_networks",
+        headers: {"authorization": "Bearer $session"});
     if (result.isSuccess) {
       if (resp is Map) {
         if (resp["err"] == 0) {
           var data = resp["result"] as List;
-          return (HttpResult(0), data.map((e) => Network.fromJson(e as Map<String, dynamic>)).toList());
+          return (
+            HttpResult(0),
+            data
+                .map((e) => Network.fromJson(e as Map<String, dynamic>))
+                .toList()
+          );
         } else {
           return (HttpResult(resp["err"], msg: resp["msg"] as String), null);
         }
@@ -251,7 +347,9 @@ class Api {
       return HttpResult(-1);
     }
 
-    var (result, resp) = await _client.postJson("/add_network", {"name": name, "ip_addr": ipSeg, "mask": mask}, headers: {"authorization": "Bearer $session"});
+    var (result, resp) = await _client.postJson(
+        "/add_network", {"name": name, "ip_addr": ipSeg, "mask": mask},
+        headers: {"authorization": "Bearer $session"});
     if (result.isSuccess) {
       if (resp is Map) {
         if (resp["err"] == 0) {
@@ -267,13 +365,16 @@ class Api {
     }
   }
 
-  Future<HttpResult> updateNetwork(String networkId, String name, String ipSeg, int mask) async {
+  Future<HttpResult> updateNetwork(
+      String networkId, String name, String ipSeg, int mask) async {
     String? session = window.localStorage["session"];
     if (session == null) {
       return HttpResult(-1);
     }
 
-    var (result, resp) = await _client.postJson("/update_network", {"network_id": networkId, "name": name, "ip_addr": ipSeg, "mask": mask}, headers: {"authorization": "Bearer $session"});
+    var (result, resp) = await _client.postJson("/update_network",
+        {"network_id": networkId, "name": name, "ip_addr": ipSeg, "mask": mask},
+        headers: {"authorization": "Bearer $session"});
     if (result.isSuccess) {
       if (resp is Map) {
         if (resp["err"] == 0) {
@@ -295,7 +396,9 @@ class Api {
       return HttpResult(-1);
     }
 
-    var (result, resp) = await _client.postJson("/delete_network", {"network_id": networkId}, headers: {"authorization": "Bearer $session"});
+    var (result, resp) = await _client.postJson(
+        "/delete_network", {"network_id": networkId},
+        headers: {"authorization": "Bearer $session"});
     if (result.isSuccess) {
       if (resp is Map) {
         if (resp["err"] == 0) {
@@ -311,13 +414,16 @@ class Api {
     }
   }
 
-  Future<HttpResult> addNetworkMember(String networkId, String nodeId, String ipAddr) async {
+  Future<HttpResult> addNetworkMember(
+      String networkId, String nodeId, String ipAddr) async {
     String? session = window.localStorage["session"];
     if (session == null) {
       return HttpResult(-1);
     }
 
-    var (result, resp) = await _client.postJson("/add_network_member", {"network_id": networkId, "node_id": nodeId, "ip_addr": ipAddr}, headers: {"authorization": "Bearer $session"});
+    var (result, resp) = await _client.postJson("/add_network_member",
+        {"network_id": networkId, "node_id": nodeId, "ip_addr": ipAddr},
+        headers: {"authorization": "Bearer $session"});
     if (result.isSuccess) {
       if (resp is Map) {
         if (resp["err"] == 0) {
@@ -333,13 +439,16 @@ class Api {
     }
   }
 
-  Future<HttpResult> updateNetworkMember(String networkId, String nodeId, String ipAddr) async {
+  Future<HttpResult> updateNetworkMember(
+      String networkId, String nodeId, String ipAddr) async {
     String? session = window.localStorage["session"];
     if (session == null) {
       return HttpResult(-1);
     }
 
-    var (result, resp) = await _client.postJson("/update_network_member", {"network_id": networkId, "node_id": nodeId, "ip_addr": ipAddr}, headers: {"authorization": "Bearer $session"});
+    var (result, resp) = await _client.postJson("/update_network_member",
+        {"network_id": networkId, "node_id": nodeId, "ip_addr": ipAddr},
+        headers: {"authorization": "Bearer $session"});
     if (result.isSuccess) {
       if (resp is Map) {
         if (resp["err"] == 0) {
@@ -355,13 +464,16 @@ class Api {
     }
   }
 
-  Future<HttpResult> deleteNetworkMember(String networkId, String nodeId) async {
+  Future<HttpResult> deleteNetworkMember(
+      String networkId, String nodeId) async {
     String? session = window.localStorage["session"];
     if (session == null) {
       return HttpResult(-1);
     }
 
-    var (result, resp) = await _client.postJson("/delete_network_member", {"network_id": networkId, "node_id": nodeId}, headers: {"authorization": "Bearer $session"});
+    var (result, resp) = await _client.postJson(
+        "/delete_network_member", {"network_id": networkId, "node_id": nodeId},
+        headers: {"authorization": "Bearer $session"});
     if (result.isSuccess) {
       if (resp is Map) {
         if (resp["err"] == 0) {
@@ -377,18 +489,26 @@ class Api {
     }
   }
 
-  Future<(HttpResult, List<NetworkMember>?)> getNetworkMember(String networkId) async {
+  Future<(HttpResult, List<NetworkMember>?)> getNetworkMember(
+      String networkId) async {
     String? session = window.localStorage["session"];
     if (session == null) {
       return (HttpResult(-1), null);
     }
 
-    var (result, resp) = await _client.postJson("/get_network_member", {"network_id": networkId}, headers: {"authorization": "Bearer $session"});
+    var (result, resp) = await _client.postJson(
+        "/get_network_member", {"network_id": networkId},
+        headers: {"authorization": "Bearer $session"});
     if (result.isSuccess) {
       if (resp is Map) {
         if (resp["err"] == 0) {
           var data = resp["result"] as List;
-          return (HttpResult(0), data.map((e) => NetworkMember.fromJson(e as Map<String, dynamic>)).toList());
+          return (
+            HttpResult(0),
+            data
+                .map((e) => NetworkMember.fromJson(e as Map<String, dynamic>))
+                .toList()
+          );
         } else {
           return (HttpResult(resp["err"], msg: resp["msg"] as String), null);
         }
@@ -406,7 +526,9 @@ class Api {
       return HttpResult(-1);
     }
 
-    var (result, resp) = await _client.postJson("/allow_join", {"node_id": nodeId, "allow_join": allowJoin}, headers: {"authorization": "Bearer $session"});
+    var (result, resp) = await _client.postJson(
+        "/allow_join", {"node_id": nodeId, "allow_join": allowJoin},
+        headers: {"authorization": "Bearer $session"});
     if (result.isSuccess) {
       if (resp is Map) {
         if (resp["err"] == 0) {
@@ -428,7 +550,9 @@ class Api {
       return HttpResult(-1);
     }
 
-    var (result, resp) = await _client.postJson("/update_joined_comment", {"node_id": nodeId, "comment": comment}, headers: {"authorization": "Bearer $session"});
+    var (result, resp) = await _client.postJson(
+        "/update_joined_comment", {"node_id": nodeId, "comment": comment},
+        headers: {"authorization": "Bearer $session"});
     if (result.isSuccess) {
       if (resp is Map) {
         if (resp["err"] == 0) {
@@ -450,7 +574,9 @@ class Api {
       return HttpResult(-1);
     }
 
-    var (result, resp) = await _client.postJson("/delete_joined_node", {"node_id": nodeId}, headers: {"authorization": "Bearer $session"});
+    var (result, resp) = await _client.postJson(
+        "/delete_joined_node", {"node_id": nodeId},
+        headers: {"authorization": "Bearer $session"});
     if (result.isSuccess) {
       if (resp is Map) {
         if (resp["err"] == 0) {
@@ -472,7 +598,8 @@ class Api {
       return HttpResult(-1);
     }
 
-    var (result, resp) = await _client.postJson("/account/refresh_session", {}, headers: {"authorization": "Bearer $refreshSession"});
+    var (result, resp) = await _client.postJson("/account/refresh_session", {},
+        headers: {"authorization": "Bearer $refreshSession"});
     if (result.isSuccess) {
       if (resp is Map) {
         if (resp["err"] == 0) {

@@ -24,6 +24,12 @@ pub struct SqliteVpnStore {
     conn: SqlConnection,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PersistedTrafficStats {
+    pub tx_bytes: u64,
+    pub rx_bytes: u64,
+}
+
 impl SqliteVpnStore {
     pub fn new(conn: SqlConnection) -> Self {
         Self { conn }
@@ -109,6 +115,142 @@ impl SqliteVpnStore {
             .await
             .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
 
+        let sql = r#"CREATE TABLE IF NOT EXISTS pn_node_traffic_stat (
+            node_id varchar(45) PRIMARY KEY,
+            tx_bytes integer NOT NULL DEFAULT 0,
+            rx_bytes integer NOT NULL DEFAULT 0
+        )"#;
+        self.conn
+            .execute_sql(sql_query(sql))
+            .await
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+
+        let sql = r#"CREATE TABLE IF NOT EXISTS pn_group_traffic_stat (
+            group_id integer PRIMARY KEY,
+            tx_bytes integer NOT NULL DEFAULT 0,
+            rx_bytes integer NOT NULL DEFAULT 0
+        )"#;
+        self.conn
+            .execute_sql(sql_query(sql))
+            .await
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+
+        Ok(())
+    }
+
+    pub async fn list_all_joined_node_ids(&mut self) -> VpnResult<Vec<NodeId>> {
+        let sql = r#"SELECT DISTINCT node_id FROM joined_node"#;
+        let rows = self
+            .conn
+            .query_all(sql_query(sql))
+            .await
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        let mut node_ids = Vec::new();
+        for row in rows {
+            let node_id: String = row.get("node_id");
+            node_ids
+                .push(NodeId::from_base58(&node_id).map_err(into_vpn_err!(VpnErrorCode::IoError))?);
+        }
+        Ok(node_ids)
+    }
+
+    pub async fn get_persisted_node_traffic(
+        &mut self,
+        node_id: &NodeId,
+    ) -> VpnResult<PersistedTrafficStats> {
+        let sql = r#"SELECT tx_bytes, rx_bytes FROM pn_node_traffic_stat WHERE node_id = ?"#;
+        match self
+            .conn
+            .query_one(sql_query(sql).bind(node_id.to_base58()))
+            .await
+        {
+            Ok(row) => Ok(PersistedTrafficStats {
+                tx_bytes: row.get::<i64, _>("tx_bytes") as u64,
+                rx_bytes: row.get::<i64, _>("rx_bytes") as u64,
+            }),
+            Err(err) => {
+                if err.code() == SqlErrorCode::NotFound {
+                    Ok(PersistedTrafficStats::default())
+                } else {
+                    Err(vpn_err!(
+                        VpnErrorCode::IoError,
+                        "query node traffic {} failed",
+                        node_id.to_base58()
+                    ))
+                }
+            }
+        }
+    }
+
+    pub async fn add_persisted_node_traffic(
+        &mut self,
+        node_id: &NodeId,
+        stats: PersistedTrafficStats,
+    ) -> VpnResult<()> {
+        let sql = r#"INSERT INTO pn_node_traffic_stat (node_id, tx_bytes, rx_bytes)
+            VALUES (?, ?, ?)
+            ON CONFLICT(node_id) DO UPDATE SET
+                tx_bytes = tx_bytes + excluded.tx_bytes,
+                rx_bytes = rx_bytes + excluded.rx_bytes"#;
+        self.conn
+            .execute_sql(
+                sql_query(sql)
+                    .bind(node_id.to_base58())
+                    .bind(stats.tx_bytes as i64)
+                    .bind(stats.rx_bytes as i64),
+            )
+            .await
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        Ok(())
+    }
+
+    pub async fn get_persisted_group_traffic(
+        &mut self,
+        group_id: &NetworkGroupId,
+    ) -> VpnResult<PersistedTrafficStats> {
+        let sql = r#"SELECT tx_bytes, rx_bytes FROM pn_group_traffic_stat WHERE group_id = ?"#;
+        match self
+            .conn
+            .query_one(sql_query(sql).bind(*group_id as i64))
+            .await
+        {
+            Ok(row) => Ok(PersistedTrafficStats {
+                tx_bytes: row.get::<i64, _>("tx_bytes") as u64,
+                rx_bytes: row.get::<i64, _>("rx_bytes") as u64,
+            }),
+            Err(err) => {
+                if err.code() == SqlErrorCode::NotFound {
+                    Ok(PersistedTrafficStats::default())
+                } else {
+                    Err(vpn_err!(
+                        VpnErrorCode::IoError,
+                        "query group traffic {} failed",
+                        group_id
+                    ))
+                }
+            }
+        }
+    }
+
+    pub async fn add_persisted_group_traffic(
+        &mut self,
+        group_id: &NetworkGroupId,
+        stats: PersistedTrafficStats,
+    ) -> VpnResult<()> {
+        let sql = r#"INSERT INTO pn_group_traffic_stat (group_id, tx_bytes, rx_bytes)
+            VALUES (?, ?, ?)
+            ON CONFLICT(group_id) DO UPDATE SET
+                tx_bytes = tx_bytes + excluded.tx_bytes,
+                rx_bytes = rx_bytes + excluded.rx_bytes"#;
+        self.conn
+            .execute_sql(
+                sql_query(sql)
+                    .bind(*group_id as i64)
+                    .bind(stats.tx_bytes as i64)
+                    .bind(stats.rx_bytes as i64),
+            )
+            .await
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
         Ok(())
     }
 }

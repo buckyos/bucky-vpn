@@ -1,5 +1,7 @@
+use crate::pn_traffic_service::PnTrafficServiceRef;
 use crate::sqlite_store_factory::VpnServerRef;
 use crate::user_store::UserManagerRef;
+use p2p_frame::pn::PnUserTrafficSnapshot;
 use serde::{Deserialize, Serialize};
 use sfo_account::AccountManager;
 use sfo_http::http::header::AUTHORIZATION;
@@ -30,6 +32,10 @@ struct JsonJoinedNode {
     pub client_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip_list: Option<Vec<String>>,
+    pub tx_bytes: String,
+    pub tx_speed: String,
+    pub rx_bytes: String,
+    pub rx_speed: String,
 }
 
 #[derive(Serialize, Deserialize, utoipa::ToSchema)]
@@ -43,6 +49,18 @@ struct JsonNetworkMember {
     pub client_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip_list: Option<Vec<String>>,
+    pub tx_bytes: String,
+    pub tx_speed: String,
+    pub rx_bytes: String,
+    pub rx_speed: String,
+}
+
+#[derive(Serialize, Deserialize, utoipa::ToSchema)]
+struct JsonUserTrafficStats {
+    pub tx_bytes: String,
+    pub tx_speed: String,
+    pub rx_bytes: String,
+    pub rx_speed: String,
 }
 
 #[derive(Serialize, Deserialize, utoipa::ToSchema)]
@@ -152,17 +170,39 @@ pub struct JsonNetwork {
     pub ipv6_mask: u8,
 }
 
+impl JsonUserTrafficStats {
+    fn from_snapshot(snapshot: PnUserTrafficSnapshot) -> Self {
+        Self {
+            tx_bytes: snapshot.tx_bytes.to_string(),
+            tx_speed: snapshot.tx_speed.to_string(),
+            rx_bytes: snapshot.rx_bytes.to_string(),
+            rx_speed: snapshot.rx_speed.to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+fn accumulate_traffic_stats(snapshot: &mut PnUserTrafficSnapshot, item: &PnUserTrafficSnapshot) {
+    snapshot.tx_bytes = snapshot.tx_bytes.saturating_add(item.tx_bytes);
+    snapshot.tx_speed = snapshot.tx_speed.saturating_add(item.tx_speed);
+    snapshot.rx_bytes = snapshot.rx_bytes.saturating_add(item.rx_bytes);
+    snapshot.rx_speed = snapshot.rx_speed.saturating_add(item.rx_speed);
+}
+
 impl Api {
     pub fn register_api<Req: Request, Resp: Response, S: HttpServer<Req, Resp> + OpenApiServer>(
         server: &mut S,
         user_manager: UserManagerRef,
         vpn_server: VpnServerRef,
+        traffic_service: PnTrafficServiceRef,
     ) {
         let tmp_user_manager = user_manager.clone();
         let tmp_vpn_server = vpn_server.clone();
+        let tmp_traffic_service = traffic_service.clone();
         server.serve("/get_joined_nodes", HttpMethod::GET, move |req: Req| {
             let user_manager = tmp_user_manager.clone();
             let vpn_server = tmp_vpn_server.clone();
+            let traffic_service = tmp_traffic_service.clone();
             async move {
                 let result: VpnResult<Vec<JsonJoinedNode>> = async move {
                     let session = req
@@ -185,6 +225,7 @@ impl Api {
                         .await?;
                     let mut ret_nodes = Vec::new();
                     for node in nodes.iter() {
+                        let traffic = traffic_service.get_node_snapshot(&node.node_id).await?;
                         let online = vpn_server.get_node_online_state(&node.node_id).await;
                         if online.is_some() {
                             let (client_version, ip_list) = online.unwrap();
@@ -197,6 +238,10 @@ impl Api {
                                 online: true,
                                 client_version,
                                 ip_list: Some(ip_list.iter().map(|ip| ip.to_string()).collect()),
+                                tx_bytes: traffic.tx_bytes.to_string(),
+                                tx_speed: traffic.tx_speed.to_string(),
+                                rx_bytes: traffic.rx_bytes.to_string(),
+                                rx_speed: traffic.rx_speed.to_string(),
                             });
                         } else {
                             ret_nodes.push(JsonJoinedNode {
@@ -208,6 +253,10 @@ impl Api {
                                 online: false,
                                 client_version: None,
                                 ip_list: None,
+                                tx_bytes: traffic.tx_bytes.to_string(),
+                                tx_speed: traffic.tx_speed.to_string(),
+                                rx_bytes: traffic.rx_bytes.to_string(),
+                                rx_speed: traffic.rx_speed.to_string(),
                             });
                         }
                     }
@@ -219,10 +268,47 @@ impl Api {
         });
 
         let tmp_user_manager = user_manager.clone();
+        let tmp_traffic_service = traffic_service.clone();
+        server.serve(
+            "/get_user_traffic_stats",
+            HttpMethod::GET,
+            move |req: Req| {
+                let user_manager = tmp_user_manager.clone();
+                let traffic_service = tmp_traffic_service.clone();
+                async move {
+                    let result: VpnResult<JsonUserTrafficStats> = async move {
+                        let session = req
+                            .header(AUTHORIZATION)
+                            .ok_or_else(|| vpn_err!(VpnErrorCode::InvalidParam))?
+                            .to_str()
+                            .map_err(|_| vpn_err!(VpnErrorCode::InvalidParam))?
+                            .to_string();
+                        if !session.to_lowercase().starts_with("bearer ") {
+                            return Err(vpn_err!(VpnErrorCode::InvalidParam));
+                        }
+                        let session = session.split_at("Bearer ".len()).1;
+                        let user = user_manager
+                            .decode_session(session)
+                            .await
+                            .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
+                        let snapshot = traffic_service
+                            .get_group_snapshot(&user.account.network_id)
+                            .await?;
+                        Ok(JsonUserTrafficStats::from_snapshot(snapshot))
+                    }
+                    .await;
+                    Ok(Resp::from_result(result))
+                }
+            },
+        );
+
+        let tmp_user_manager = user_manager.clone();
         let tmp_vpn_server = vpn_server.clone();
+        let tmp_traffic_service = traffic_service.clone();
         server.serve("/allow_join", HttpMethod::POST, move |mut req: Req| {
             let user_manager = tmp_user_manager.clone();
             let vpn_server = tmp_vpn_server.clone();
+            let traffic_service = tmp_traffic_service.clone();
             async move {
                 let result: VpnResult<()> = async move {
                     let session = req
@@ -245,6 +331,19 @@ impl Api {
                         .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
                     let node_id = NodeId::from_base58(&req.node_id)
                         .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
+                    let joined_nodes = vpn_server
+                        .network_manager()
+                        .get_joint_nodes(&user.account.network_id)
+                        .await?;
+                    if !joined_nodes
+                        .iter()
+                        .any(|node| node.node_id.as_slice() == node_id.as_slice())
+                    {
+                        return Err(vpn_err!(VpnErrorCode::NoPermission, "No permission"));
+                    }
+                    if !req.allow_join {
+                        traffic_service.flush_node(&node_id).await?;
+                    }
                     vpn_server
                         .network_manager()
                         .update_allow_join(&user.account.network_id, &node_id, req.allow_join)
@@ -302,12 +401,14 @@ impl Api {
 
         let tmp_user_manager = user_manager.clone();
         let tmp_vpn_server = vpn_server.clone();
+        let tmp_traffic_service = traffic_service.clone();
         server.serve(
             "/delete_joined_node",
             HttpMethod::POST,
             move |mut req: Req| {
                 let user_manager = tmp_user_manager.clone();
                 let vpn_server = tmp_vpn_server.clone();
+                let traffic_service = tmp_traffic_service.clone();
                 async move {
                     let result: VpnResult<()> = async move {
                         let session = req
@@ -330,6 +431,17 @@ impl Api {
                             .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
                         let node_id = NodeId::from_base58(&req.node_id)
                             .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
+                        let joined_nodes = vpn_server
+                            .network_manager()
+                            .get_joint_nodes(&user.account.network_id)
+                            .await?;
+                        if !joined_nodes
+                            .iter()
+                            .any(|node| node.node_id.as_slice() == node_id.as_slice())
+                        {
+                            return Err(vpn_err!(VpnErrorCode::NoPermission, "No permission"));
+                        }
+                        traffic_service.flush_node(&node_id).await?;
                         vpn_server
                             .network_manager()
                             .del_joined_node(&user.account.network_id, &node_id)
@@ -705,12 +817,14 @@ impl Api {
 
         let tmp_user_manager = user_manager.clone();
         let tmp_vpn_server = vpn_server.clone();
+        let tmp_traffic_service = traffic_service.clone();
         server.serve(
             "/get_network_member",
             HttpMethod::POST,
             move |mut req: Req| {
                 let user_manager = tmp_user_manager.clone();
                 let vpn_server = tmp_vpn_server.clone();
+                let traffic_service = tmp_traffic_service.clone();
                 async move {
                     let result: VpnResult<Vec<JsonNetworkMember>> = async move {
                         let session = req
@@ -749,6 +863,7 @@ impl Api {
                             .await?;
                         let mut list = Vec::new();
                         for member in members.iter() {
+                            let traffic = traffic_service.get_node_snapshot(&member.id).await?;
                             let online = vpn_server.get_node_online_state(&member.id).await;
                             if online.is_some() {
                                 let (client_version, ip_list) = online.unwrap();
@@ -761,6 +876,10 @@ impl Api {
                                     ip_list: Some(
                                         ip_list.iter().map(|ip| ip.to_string()).collect(),
                                     ),
+                                    tx_bytes: traffic.tx_bytes.to_string(),
+                                    tx_speed: traffic.tx_speed.to_string(),
+                                    rx_bytes: traffic.rx_bytes.to_string(),
+                                    rx_speed: traffic.rx_speed.to_string(),
                                 });
                             } else {
                                 list.push(JsonNetworkMember {
@@ -770,6 +889,10 @@ impl Api {
                                     online: false,
                                     client_version: None,
                                     ip_list: None,
+                                    tx_bytes: traffic.tx_bytes.to_string(),
+                                    tx_speed: traffic.tx_speed.to_string(),
+                                    rx_bytes: traffic.rx_bytes.to_string(),
+                                    rx_speed: traffic.rx_speed.to_string(),
                                 })
                             }
                         }
@@ -780,5 +903,53 @@ impl Api {
                 }
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accumulate_traffic_stats_sums_all_fields() {
+        let mut total = PnUserTrafficSnapshot {
+            tx_bytes: 10,
+            tx_speed: 20,
+            rx_bytes: 30,
+            rx_speed: 40,
+        };
+        let item = PnUserTrafficSnapshot {
+            tx_bytes: 1,
+            tx_speed: 2,
+            rx_bytes: 3,
+            rx_speed: 4,
+        };
+
+        accumulate_traffic_stats(&mut total, &item);
+
+        assert_eq!(
+            total,
+            PnUserTrafficSnapshot {
+                tx_bytes: 11,
+                tx_speed: 22,
+                rx_bytes: 33,
+                rx_speed: 44,
+            }
+        );
+    }
+
+    #[test]
+    fn json_user_traffic_stats_uses_decimal_strings() {
+        let stats = JsonUserTrafficStats::from_snapshot(PnUserTrafficSnapshot {
+            tx_bytes: 1024,
+            tx_speed: 64,
+            rx_bytes: 2048,
+            rx_speed: 32,
+        });
+
+        assert_eq!(stats.tx_bytes, "1024");
+        assert_eq!(stats.tx_speed, "64");
+        assert_eq!(stats.rx_bytes, "2048");
+        assert_eq!(stats.rx_speed, "32");
     }
 }

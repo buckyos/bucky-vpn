@@ -4,6 +4,7 @@ import 'package:fluttertoast/fluttertoast.dart';
 import 'api.dart';
 import 'input_dialog.dart';
 import 'prompt_dialog.dart';
+import 'traffic_stats.dart';
 
 class JoinedNodesPage extends StatefulWidget {
   const JoinedNodesPage({super.key});
@@ -14,6 +15,43 @@ class JoinedNodesPage extends StatefulWidget {
 
 class _JoinedNodesPageState extends State<JoinedNodesPage> {
   List<JoinedNode>? _joinedNodes;
+
+  Widget _buildTrafficCell({
+    required String txValue,
+    required String rxValue,
+    required bool speed,
+  }) {
+    final uploadValue =
+        speed ? formatTrafficSpeed(txValue) : formatTrafficBytes(txValue);
+    final downloadValue =
+        speed ? formatTrafficSpeed(rxValue) : formatTrafficBytes(rxValue);
+
+    return SizedBox(
+      width: 150,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Up $uploadValue',
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF204153),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Down $downloadValue',
+            style: const TextStyle(
+              fontSize: 13,
+              color: Color(0xFF4B6675),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _actionLink({
     required String label,
@@ -128,13 +166,15 @@ class _JoinedNodesPageState extends State<JoinedNodesPage> {
                   child: ConstrainedBox(
                     constraints: BoxConstraints(minWidth: constraints.maxWidth),
                     child: DataTable(
-                      dataRowMinHeight: 52,
-                      dataRowMaxHeight: 52,
+                      dataRowMinHeight: 68,
+                      dataRowMaxHeight: 68,
                       columns: const [
                         DataColumn(label: Text('Allow Join')),
                         DataColumn(label: Text('Name')),
                         DataColumn(label: Text('Node ID')),
                         DataColumn(label: Text('Status')),
+                        DataColumn(label: Text('Speed')),
+                        DataColumn(label: Text('Traffic')),
                         DataColumn(label: Text('Action')),
                       ],
                       rows: _joinedNodes!
@@ -181,6 +221,20 @@ class _JoinedNodesPageState extends State<JoinedNodesPage> {
                                           ? const Color(0xFF18794E)
                                           : const Color(0xFF8A3B12),
                                     ),
+                                  ),
+                                ),
+                                DataCell(
+                                  _buildTrafficCell(
+                                    txValue: node.txSpeed,
+                                    rxValue: node.rxSpeed,
+                                    speed: true,
+                                  ),
+                                ),
+                                DataCell(
+                                  _buildTrafficCell(
+                                    txValue: node.txBytes,
+                                    rxValue: node.rxBytes,
+                                    speed: false,
                                   ),
                                 ),
                                 DataCell(

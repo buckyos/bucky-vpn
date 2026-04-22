@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 
 import 'api.dart';
+import 'traffic_stats.dart';
 
 class NetworkMembersPage extends StatefulWidget {
   final Network network;
@@ -17,6 +18,43 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
   List<JoinedNode> _joinedNodes = [];
   JoinedNode? addingNode;
   final TextEditingController _ipController = TextEditingController();
+
+  Widget _buildTrafficCell({
+    required String txValue,
+    required String rxValue,
+    required bool speed,
+  }) {
+    final uploadValue =
+        speed ? formatTrafficSpeed(txValue) : formatTrafficBytes(txValue);
+    final downloadValue =
+        speed ? formatTrafficSpeed(rxValue) : formatTrafficBytes(rxValue);
+
+    return SizedBox(
+      width: 150,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Up $uploadValue',
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF204153),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Down $downloadValue',
+            style: const TextStyle(
+              fontSize: 13,
+              color: Color(0xFF4B6675),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _actionLink({
     required String label,
@@ -179,6 +217,10 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
             nodeId: addingNode!.nodeId,
             ipAddr: _ipController.text,
             isOnline: false,
+            txBytes: '0',
+            txSpeed: '0',
+            rxBytes: '0',
+            rxSpeed: '0',
           ),
         );
       });
@@ -247,9 +289,14 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
                       constraints:
                           BoxConstraints(minWidth: constraints.maxWidth),
                       child: DataTable(
+                        dataRowMinHeight: 68,
+                        dataRowMaxHeight: 68,
                         columns: const [
                           DataColumn(label: Text('Name')),
                           DataColumn(label: Text('IP')),
+                          DataColumn(label: Text('Status')),
+                          DataColumn(label: Text('Speed')),
+                          DataColumn(label: Text('Traffic')),
                           DataColumn(label: Text('Action')),
                         ],
                         rows: _networkMembers
@@ -261,6 +308,33 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
                                         member.nodeId),
                                   ),
                                   DataCell(SelectableText(member.ipAddr)),
+                                  DataCell(
+                                    Text(
+                                      member.isOnline
+                                          ? (member.ipList?.join(', ') ??
+                                              'online')
+                                          : 'offline',
+                                      style: TextStyle(
+                                        color: member.isOnline
+                                            ? const Color(0xFF18794E)
+                                            : const Color(0xFF8A3B12),
+                                      ),
+                                    ),
+                                  ),
+                                  DataCell(
+                                    _buildTrafficCell(
+                                      txValue: member.txSpeed,
+                                      rxValue: member.rxSpeed,
+                                      speed: true,
+                                    ),
+                                  ),
+                                  DataCell(
+                                    _buildTrafficCell(
+                                      txValue: member.txBytes,
+                                      rxValue: member.rxBytes,
+                                      speed: false,
+                                    ),
+                                  ),
                                   DataCell(
                                     _actionLink(
                                       label: 'Remove',

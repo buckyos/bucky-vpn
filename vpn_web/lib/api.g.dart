@@ -32,6 +32,21 @@ Map<String, dynamic> _$UserInfoToJson(UserInfo instance) => <String, dynamic>{
       'server_id': instance.serverId,
     };
 
+TrafficStats _$TrafficStatsFromJson(Map<String, dynamic> json) => TrafficStats(
+      txBytes: json['tx_bytes'] as String,
+      txSpeed: json['tx_speed'] as String,
+      rxBytes: json['rx_bytes'] as String,
+      rxSpeed: json['rx_speed'] as String,
+    );
+
+Map<String, dynamic> _$TrafficStatsToJson(TrafficStats instance) =>
+    <String, dynamic>{
+      'tx_bytes': instance.txBytes,
+      'tx_speed': instance.txSpeed,
+      'rx_bytes': instance.rxBytes,
+      'rx_speed': instance.rxSpeed,
+    };
+
 JoinedNode _$JoinedNodeFromJson(Map<String, dynamic> json) => JoinedNode(
       groupId: json['group_id'] as String,
       nodeId: json['node_id'] as String,
@@ -42,6 +57,10 @@ JoinedNode _$JoinedNodeFromJson(Map<String, dynamic> json) => JoinedNode(
       clientVersion: json['client_version'] as String?,
       ipList:
           (json['ip_list'] as List<dynamic>?)?.map((e) => e as String).toList(),
+      txBytes: json['tx_bytes'] as String,
+      txSpeed: json['tx_speed'] as String,
+      rxBytes: json['rx_bytes'] as String,
+      rxSpeed: json['rx_speed'] as String,
     );
 
 Map<String, dynamic> _$JoinedNodeToJson(JoinedNode instance) =>
@@ -54,6 +73,10 @@ Map<String, dynamic> _$JoinedNodeToJson(JoinedNode instance) =>
       'online': instance.isOnline,
       'client_version': instance.clientVersion,
       'ip_list': instance.ipList,
+      'tx_bytes': instance.txBytes,
+      'tx_speed': instance.txSpeed,
+      'rx_bytes': instance.rxBytes,
+      'rx_speed': instance.rxSpeed,
     };
 
 Network _$NetworkFromJson(Map<String, dynamic> json) => Network(
@@ -84,6 +107,10 @@ NetworkMember _$NetworkMemberFromJson(Map<String, dynamic> json) =>
       clientVersion: json['client_version'] as String?,
       ipList:
           (json['ip_list'] as List<dynamic>?)?.map((e) => e as String).toList(),
+      txBytes: json['tx_bytes'] as String,
+      txSpeed: json['tx_speed'] as String,
+      rxBytes: json['rx_bytes'] as String,
+      rxSpeed: json['rx_speed'] as String,
     );
 
 Map<String, dynamic> _$NetworkMemberToJson(NetworkMember instance) =>
@@ -93,4 +120,8 @@ Map<String, dynamic> _$NetworkMemberToJson(NetworkMember instance) =>
       'online': instance.isOnline,
       'client_version': instance.clientVersion,
       'ip_list': instance.ipList,
+      'tx_bytes': instance.txBytes,
+      'tx_speed': instance.txSpeed,
+      'rx_bytes': instance.rxBytes,
+      'rx_speed': instance.rxSpeed,
     };

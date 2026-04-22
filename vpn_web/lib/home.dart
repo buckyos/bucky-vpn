@@ -1,11 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:fluttertoast/fluttertoast.dart';
 import 'package:go_router/go_router.dart';
 import 'package:vpn_web/networks_page.dart';
 
 import 'api.dart';
 import 'joined_nodes_page.dart';
+import 'traffic_stats.dart';
 
 class Home extends StatefulWidget {
   const Home({super.key});
@@ -16,6 +18,7 @@ class Home extends StatefulWidget {
 
 class _HomeState extends State<Home> with SingleTickerProviderStateMixin {
   UserInfo? _userInfo;
+  TrafficStats? _userTrafficStats;
   Timer? _timer;
   late TabController _tabController;
   int _activeTabIndex = 0;
@@ -35,19 +38,7 @@ class _HomeState extends State<Home> with SingleTickerProviderStateMixin {
       }
     });
 
-    Api.instance().getUserInfo().then((ret) {
-      final (result, resp) = ret;
-      if (!mounted) {
-        return;
-      }
-      if (result.isSuccess) {
-        setState(() {
-          _userInfo = resp;
-        });
-      } else {
-        context.go('/login');
-      }
-    });
+    _loadHomeData();
 
     _timer = Timer.periodic(const Duration(seconds: 3000), (_) {
       Api.instance().refreshSession();
@@ -65,6 +56,93 @@ class _HomeState extends State<Home> with SingleTickerProviderStateMixin {
     if (mounted) {
       context.go('/login');
     }
+  }
+
+  Future<void> _loadHomeData() async {
+    final userInfoFuture = Api.instance().getUserInfo();
+    final trafficFuture = Api.instance().getUserTrafficStats();
+    final (userResult, userInfo) = await userInfoFuture;
+    final (trafficResult, trafficStats) = await trafficFuture;
+
+    if (!mounted) {
+      return;
+    }
+
+    if (!userResult.isSuccess || userInfo == null) {
+      context.go('/login');
+      return;
+    }
+
+    setState(() {
+      _userInfo = userInfo;
+      _userTrafficStats = trafficResult.isSuccess ? trafficStats : null;
+    });
+  }
+
+  Future<void> _refreshTrafficStats() async {
+    final (result, stats) = await Api.instance().getUserTrafficStats();
+    if (!mounted) {
+      return;
+    }
+
+    if (result.isSuccess) {
+      setState(() {
+        _userTrafficStats = stats;
+      });
+      return;
+    }
+
+    Fluttertoast.showToast(
+      msg: result.msg ?? 'Read traffic statistics failed',
+      toastLength: Toast.LENGTH_LONG,
+      gravity: ToastGravity.TOP,
+      backgroundColor: Colors.red,
+      textColor: Colors.white,
+      fontSize: 16.0,
+      timeInSecForIosWeb: 5,
+    );
+  }
+
+  Widget _buildTrafficMetricCard({
+    required IconData icon,
+    required String label,
+    required String value,
+    required Color iconColor,
+    required Color backgroundColor,
+  }) {
+    return Container(
+      width: 248,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFD9E6EC)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 22, color: iconColor),
+          const SizedBox(height: 14),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF4B6675),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF0E2A3A),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -150,6 +228,106 @@ class _HomeState extends State<Home> with SingleTickerProviderStateMixin {
                                 borderRadius: BorderRadius.circular(10),
                               ),
                             ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x100E2A3A),
+                            blurRadius: 20,
+                            offset: Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(
+                                Icons.speed_outlined,
+                                size: 18,
+                                color: Color(0xFF4B6675),
+                              ),
+                              const SizedBox(width: 8),
+                              const Text(
+                                'Traffic Overview',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFF204153),
+                                ),
+                              ),
+                              const Spacer(),
+                              OutlinedButton.icon(
+                                onPressed: _refreshTrafficStats,
+                                icon: const Icon(Icons.refresh, size: 18),
+                                label: const Text('Refresh'),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          const Text(
+                            'Aggregated statistics for the current network group.',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Color(0xFF4B6675),
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          Wrap(
+                            spacing: 12,
+                            runSpacing: 12,
+                            children: [
+                              _buildTrafficMetricCard(
+                                icon: Icons.upload_rounded,
+                                label: 'Upload Speed',
+                                value: _userTrafficStats == null
+                                    ? '--'
+                                    : formatTrafficSpeed(
+                                        _userTrafficStats!.txSpeed),
+                                iconColor: const Color(0xFF0A7E8C),
+                                backgroundColor: const Color(0xFFF4FBFC),
+                              ),
+                              _buildTrafficMetricCard(
+                                icon: Icons.download_rounded,
+                                label: 'Download Speed',
+                                value: _userTrafficStats == null
+                                    ? '--'
+                                    : formatTrafficSpeed(
+                                        _userTrafficStats!.rxSpeed),
+                                iconColor: const Color(0xFF2563EB),
+                                backgroundColor: const Color(0xFFF4F8FF),
+                              ),
+                              _buildTrafficMetricCard(
+                                icon: Icons.cloud_upload_outlined,
+                                label: 'Upload Traffic',
+                                value: _userTrafficStats == null
+                                    ? '--'
+                                    : formatTrafficBytes(
+                                        _userTrafficStats!.txBytes),
+                                iconColor: const Color(0xFF0E7490),
+                                backgroundColor: const Color(0xFFF2FBFB),
+                              ),
+                              _buildTrafficMetricCard(
+                                icon: Icons.cloud_download_outlined,
+                                label: 'Download Traffic',
+                                value: _userTrafficStats == null
+                                    ? '--'
+                                    : formatTrafficBytes(
+                                        _userTrafficStats!.rxBytes),
+                                iconColor: const Color(0xFF1D4ED8),
+                                backgroundColor: const Color(0xFFF5F7FF),
+                              ),
+                            ],
                           ),
                         ],
                       ),
