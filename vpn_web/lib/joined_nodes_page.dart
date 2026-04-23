@@ -6,6 +6,12 @@ import 'input_dialog.dart';
 import 'prompt_dialog.dart';
 import 'traffic_stats.dart';
 
+const double _trafficCellWidth = 100;
+const double _trafficLabelWidth = 36;
+const double _trafficValueGap = 5;
+const double _tableColumnSpacing = 28;
+const double _tableHorizontalMargin = 16;
+
 class JoinedNodesPage extends StatefulWidget {
   const JoinedNodesPage({super.key});
 
@@ -27,26 +33,67 @@ class _JoinedNodesPageState extends State<JoinedNodesPage> {
         speed ? formatTrafficSpeed(rxValue) : formatTrafficBytes(rxValue);
 
     return SizedBox(
-      width: 150,
+      width: _trafficCellWidth,
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Up $uploadValue',
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: Color(0xFF204153),
-            ),
+          Row(
+            children: [
+              const SizedBox(
+                width: _trafficLabelWidth,
+                child: Text(
+                  'Up',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF204153),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(left: _trafficValueGap),
+                  child: Text(
+                    uploadValue,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF204153),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 4),
-          Text(
-            'Down $downloadValue',
-            style: const TextStyle(
-              fontSize: 13,
-              color: Color(0xFF4B6675),
-            ),
+          Row(
+            children: [
+              const SizedBox(
+                width: _trafficLabelWidth,
+                child: Text(
+                  'Down',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFF4B6675),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(left: _trafficValueGap),
+                  child: Text(
+                    downloadValue,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: Color(0xFF4B6675),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -166,15 +213,17 @@ class _JoinedNodesPageState extends State<JoinedNodesPage> {
                   child: ConstrainedBox(
                     constraints: BoxConstraints(minWidth: constraints.maxWidth),
                     child: DataTable(
+                      columnSpacing: _tableColumnSpacing,
+                      horizontalMargin: _tableHorizontalMargin,
                       dataRowMinHeight: 68,
                       dataRowMaxHeight: 68,
                       columns: const [
                         DataColumn(label: Text('Allow Join')),
                         DataColumn(label: Text('Name')),
                         DataColumn(label: Text('Node ID')),
-                        DataColumn(label: Text('Status')),
                         DataColumn(label: Text('Speed')),
                         DataColumn(label: Text('Traffic')),
+                        DataColumn(label: Text('Status')),
                         DataColumn(label: Text('Action')),
                       ],
                       rows: _joinedNodes!
@@ -212,18 +261,6 @@ class _JoinedNodesPageState extends State<JoinedNodesPage> {
                                     width: 320,
                                     child: SelectableText(node.nodeId))),
                                 DataCell(
-                                  Text(
-                                    node.isOnline
-                                        ? (node.ipList?.join(', ') ?? 'online')
-                                        : 'offline',
-                                    style: TextStyle(
-                                      color: node.isOnline
-                                          ? const Color(0xFF18794E)
-                                          : const Color(0xFF8A3B12),
-                                    ),
-                                  ),
-                                ),
-                                DataCell(
                                   _buildTrafficCell(
                                     txValue: node.txSpeed,
                                     rxValue: node.rxSpeed,
@@ -235,6 +272,18 @@ class _JoinedNodesPageState extends State<JoinedNodesPage> {
                                     txValue: node.txBytes,
                                     rxValue: node.rxBytes,
                                     speed: false,
+                                  ),
+                                ),
+                                DataCell(
+                                  Text(
+                                    node.isOnline
+                                        ? (node.ipList?.join(', ') ?? 'online')
+                                        : 'offline',
+                                    style: TextStyle(
+                                      color: node.isOnline
+                                          ? const Color(0xFF18794E)
+                                          : const Color(0xFF8A3B12),
+                                    ),
                                   ),
                                 ),
                                 DataCell(

@@ -85,12 +85,8 @@ impl PnTrafficService {
             )
         };
 
-        let mut snapshot = PnUserTrafficSnapshot {
-            tx_bytes: persisted.tx_bytes,
-            tx_speed: 0,
-            rx_bytes: persisted.rx_bytes,
-            rx_speed: 0,
-        };
+        let mut tx_bytes = persisted.tx_bytes;
+        let mut tx_speed: u64 = 0;
         let mut seen = HashSet::new();
         for joined in joined_nodes {
             if !seen.insert(joined.node_id.clone()) {
@@ -100,17 +96,18 @@ impl PnTrafficService {
                 .snapshot_provider
                 .get_node_traffic_snapshot(&joined.node_id);
             let flush_state = self.get_flush_state(&joined.node_id);
-            snapshot.tx_bytes = snapshot
-                .tx_bytes
-                .saturating_add(pending_bytes(runtime.tx_bytes, flush_state.tx_bytes));
-            snapshot.rx_bytes = snapshot
-                .rx_bytes
-                .saturating_add(pending_bytes(runtime.rx_bytes, flush_state.rx_bytes));
-            snapshot.tx_speed = snapshot.tx_speed.saturating_add(runtime.tx_speed);
-            snapshot.rx_speed = snapshot.rx_speed.saturating_add(runtime.rx_speed);
+            tx_bytes = tx_bytes.saturating_add(pending_bytes(runtime.tx_bytes, flush_state.tx_bytes));
+            tx_speed = tx_speed.saturating_add(runtime.tx_speed);
         }
 
-        Ok(snapshot)
+        // Group-level user stats use only the ingress side to avoid counting the
+        // same relay traffic twice now that both endpoints have node snapshots.
+        Ok(PnUserTrafficSnapshot {
+            tx_bytes,
+            tx_speed,
+            rx_bytes: tx_bytes,
+            rx_speed: tx_speed,
+        })
     }
 
     pub async fn flush_all(&self) -> VpnResult<()> {
@@ -344,7 +341,7 @@ mod tests {
         assert_eq!(node_after_restart.tx_bytes, 100);
         assert_eq!(node_after_restart.rx_bytes, 60);
         assert_eq!(group_after_restart.tx_bytes, 100);
-        assert_eq!(group_after_restart.rx_bytes, 60);
+        assert_eq!(group_after_restart.rx_bytes, 100);
 
         provider.set_snapshot(
             node_id.clone(),
@@ -366,7 +363,7 @@ mod tests {
         assert_eq!(final_node.tx_bytes, 140);
         assert_eq!(final_node.rx_bytes, 80);
         assert_eq!(final_group.tx_bytes, 140);
-        assert_eq!(final_group.rx_bytes, 80);
+        assert_eq!(final_group.rx_bytes, 140);
 
         drop(restarted);
         drop(service);
@@ -402,9 +399,49 @@ mod tests {
         let restarted = PnTrafficService::new(provider.clone(), store_factory.clone());
         let group_snapshot = restarted.get_group_snapshot(&9).await.unwrap();
         assert_eq!(group_snapshot.tx_bytes, 55);
-        assert_eq!(group_snapshot.rx_bytes, 44);
+        assert_eq!(group_snapshot.rx_bytes, 55);
 
         drop(restarted);
+        drop(service);
+        drop(store_factory);
+        let _ = std::fs::remove_dir_all(db_dir);
+    }
+
+    #[tokio::test]
+    async fn group_snapshot_uses_single_sided_bytes_and_speed() {
+        let (store_factory, db_dir) = new_test_store_factory().await;
+        let provider = FakeSnapshotProvider::new();
+        let first = NodeId::from(vec![3u8; 32].as_slice());
+        let second = NodeId::from(vec![4u8; 32].as_slice());
+        add_joined_node(&store_factory, 11, &first).await;
+        add_joined_node(&store_factory, 11, &second).await;
+
+        let service = PnTrafficService::new(provider.clone(), store_factory.clone());
+        provider.set_snapshot(
+            first.clone(),
+            PnUserTrafficSnapshot {
+                tx_bytes: 70,
+                tx_speed: 7,
+                rx_bytes: 170,
+                rx_speed: 17,
+            },
+        );
+        provider.set_snapshot(
+            second.clone(),
+            PnUserTrafficSnapshot {
+                tx_bytes: 30,
+                tx_speed: 3,
+                rx_bytes: 130,
+                rx_speed: 13,
+            },
+        );
+
+        let group_snapshot = service.get_group_snapshot(&11).await.unwrap();
+        assert_eq!(group_snapshot.tx_bytes, 100);
+        assert_eq!(group_snapshot.tx_speed, 10);
+        assert_eq!(group_snapshot.rx_bytes, 100);
+        assert_eq!(group_snapshot.rx_speed, 10);
+
         drop(service);
         drop(store_factory);
         let _ = std::fs::remove_dir_all(db_dir);
