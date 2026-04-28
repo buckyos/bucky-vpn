@@ -180,7 +180,12 @@ impl VpnTunnelListener<P2pVpnTunnelRecv, P2pVpnTunnelSend> for P2pVpnTunnelListe
             .accept()
             .await
             .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
-        log::info!("accept a new connection {}", read.session_id());
+        log::info!("accept a new connection {} remote_id {} remote_ep {} local_id {} local_ep {}",
+            read.session_id(),
+            read.remote_id().to_string(),
+            read.remote().to_string(),
+            read.local_id().to_string(),
+            read.local().to_string());
         Ok((P2pVpnTunnelRecv::new(read), P2pVpnTunnelSend::new(write)))
     }
 }

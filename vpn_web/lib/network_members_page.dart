@@ -1,14 +1,13 @@
+import 'package:base_x/base_x.dart';
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 
 import 'api.dart';
-import 'traffic_stats.dart';
+import 'base58.dart';
 
-const double _trafficCellWidth = 100;
-const double _trafficLabelWidth = 36;
-const double _trafficValueGap = 5;
 const double _tableColumnSpacing = 28;
 const double _tableHorizontalMargin = 16;
+final BaseXCodec _base36 = BaseXCodec('0123456789abcdefghijklmnoqprstuvwxyz');
 
 class NetworkMembersPage extends StatefulWidget {
   final Network network;
@@ -24,84 +23,6 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
   List<JoinedNode> _joinedNodes = [];
   JoinedNode? addingNode;
   final TextEditingController _ipController = TextEditingController();
-
-  Widget _buildTrafficCell({
-    required String txValue,
-    required String rxValue,
-    required bool speed,
-  }) {
-    final uploadValue =
-        speed ? formatTrafficSpeed(txValue) : formatTrafficBytes(txValue);
-    final downloadValue =
-        speed ? formatTrafficSpeed(rxValue) : formatTrafficBytes(rxValue);
-
-    return SizedBox(
-      width: _trafficCellWidth,
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const SizedBox(
-                width: _trafficLabelWidth,
-                child: Text(
-                  'Up',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF204153),
-                  ),
-                ),
-              ),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.only(left: _trafficValueGap),
-                  child: Text(
-                    uploadValue,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF204153),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              const SizedBox(
-                width: _trafficLabelWidth,
-                child: Text(
-                  'Down',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: Color(0xFF4B6675),
-                  ),
-                ),
-              ),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.only(left: _trafficValueGap),
-                  child: Text(
-                    downloadValue,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      color: Color(0xFF4B6675),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
 
   Widget _actionLink({
     required String label,
@@ -175,15 +96,22 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
     }
   }
 
-  String? getNodeName(String nodeId) {
+  String _nodeIdToBase36(String nodeId) {
+    try {
+      return _base36.encode(base58.decode(nodeId));
+    } catch (_) {
+      return nodeId;
+    }
+  }
+
+  String getNodeName(String nodeId) {
+    final base36NodeId = _nodeIdToBase36(nodeId);
     for (final node in _joinedNodes) {
-      if (node.nodeId == nodeId) {
-        return node.comment.isNotEmpty
-            ? node.comment
-            : (node.name.isNotEmpty ? node.name : node.nodeId);
+      if (node.nodeId == nodeId || node.nodeId == base36NodeId) {
+        return node.comment.isNotEmpty ? node.comment : node.name;
       }
     }
-    return null;
+    return '';
   }
 
   Future<void> _removeMember(NetworkMember member) async {
@@ -342,9 +270,8 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
                         dataRowMaxHeight: 68,
                         columns: const [
                           DataColumn(label: Text('Name')),
+                          DataColumn(label: Text('Node ID')),
                           DataColumn(label: Text('IP')),
-                          DataColumn(label: Text('Speed')),
-                          DataColumn(label: Text('Traffic')),
                           DataColumn(label: Text('Status')),
                           DataColumn(label: Text('Action')),
                         ],
@@ -352,25 +279,16 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
                             .map(
                               (member) => DataRow(
                                 cells: [
+                                  DataCell(Text(getNodeName(member.nodeId))),
                                   DataCell(
-                                    SelectableText(getNodeName(member.nodeId) ??
-                                        member.nodeId),
+                                    SizedBox(
+                                      width: 320,
+                                      child: SelectableText(
+                                        _nodeIdToBase36(member.nodeId),
+                                      ),
+                                    ),
                                   ),
                                   DataCell(SelectableText(member.ipAddr)),
-                                  DataCell(
-                                    _buildTrafficCell(
-                                      txValue: member.txSpeed,
-                                      rxValue: member.rxSpeed,
-                                      speed: true,
-                                    ),
-                                  ),
-                                  DataCell(
-                                    _buildTrafficCell(
-                                      txValue: member.txBytes,
-                                      rxValue: member.rxBytes,
-                                      speed: false,
-                                    ),
-                                  ),
                                   DataCell(
                                     Text(
                                       member.isOnline
