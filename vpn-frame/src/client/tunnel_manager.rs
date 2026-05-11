@@ -3,8 +3,8 @@ use crate::server::{NetworkGroupId, NetworkId, NetworkMember, NodeId};
 use crate::{DataHeader, VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv, VpnTunnelSend};
 use bucky_raw_codec::{RawFixedBytes, RawFrom};
 use sfo_pool::{
-    PoolErrorCode, PoolResult, Worker, WorkerFactory, WorkerGuard, WorkerPool, WorkerPoolRef,
-    into_pool_err,
+    PoolErrorCode, PoolResult, Worker, WorkerFactory, WorkerGuard, WorkerPool, WorkerPoolConfig,
+    WorkerPoolRef, into_pool_err,
 };
 use std::collections::HashMap;
 use std::io::Error;
@@ -12,9 +12,13 @@ use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWrite};
 use tokio::spawn;
 use tokio::task::JoinHandle;
+
+const TUNNEL_POOL_MAX_COUNT: u16 = 20;
+const TUNNEL_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 pub(crate) struct VpnRouter {
     routers: Mutex<HashMap<NetworkGroupId, HashMap<NetworkId, HashMap<IpAddr, NodeId>>>>,
@@ -399,14 +403,18 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
                         target
                     ));
                 }
-                let pool = WorkerPool::new(
-                    20,
+                let pool = WorkerPool::new_with_config(
+                    TUNNEL_POOL_MAX_COUNT,
                     Factory::new(
                         node.unwrap(),
                         self.tunnel_factory.clone(),
                         self.pending_send_cache.clone(),
                         self.pkg_listener.clone(),
                     ),
+                    WorkerPoolConfig {
+                        idle_timeout: Some(TUNNEL_POOL_IDLE_TIMEOUT),
+                        ..WorkerPoolConfig::default()
+                    },
                 );
                 tunnels.insert(key, pool.clone());
                 pool
@@ -439,14 +447,18 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
                 if let Some(pool) = tunnels.get(&key) {
                     pool.clone()
                 } else {
-                    let pool = WorkerPool::new(
-                        20,
+                    let pool = WorkerPool::new_with_config(
+                        TUNNEL_POOL_MAX_COUNT,
                         Factory::new(
                             node_id,
                             self.tunnel_factory.clone(),
                             self.pending_send_cache.clone(),
                             self.pkg_listener.clone(),
                         ),
+                        WorkerPoolConfig {
+                            idle_timeout: Some(TUNNEL_POOL_IDLE_TIMEOUT),
+                            ..WorkerPoolConfig::default()
+                        },
                     );
                     tunnels.insert(key, pool.clone());
                     pool

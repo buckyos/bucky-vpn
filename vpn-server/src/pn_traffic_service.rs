@@ -96,7 +96,8 @@ impl PnTrafficService {
                 .snapshot_provider
                 .get_node_traffic_snapshot(&joined.node_id);
             let flush_state = self.get_flush_state(&joined.node_id);
-            tx_bytes = tx_bytes.saturating_add(pending_bytes(runtime.tx_bytes, flush_state.tx_bytes));
+            tx_bytes =
+                tx_bytes.saturating_add(pending_bytes(runtime.tx_bytes, flush_state.tx_bytes));
             tx_speed = tx_speed.saturating_add(runtime.tx_speed);
         }
 
