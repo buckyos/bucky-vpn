@@ -123,11 +123,7 @@ impl<S: VpnTunnelSend> Drop for PkgSend<S> {
 
 impl<S: VpnTunnelSend> Worker for PkgSend<S> {
     fn is_work(&self) -> bool {
-        if self.is_work {
-            !self.recv_handle.is_finished()
-        } else {
-            false
-        }
+        self.is_work && !self.recv_handle.is_finished() && !self.send.is_closed()
     }
 }
 

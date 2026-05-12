@@ -86,6 +86,10 @@ impl VpnTunnelSend for P2pVpnTunnelSend {
             false
         }
     }
+
+    fn is_closed(&self) -> bool {
+        self.write.is_closed()
+    }
 }
 
 impl AsyncWrite for P2pVpnTunnelSend {

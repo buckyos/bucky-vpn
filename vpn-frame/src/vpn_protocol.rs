@@ -9,6 +9,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 pub trait VpnTunnelSend: AsyncWrite + Send + 'static + Unpin {
     fn is_target_tunnel(&self, target: &NodeId) -> bool;
+    fn is_closed(&self) -> bool {
+        false
+    }
 }
 
 pub trait VpnTunnelRecv: AsyncRead + Send + 'static + Unpin {}
