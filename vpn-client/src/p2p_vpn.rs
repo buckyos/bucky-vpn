@@ -22,6 +22,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::fs::create_dir_all;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::Mutex;
 use vpn_frame::client::{VpnClient, VpnClientFactory, VpnClientManager, VpnServerClient};
 use vpn_frame::cmd_server::ClassifiedCmdNodeSendGuard;
 use vpn_frame::cmd_server::client::{
@@ -155,7 +156,7 @@ impl VpnTunnelFactory<P2pVpnTunnelRecv, P2pVpnTunnelSend> for P2pVpnTunnelFactor
 pub struct P2pVpnTunnelListener {
     stack: P2pStackRef,
     vpn_port: u16,
-    listener: StreamListenerGuard,
+    listener: Mutex<StreamListenerGuard>,
 }
 
 impl P2pVpnTunnelListener {
@@ -171,7 +172,7 @@ impl P2pVpnTunnelListener {
         Ok(P2pVpnTunnelListener {
             stack,
             vpn_port,
-            listener,
+            listener: Mutex::new(listener),
         })
     }
 }
@@ -179,8 +180,8 @@ impl P2pVpnTunnelListener {
 #[async_trait::async_trait]
 impl VpnTunnelListener<P2pVpnTunnelRecv, P2pVpnTunnelSend> for P2pVpnTunnelListener {
     async fn accept(&self) -> VpnResult<(P2pVpnTunnelRecv, P2pVpnTunnelSend)> {
-        let (read, write) = self
-            .listener
+        let mut listener = self.listener.lock().await;
+        let (read, write) = listener
             .accept()
             .await
             .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
