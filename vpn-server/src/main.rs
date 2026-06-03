@@ -107,7 +107,7 @@ async fn main() {
         tokio::fs::create_dir_all(data_dir.as_path()).await.unwrap();
     }
     let db_path = data_dir.join("vpn.db").to_string_lossy().to_string();
-    let pool = SqlPool::open(db_path.as_str(), 300, Some(SqliteJournalMode::Wal))
+    let pool = SqlPool::open(db_path.as_str(), 5, Some(SqliteJournalMode::Wal))
         .await
         .unwrap();
 
