@@ -15,6 +15,72 @@ struct FlushState {
 
 pub trait PnTrafficSnapshotProvider: Send + Sync + 'static {
     fn get_node_traffic_snapshot(&self, node_id: &NodeId) -> PnUserTrafficSnapshot;
+
+    fn list_tracked_node_ids(&self) -> Vec<NodeId> {
+        Vec::new()
+    }
+}
+
+pub trait PnTrafficNodeTracker: Send + Sync + 'static {
+    fn track_node(&self, node_id: NodeId);
+}
+
+pub type PnTrafficNodeTrackerRef = Arc<dyn PnTrafficNodeTracker>;
+
+pub struct PnTrafficNodeSet {
+    node_ids: Mutex<HashSet<NodeId>>,
+}
+
+pub type PnTrafficNodeSetRef = Arc<PnTrafficNodeSet>;
+
+impl PnTrafficNodeSet {
+    pub fn new() -> PnTrafficNodeSetRef {
+        Arc::new(Self {
+            node_ids: Mutex::new(HashSet::new()),
+        })
+    }
+
+    fn list_node_ids(&self) -> Vec<NodeId> {
+        self.node_ids.lock().unwrap().iter().cloned().collect()
+    }
+}
+
+impl PnTrafficNodeTracker for PnTrafficNodeSet {
+    fn track_node(&self, node_id: NodeId) {
+        self.node_ids.lock().unwrap().insert(node_id);
+    }
+}
+
+pub struct TrackedPnTrafficSnapshotProvider {
+    provider: PnTrafficSnapshotProviderRef,
+    node_set: PnTrafficNodeSetRef,
+}
+
+impl TrackedPnTrafficSnapshotProvider {
+    pub fn new(
+        provider: PnTrafficSnapshotProviderRef,
+        node_set: PnTrafficNodeSetRef,
+    ) -> Arc<Self> {
+        Arc::new(Self { provider, node_set })
+    }
+}
+
+impl PnTrafficSnapshotProvider for TrackedPnTrafficSnapshotProvider {
+    fn get_node_traffic_snapshot(&self, node_id: &NodeId) -> PnUserTrafficSnapshot {
+        self.provider.get_node_traffic_snapshot(node_id)
+    }
+
+    fn list_tracked_node_ids(&self) -> Vec<NodeId> {
+        self.node_set.list_node_ids()
+    }
+}
+
+pub struct NoopPnTrafficSnapshotProvider;
+
+impl PnTrafficSnapshotProvider for NoopPnTrafficSnapshotProvider {
+    fn get_node_traffic_snapshot(&self, _node_id: &NodeId) -> PnUserTrafficSnapshot {
+        PnUserTrafficSnapshot::default()
+    }
 }
 
 impl PnTrafficSnapshotProvider for PnServer {
@@ -26,10 +92,18 @@ impl PnTrafficSnapshotProvider for PnServer {
 
 pub type PnTrafficSnapshotProviderRef = Arc<dyn PnTrafficSnapshotProvider>;
 
+#[async_trait::async_trait]
+pub trait PnTrafficReporter: Send + Sync + 'static {
+    async fn report_delta(&self, node_id: &NodeId, delta: PersistedTrafficStats) -> VpnResult<()>;
+}
+
+pub type PnTrafficReporterRef = Arc<dyn PnTrafficReporter>;
+
 pub struct PnTrafficService {
     snapshot_provider: PnTrafficSnapshotProviderRef,
     store_factory: Arc<SqliteStoreFactory>,
     flush_state: Mutex<HashMap<NodeId, FlushState>>,
+    remote_reporter: Mutex<Option<PnTrafficReporterRef>>,
 }
 
 pub type PnTrafficServiceRef = Arc<PnTrafficService>;
@@ -43,7 +117,12 @@ impl PnTrafficService {
             snapshot_provider,
             store_factory,
             flush_state: Mutex::new(HashMap::new()),
+            remote_reporter: Mutex::new(None),
         })
+    }
+
+    pub fn set_remote_reporter(&self, reporter: PnTrafficReporterRef) {
+        *self.remote_reporter.lock().unwrap() = Some(reporter);
     }
 
     pub fn start_background_flush(self: &Arc<Self>, interval: Duration) {
@@ -55,6 +134,30 @@ impl PnTrafficService {
                 if let Err(err) = this.flush_all().await {
                     log::warn!(
                         "flush pn traffic stats failed: code={:?} msg={}",
+                        err.code(),
+                        err.msg()
+                    );
+                }
+            }
+        });
+    }
+
+    pub fn start_remote_heartbeat(self: &Arc<Self>, node_id: NodeId, interval: Duration) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                let Some(reporter) = this.remote_reporter() else {
+                    continue;
+                };
+                if let Err(err) = reporter
+                    .report_delta(&node_id, PersistedTrafficStats::default())
+                    .await
+                {
+                    log::warn!(
+                        "report proxy node heartbeat failed: node={} code={:?} msg={}",
+                        node_id.to_base58(),
                         err.code(),
                         err.msg()
                     );
@@ -112,10 +215,11 @@ impl PnTrafficService {
     }
 
     pub async fn flush_all(&self) -> VpnResult<()> {
-        let node_ids = {
+        let mut node_ids = {
             let mut store = self.store_factory.get_vpn_store().await?;
             store.list_all_joined_node_ids().await?
         };
+        node_ids.extend(self.snapshot_provider.list_tracked_node_ids());
         let mut seen = HashSet::new();
         for node_id in node_ids {
             if seen.insert(node_id.clone()) {
@@ -141,6 +245,40 @@ impl PnTrafficService {
                     rx_bytes: runtime.rx_bytes,
                 },
             );
+            return Ok(());
+        }
+
+        if let Some(reporter) = self.remote_reporter() {
+            reporter.report_delta(node_id, delta).await?;
+            self.set_flush_state(
+                node_id.clone(),
+                FlushState {
+                    tx_bytes: runtime.tx_bytes,
+                    rx_bytes: runtime.rx_bytes,
+                },
+            );
+            return Ok(());
+        }
+
+        self.apply_node_delta(node_id, delta).await?;
+
+        self.set_flush_state(
+            node_id.clone(),
+            FlushState {
+                tx_bytes: runtime.tx_bytes,
+                rx_bytes: runtime.rx_bytes,
+            },
+        );
+
+        Ok(())
+    }
+
+    pub async fn apply_node_delta(
+        &self,
+        node_id: &NodeId,
+        delta: PersistedTrafficStats,
+    ) -> VpnResult<()> {
+        if delta == PersistedTrafficStats::default() {
             return Ok(());
         }
 
@@ -176,13 +314,10 @@ impl PnTrafficService {
             }
         };
 
-        if !groups.is_empty() || delta != PersistedTrafficStats::default() {
-            self.set_flush_state(
-                node_id.clone(),
-                FlushState {
-                    tx_bytes: runtime.tx_bytes,
-                    rx_bytes: runtime.rx_bytes,
-                },
+        if groups.is_empty() {
+            log::debug!(
+                "recorded pn traffic delta for node {} without joined group",
+                node_id.to_base58()
             );
         }
 
@@ -200,6 +335,10 @@ impl PnTrafficService {
 
     fn set_flush_state(&self, node_id: NodeId, state: FlushState) {
         self.flush_state.lock().unwrap().insert(node_id, state);
+    }
+
+    fn remote_reporter(&self) -> Option<PnTrafficReporterRef> {
+        self.remote_reporter.lock().unwrap().clone()
     }
 }
 
@@ -442,6 +581,37 @@ mod tests {
         assert_eq!(group_snapshot.tx_speed, 10);
         assert_eq!(group_snapshot.rx_bytes, 100);
         assert_eq!(group_snapshot.rx_speed, 10);
+
+        drop(service);
+        drop(store_factory);
+        let _ = std::fs::remove_dir_all(db_dir);
+    }
+
+    #[tokio::test]
+    async fn apply_node_delta_persists_node_and_group_delta() {
+        let (store_factory, db_dir) = new_test_store_factory().await;
+        let provider = FakeSnapshotProvider::new();
+        let node_id = NodeId::from(vec![5u8; 32].as_slice());
+        add_joined_node(&store_factory, 13, &node_id).await;
+
+        let service = PnTrafficService::new(provider, store_factory.clone());
+        service
+            .apply_node_delta(
+                &node_id,
+                PersistedTrafficStats {
+                    tx_bytes: 88,
+                    rx_bytes: 77,
+                },
+            )
+            .await
+            .unwrap();
+
+        let node_snapshot = service.get_node_snapshot(&node_id).await.unwrap();
+        let group_snapshot = service.get_group_snapshot(&13).await.unwrap();
+        assert_eq!(node_snapshot.tx_bytes, 88);
+        assert_eq!(node_snapshot.rx_bytes, 77);
+        assert_eq!(group_snapshot.tx_bytes, 88);
+        assert_eq!(group_snapshot.rx_bytes, 88);
 
         drop(service);
         drop(store_factory);

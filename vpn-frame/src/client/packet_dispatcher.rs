@@ -309,7 +309,7 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, L: VpnTunnel
         let mut targets = HashMap::<NodeId, IpAddr>::new();
         let expect_ipv6 = matches!(packet_target, IpAddr::V6(_));
 
-        for (ip, node_id) in all_nodes {
+        for (ip, node_id, _) in all_nodes {
             if expect_ipv6 != matches!(ip, IpAddr::V6(_)) {
                 continue;
             }

@@ -1,4 +1,4 @@
-use crate::sqlite_store_factory::SqliteStoreFactory;
+use crate::sqlite_store_factory::{SqliteStoreFactory, VpnServerRef};
 use p2p_frame::error::{P2pErrorCode, P2pResult, p2p_err};
 use p2p_frame::networks::ValidateResult;
 use p2p_frame::pn::{PnConnectionValidateContext, PnConnectionValidator};
@@ -8,6 +8,44 @@ use vpn_frame::server::{NetworkStore, NodeId, VpnStoreFactory};
 
 pub struct SqlitePnConnectionValidator {
     store_factory: Arc<SqliteStoreFactory>,
+}
+
+pub struct VpnServerPnConnectionValidator {
+    vpn_server: VpnServerRef,
+}
+
+impl VpnServerPnConnectionValidator {
+    pub fn new(vpn_server: VpnServerRef) -> Arc<Self> {
+        Arc::new(Self { vpn_server })
+    }
+}
+
+#[async_trait::async_trait]
+impl PnConnectionValidator for VpnServerPnConnectionValidator {
+    async fn validate(&self, ctx: &PnConnectionValidateContext) -> P2pResult<ValidateResult> {
+        let source_node_id = NodeId::from(ctx.from.as_slice());
+        let target_node_id = NodeId::from(ctx.to.as_slice());
+        let allowed = self
+            .vpn_server
+            .validate_pn_connection(&source_node_id, &target_node_id)
+            .await
+            .map_err(|err| {
+                p2p_err!(
+                    P2pErrorCode::InternalError,
+                    "validate pn connection by vpn server failed: code={:?} msg={}",
+                    err.code(),
+                    err.msg()
+                )
+            })?;
+        if allowed {
+            Ok(ValidateResult::Accept)
+        } else {
+            Ok(ValidateResult::Reject(format!(
+                "pn connection requires source={} and target={} to share an allowed group",
+                ctx.from, ctx.to
+            )))
+        }
+    }
 }
 
 impl SqlitePnConnectionValidator {
@@ -140,6 +178,7 @@ mod tests {
             tunnel_id: 1u32.into(),
             kind: PnChannelKind::Stream,
             purpose: TunnelPurpose::from_value(&2000u16).unwrap(),
+            is_control: false,
         }
     }
 

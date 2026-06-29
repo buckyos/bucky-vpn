@@ -10,7 +10,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use vpn_frame::NodeNetwork;
+use std::time::{SystemTime, UNIX_EPOCH};
 use vpn_frame::cmd_server::errors::CmdResult;
 use vpn_frame::cmd_server::{CmdBody, CmdHandler, PeerId, TunnelId};
 use vpn_frame::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
@@ -19,9 +19,48 @@ use vpn_frame::server::{
     Node, NodeId, NodeManager, NodeStore, VpnCmdServer, VpnServer, VpnStore, VpnStoreFactory,
     VpnStoreGuard,
 };
+use vpn_frame::{NodeNetwork, PnServerInfo};
 
 pub struct SqliteVpnStore {
     conn: SqlConnection,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProxyNodeApprovalStatus {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+impl ProxyNodeApprovalStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+        }
+    }
+
+    fn from_str(status: &str) -> VpnResult<Self> {
+        match status {
+            "pending" => Ok(Self::Pending),
+            "approved" => Ok(Self::Approved),
+            "rejected" => Ok(Self::Rejected),
+            _ => Err(vpn_err!(
+                VpnErrorCode::InvalidParam,
+                "invalid proxy node approval status {}",
+                status
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProxyNodeApproval {
+    pub pn_server: PnServerInfo,
+    pub status: ProxyNodeApprovalStatus,
+    pub updated_at: u64,
+    pub comment: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -79,6 +118,9 @@ impl SqliteVpnStore {
             mask INTEGER NOT NULL,
             ipv6 TEXT,
             ipv6_mask INTEGER,
+            pn_server_id TEXT NOT NULL DEFAULT '',
+            pn_server_ip TEXT NOT NULL DEFAULT '',
+            pn_server_port INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (group_id) REFERENCES network_group(id)
         )"#;
         self.conn
@@ -135,7 +177,32 @@ impl SqliteVpnStore {
             .await
             .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
 
+        let sql = r#"CREATE TABLE IF NOT EXISTS pn_proxy_node (
+            pn_server_id TEXT PRIMARY KEY,
+            pn_server_ip TEXT NOT NULL,
+            pn_server_port INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            updated_at integer NOT NULL DEFAULT 0,
+            comment TEXT NOT NULL DEFAULT ''
+        )"#;
+        self.conn
+            .execute_sql(sql_query(sql))
+            .await
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        let sql = "CREATE INDEX IF NOT EXISTS pn_proxy_node_status ON pn_proxy_node(status)";
+        self.conn
+            .execute_sql(sql_query(sql))
+            .await
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+
         Ok(())
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default()
     }
 
     pub async fn list_all_joined_node_ids(&mut self) -> VpnResult<Vec<NodeId>> {
@@ -253,6 +320,112 @@ impl SqliteVpnStore {
             .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
         Ok(())
     }
+
+    pub async fn ensure_proxy_node_pending(&mut self, pn_server: &PnServerInfo) -> VpnResult<()> {
+        let sql = r#"INSERT INTO pn_proxy_node (pn_server_id, pn_server_ip, pn_server_port, status, updated_at, comment)
+            VALUES (?, ?, ?, ?, ?, '')
+            ON CONFLICT(pn_server_id) DO UPDATE SET
+                pn_server_ip = excluded.pn_server_ip,
+                pn_server_port = excluded.pn_server_port,
+                updated_at = excluded.updated_at"#;
+        self.conn
+            .execute_sql(
+                sql_query(sql)
+                    .bind(&pn_server.id)
+                    .bind(pn_server.ip.to_string())
+                    .bind(pn_server.port as i64)
+                    .bind(ProxyNodeApprovalStatus::Pending.as_str())
+                    .bind(Self::now_secs() as i64),
+            )
+            .await
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        Ok(())
+    }
+
+    pub async fn set_proxy_node_approval(
+        &mut self,
+        pn_server: &PnServerInfo,
+        status: ProxyNodeApprovalStatus,
+        comment: Option<&str>,
+    ) -> VpnResult<()> {
+        let sql = r#"INSERT INTO pn_proxy_node (pn_server_id, pn_server_ip, pn_server_port, status, updated_at, comment)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(pn_server_id) DO UPDATE SET
+                pn_server_ip = excluded.pn_server_ip,
+                pn_server_port = excluded.pn_server_port,
+                status = excluded.status,
+                updated_at = excluded.updated_at,
+                comment = excluded.comment"#;
+        self.conn
+            .execute_sql(
+                sql_query(sql)
+                    .bind(&pn_server.id)
+                    .bind(pn_server.ip.to_string())
+                    .bind(pn_server.port as i64)
+                    .bind(status.as_str())
+                    .bind(Self::now_secs() as i64)
+                    .bind(comment.unwrap_or("")),
+            )
+            .await
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        Ok(())
+    }
+
+    pub async fn is_proxy_node_approved(&mut self, pn_server: &PnServerInfo) -> VpnResult<bool> {
+        let sql = r#"SELECT status FROM pn_proxy_node WHERE pn_server_id = ?"#;
+        match self
+            .conn
+            .query_one(sql_query(sql).bind(&pn_server.id))
+            .await
+        {
+            Ok(row) => {
+                let status: String = row.get("status");
+                Ok(
+                    ProxyNodeApprovalStatus::from_str(&status)?
+                        == ProxyNodeApprovalStatus::Approved,
+                )
+            }
+            Err(err) => {
+                if err.code() == SqlErrorCode::NotFound {
+                    Ok(false)
+                } else {
+                    Err(vpn_err!(
+                        VpnErrorCode::IoError,
+                        "query proxy node approval {} failed",
+                        pn_server.id
+                    ))
+                }
+            }
+        }
+    }
+
+    pub async fn list_proxy_node_approvals(&mut self) -> VpnResult<Vec<ProxyNodeApproval>> {
+        let sql = r#"SELECT pn_server_id, pn_server_ip, pn_server_port, status, updated_at, comment FROM pn_proxy_node ORDER BY pn_server_id"#;
+        let rows = self
+            .conn
+            .query_all(sql_query(sql))
+            .await
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        let mut approvals = Vec::new();
+        for row in rows {
+            let status: String = row.get("status");
+            let pn_server_id: String = row.get("pn_server_id");
+            let pn_server_ip: String = row.get("pn_server_ip");
+            let pn_server_port: i64 = row.get("pn_server_port");
+            approvals.push(ProxyNodeApproval {
+                pn_server: PnServerInfo::new(
+                    pn_server_id,
+                    IpAddr::from_str(&pn_server_ip)
+                        .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?,
+                    pn_server_port as u16,
+                ),
+                status: ProxyNodeApprovalStatus::from_str(&status)?,
+                updated_at: row.get::<i64, _>("updated_at") as u64,
+                comment: row.get("comment"),
+            });
+        }
+        Ok(approvals)
+    }
 }
 
 #[async_trait::async_trait]
@@ -273,6 +446,36 @@ impl VpnStore for SqliteVpnStore {
 
     async fn rollback_transaction(&mut self) -> VpnResult<()> {
         Ok(())
+    }
+
+    async fn add_pn_traffic_delta(
+        &mut self,
+        node_id: &NodeId,
+        tx_bytes: u64,
+        rx_bytes: u64,
+    ) -> VpnResult<()> {
+        self.begin_transaction().await?;
+        let result: VpnResult<()> = async {
+            self.add_persisted_node_traffic(node_id, PersistedTrafficStats { tx_bytes, rx_bytes })
+                .await?;
+            let groups = self.get_joined_network_group(node_id).await?;
+            for joined in groups.iter() {
+                self.add_persisted_group_traffic(
+                    &joined.group_id,
+                    PersistedTrafficStats { tx_bytes, rx_bytes },
+                )
+                .await?;
+            }
+            Ok(())
+        }
+        .await;
+        match result {
+            Ok(()) => self.commit_transaction().await,
+            Err(err) => {
+                let _ = self.rollback_transaction().await;
+                Err(err)
+            }
+        }
     }
 }
 
@@ -562,7 +765,7 @@ impl NetworkStore for SqliteVpnStore {
     }
 
     async fn get_networks(&mut self, group_id: &NetworkGroupId) -> VpnResult<Vec<Network>> {
-        let sql = r#"SELECT id, name, ip, mask, ipv6, ipv6_mask FROM network WHERE group_id = ?"#;
+        let sql = r#"SELECT id, name, ip, mask, ipv6, ipv6_mask, pn_server_id, pn_server_ip, pn_server_port FROM network WHERE group_id = ?"#;
         let rows = self
             .conn
             .query_all(sql_query(sql).bind(*group_id as i64))
@@ -576,6 +779,19 @@ impl NetworkStore for SqliteVpnStore {
             let mask: i64 = row.get("mask");
             let ipv6: String = row.get("ipv6");
             let ipv6_mask: i64 = row.get("ipv6_mask");
+            let pn_server_id: String = row.get("pn_server_id");
+            let pn_server_ip: String = row.get("pn_server_ip");
+            let pn_server_port: i64 = row.get("pn_server_port");
+            let pn_server = if pn_server_id.is_empty() {
+                None
+            } else {
+                Some(PnServerInfo::new(
+                    pn_server_id,
+                    IpAddr::from_str(&pn_server_ip)
+                        .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?,
+                    pn_server_port as u16,
+                ))
+            };
             networks.push(Network {
                 id,
                 group_id: *group_id,
@@ -598,13 +814,22 @@ impl NetworkStore for SqliteVpnStore {
                     )
                 },
                 ipv6_mask: ipv6_mask as u8,
+                pn_server,
             });
         }
         Ok(networks)
     }
 
     async fn add_network(&mut self, network: &Network) -> VpnResult<()> {
-        let sql = r#"INSERT INTO network (id, group_id, name, ip, mask, ipv6, ipv6_mask) VALUES (?, ?, ?, ?, ?, ?, ?)"#;
+        let (pn_server_id, pn_server_ip, pn_server_port) = match network.pn_server.as_ref() {
+            Some(pn_server) => (
+                pn_server.id.as_str(),
+                pn_server.ip.to_string(),
+                pn_server.port as i64,
+            ),
+            None => ("", "".to_string(), 0),
+        };
+        let sql = r#"INSERT INTO network (id, group_id, name, ip, mask, ipv6, ipv6_mask, pn_server_id, pn_server_ip, pn_server_port) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#;
         self.conn
             .execute_sql(
                 sql_query(sql)
@@ -624,7 +849,10 @@ impl NetworkStore for SqliteVpnStore {
                             .map(|v| v.to_string())
                             .unwrap_or("".to_string()),
                     )
-                    .bind(network.ipv6_mask as i64),
+                    .bind(network.ipv6_mask as i64)
+                    .bind(pn_server_id)
+                    .bind(pn_server_ip)
+                    .bind(pn_server_port),
             )
             .await
             .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
@@ -641,8 +869,7 @@ impl NetworkStore for SqliteVpnStore {
     }
 
     async fn get_network(&mut self, network_id: &NetworkId) -> VpnResult<Option<Network>> {
-        let sql =
-            r#"SELECT id, group_id, name, ip, mask, ipv6, ipv6_mask FROM network WHERE id = ?"#;
+        let sql = r#"SELECT id, group_id, name, ip, mask, ipv6, ipv6_mask, pn_server_id, pn_server_ip, pn_server_port FROM network WHERE id = ?"#;
         match self
             .conn
             .query_one(sql_query(sql).bind(*network_id as i64))
@@ -656,6 +883,19 @@ impl NetworkStore for SqliteVpnStore {
                 let mask: i64 = row.get("mask");
                 let ipv6: String = row.get("ipv6");
                 let ipv6_mask: i64 = row.get("ipv6_mask");
+                let pn_server_id: String = row.get("pn_server_id");
+                let pn_server_ip: String = row.get("pn_server_ip");
+                let pn_server_port: i64 = row.get("pn_server_port");
+                let pn_server = if pn_server_id.is_empty() {
+                    None
+                } else {
+                    Some(PnServerInfo::new(
+                        pn_server_id,
+                        IpAddr::from_str(&pn_server_ip)
+                            .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?,
+                        pn_server_port as u16,
+                    ))
+                };
                 Ok(Some(Network {
                     id,
                     group_id,
@@ -678,6 +918,7 @@ impl NetworkStore for SqliteVpnStore {
                         )
                     },
                     ipv6_mask: ipv6_mask as u8,
+                    pn_server,
                 }))
             }
             Err(e) => {
@@ -695,7 +936,15 @@ impl NetworkStore for SqliteVpnStore {
     }
 
     async fn update_network(&mut self, network: &Network) -> VpnResult<()> {
-        let sql = r#"UPDATE network SET name = ?, ip = ?, mask = ?, ipv6 = ?, ipv6_mask = ? WHERE id = ?"#;
+        let (pn_server_id, pn_server_ip, pn_server_port) = match network.pn_server.as_ref() {
+            Some(pn_server) => (
+                pn_server.id.as_str(),
+                pn_server.ip.to_string(),
+                pn_server.port as i64,
+            ),
+            None => ("", "".to_string(), 0),
+        };
+        let sql = r#"UPDATE network SET name = ?, ip = ?, mask = ?, ipv6 = ?, ipv6_mask = ?, pn_server_id = ?, pn_server_ip = ?, pn_server_port = ? WHERE id = ?"#;
         self.conn
             .execute_sql(
                 sql_query(sql)
@@ -714,6 +963,9 @@ impl NetworkStore for SqliteVpnStore {
                             .unwrap_or("".to_string()),
                     )
                     .bind(network.ipv6_mask as i64)
+                    .bind(pn_server_id)
+                    .bind(pn_server_ip)
+                    .bind(pn_server_port)
                     .bind(network.id as i64),
             )
             .await
@@ -941,6 +1193,9 @@ impl NetworkStore for SqliteVpnStore {
     network.name,
     network.mask,
     network.ipv6_mask,
+    network.pn_server_id,
+    network.pn_server_ip,
+    network.pn_server_port,
     network_member.ip,
     network_member.ipv6
 FROM network_member
@@ -960,6 +1215,19 @@ WHERE network_member.node_id = ? AND joined_node.allow_join = TRUE"#;
             let name: String = row.get("name");
             let mask: i64 = row.get("mask");
             let ipv6_mask: i64 = row.get("ipv6_mask");
+            let pn_server_id: String = row.get("pn_server_id");
+            let pn_server_ip: String = row.get("pn_server_ip");
+            let pn_server_port: i64 = row.get("pn_server_port");
+            let pn_server = if pn_server_id.is_empty() {
+                None
+            } else {
+                Some(PnServerInfo::new(
+                    pn_server_id,
+                    IpAddr::from_str(&pn_server_ip)
+                        .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?,
+                    pn_server_port as u16,
+                ))
+            };
             let member_ip: String = row.get("ip");
             let member_ipv6: String = row.get("ipv6");
             networks.push(NodeNetwork {
@@ -984,6 +1252,7 @@ WHERE network_member.node_id = ? AND joined_node.allow_join = TRUE"#;
                     ))
                 },
                 ipv6_mask: ipv6_mask as u8,
+                pn_server,
             });
         }
         Ok(networks)

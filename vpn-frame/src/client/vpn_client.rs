@@ -145,6 +145,7 @@ pub struct VpnClient<
     L: VpnTunnelListener<R, S>,
 > {
     server_client: Arc<VpnServerClient<M, CS, G, T>>,
+    tunnel_factory: Arc<F>,
     vpn_devices: Mutex<Option<HashMap<NetworkId, VpnDevice<DevicePkgRecv<R, S, F, L>>>>>,
     tunnel_manager: Mutex<Option<Arc<TunnelManager<R, S, F, L>>>>,
     packet_dispatcher: Mutex<Option<Arc<PacketDispatcher<R, S, F, L>>>>,
@@ -189,6 +190,7 @@ impl<
     ) -> Arc<Self> {
         let this = Arc::new(Self {
             server_client: server_client.clone(),
+            tunnel_factory: tunnel_factory.clone(),
             vpn_devices: Mutex::new(Some(HashMap::new())),
             tunnel_manager: Mutex::new(None),
             packet_dispatcher: Mutex::new(None),
@@ -240,6 +242,7 @@ impl<
                 .get_vpn_info(Some(self.cur_version.load(Ordering::SeqCst)), None)
                 .await?
         };
+        self.tunnel_factory.on_vpn_info_received(&vpn_infos).await?;
 
         if !self.is_first.load(Ordering::Relaxed)
             && server_version == self.cur_version.load(Ordering::SeqCst)
@@ -263,6 +266,7 @@ impl<
         for vpn_info in vpn_infos {
             let group_id = vpn_info.node_info.group_id;
             let network_id = vpn_info.node_info.id;
+            let pn_server = vpn_info.node_info.pn_server.clone();
             let members = vpn_info
                 .members
                 .iter()
@@ -299,7 +303,7 @@ impl<
 
             tunnel_manager
                 .get_router()
-                .add_network(group_id, network_id, members);
+                .add_network(group_id, network_id, pn_server, members);
         }
         self.cur_version.store(server_version, Ordering::SeqCst);
         Ok(())

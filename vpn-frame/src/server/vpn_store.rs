@@ -1,5 +1,5 @@
-use crate::errors::VpnResult;
-use crate::server::{NetworkStore, NodeStore};
+use crate::errors::{VpnErrorCode, VpnResult, vpn_err};
+use crate::server::{NetworkStore, NodeId, NodeStore};
 use std::ops::{Deref, DerefMut};
 
 #[async_trait::async_trait]
@@ -7,6 +7,18 @@ pub trait VpnStore: NetworkStore + NodeStore {
     async fn begin_transaction(&mut self) -> VpnResult<()>;
     async fn commit_transaction(&mut self) -> VpnResult<()>;
     async fn rollback_transaction(&mut self) -> VpnResult<()>;
+
+    async fn add_pn_traffic_delta(
+        &mut self,
+        _node_id: &NodeId,
+        _tx_bytes: u64,
+        _rx_bytes: u64,
+    ) -> VpnResult<()> {
+        Err(vpn_err!(
+            VpnErrorCode::Failed,
+            "pn traffic persistence is not supported by this store"
+        ))
+    }
 }
 
 pub struct VpnStoreGuard<T: VpnStore> {

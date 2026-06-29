@@ -1,9 +1,9 @@
-use crate::NodeNetwork;
 use crate::errors::{VpnErrorCode, VpnResult, vpn_err};
 use crate::server::{
     JoinedNode, Network, NetworkGroupId, NetworkId, NetworkMember, Node, NodeId, NodeManager,
     VpnStore, VpnStoreFactory,
 };
+use crate::{NodeNetwork, PnServerInfo};
 use async_named_locker::Locker;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
@@ -46,6 +46,7 @@ impl<S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
                     mask: 0,
                     ipv6_seg: None,
                     ipv6_mask: 0,
+                    pn_server: None,
                 };
                 store.add_network(&network).await?;
                 return Ok(network);
@@ -110,8 +111,15 @@ impl<S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
                         new_member.ipv6 = None;
                     }
                 }
+                let member_changed = has_change;
+                if old_network.pn_server != network.pn_server {
+                    has_change = true;
+                }
+
                 if has_change {
-                    store.update_member(&network.id, &new_member).await?;
+                    if member_changed {
+                        store.update_member(&network.id, &new_member).await?;
+                    }
                     store.inc_info_version(&member.id).await?;
                     self.node_manager.remove_node(&member.id).await;
                 }
@@ -119,6 +127,35 @@ impl<S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
         }
 
         store.update_network(&network).await?;
+        store.commit_transaction().await?;
+        Ok(())
+    }
+
+    pub async fn update_network_pn_server(
+        &self,
+        network_id: &NetworkId,
+        pn_server: Option<PnServerInfo>,
+    ) -> VpnResult<()> {
+        let mut store = self.store_factory.get_vpn_store().await?;
+        let mut network = store.get_network(network_id).await?.ok_or_else(|| {
+            vpn_err!(
+                VpnErrorCode::InvalidParam,
+                "network {} does not exist",
+                network_id
+            )
+        })?;
+        if network.pn_server == pn_server {
+            return Ok(());
+        }
+
+        store.begin_transaction().await?;
+        network.pn_server = pn_server;
+        store.update_network(&network).await?;
+        let members = store.get_members(network_id).await?;
+        for member in members {
+            store.inc_info_version(&member.id).await?;
+            self.node_manager.remove_node(&member.id).await;
+        }
         store.commit_transaction().await?;
         Ok(())
     }

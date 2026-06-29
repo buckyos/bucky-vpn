@@ -1,6 +1,6 @@
-use crate::NodeNetwork;
 use crate::errors::VpnResult;
 use crate::server::node_store::NodeId;
+use crate::{NodeNetwork, PnServerInfo};
 use bucky_raw_codec::{RawDecode, RawEncode};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -30,6 +30,7 @@ pub struct Network {
     pub mask: u8,
     pub ipv6_seg: Option<Ipv6Addr>,
     pub ipv6_mask: u8,
+    pub pn_server: Option<PnServerInfo>,
 }
 
 impl Network {

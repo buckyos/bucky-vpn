@@ -18,7 +18,16 @@ pub trait VpnTunnelRecv: AsyncRead + Send + 'static + Unpin {}
 
 #[async_trait::async_trait]
 pub trait VpnTunnelFactory<R: VpnTunnelRecv, S: VpnTunnelSend>: Send + Sync + 'static {
-    async fn create_tunnel(&self, node_id: &NodeId) -> VpnResult<(R, S)>;
+    async fn create_tunnel(
+        &self,
+        network_group_id: NetworkGroupId,
+        network_id: NetworkId,
+        node_id: &NodeId,
+    ) -> VpnResult<(R, S)>;
+
+    async fn on_vpn_info_received(&self, _vpn_infos: &[NodeVpnInfo]) -> VpnResult<()> {
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -36,6 +45,10 @@ pub enum VpnCmdCode {
     QueryNode = 0x95,
     QueryNodeResp = 0x96,
     Data = 0x97,
+    ReportPnTrafficStats = 0x98,
+    ReportPnTrafficStatsResp = 0x99,
+    ValidatePnConnection = 0x9a,
+    ValidatePnConnectionResp = 0x9b,
 }
 
 impl TryFrom<u8> for VpnCmdCode {
@@ -49,6 +62,10 @@ impl TryFrom<u8> for VpnCmdCode {
             0x95 => Ok(VpnCmdCode::QueryNode),
             0x96 => Ok(VpnCmdCode::QueryNodeResp),
             0x97 => Ok(VpnCmdCode::Data),
+            0x98 => Ok(VpnCmdCode::ReportPnTrafficStats),
+            0x99 => Ok(VpnCmdCode::ReportPnTrafficStatsResp),
+            0x9a => Ok(VpnCmdCode::ValidatePnConnection),
+            0x9b => Ok(VpnCmdCode::ValidatePnConnectionResp),
             _ => Err(VpnError::new(
                 VpnErrorCode::InvalidParam,
                 format!("invalid package command type value {}", v),
@@ -80,6 +97,19 @@ pub struct GetVpnInfoReq {
     pub client_version: Option<String>,
 }
 
+#[derive(Debug, RawEncode, RawDecode, Serialize, Deserialize, Clone, Eq, PartialEq, Hash)]
+pub struct PnServerInfo {
+    pub id: String,
+    pub ip: IpAddr,
+    pub port: u16,
+}
+
+impl PnServerInfo {
+    pub fn new(id: String, ip: IpAddr, port: u16) -> Self {
+        Self { id, ip, port }
+    }
+}
+
 #[derive(RawEncode, RawDecode, Serialize, Deserialize, Clone, Eq, PartialEq)]
 pub struct NodeNetwork {
     pub id: NetworkId,
@@ -89,6 +119,7 @@ pub struct NodeNetwork {
     pub mask: u8,
     pub ipv6: Option<IpAddr>,
     pub ipv6_mask: u8,
+    pub pn_server: Option<PnServerInfo>,
 }
 
 #[derive(RawDecode, RawEncode)]
@@ -129,4 +160,65 @@ pub struct QueryNodeReq {
 pub struct QueryNodeResp {
     pub seq: Sequence,
     pub node_id: Option<NodeId>,
+}
+
+#[derive(RawDecode, RawEncode)]
+pub struct ReportPnTrafficStatsReq {
+    pub seq: Sequence,
+    pub node_id: NodeId,
+    pub pn_server: Option<PnServerInfo>,
+    pub tx_bytes: u64,
+    pub rx_bytes: u64,
+}
+
+#[derive(RawDecode, RawEncode)]
+pub struct ReportPnTrafficStatsResp {
+    pub seq: Sequence,
+    pub result: u8,
+}
+
+#[derive(RawDecode, RawEncode)]
+pub struct ValidatePnConnectionReq {
+    pub seq: Sequence,
+    pub from: NodeId,
+    pub to: NodeId,
+}
+
+#[derive(RawDecode, RawEncode)]
+pub struct ValidatePnConnectionResp {
+    pub seq: Sequence,
+    pub result: u8,
+    pub allowed: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PnServerInfo;
+    use std::net::IpAddr;
+
+    #[test]
+    fn pn_server_info_carries_node_id_and_ipv4_address() {
+        let pn_server = PnServerInfo::new(
+            "server-node-id".to_string(),
+            IpAddr::from([127, 0, 0, 1]),
+            3624,
+        );
+
+        assert_eq!(pn_server.id, "server-node-id");
+        assert_eq!(pn_server.ip, IpAddr::from([127, 0, 0, 1]));
+        assert_eq!(pn_server.port, 3624);
+    }
+
+    #[test]
+    fn pn_server_info_carries_node_id_and_ipv6_address() {
+        let pn_server = PnServerInfo::new(
+            "server-node-id".to_string(),
+            "::1".parse::<IpAddr>().unwrap(),
+            3624,
+        );
+
+        assert_eq!(pn_server.id, "server-node-id");
+        assert_eq!(pn_server.ip, "::1".parse::<IpAddr>().unwrap());
+        assert_eq!(pn_server.port, 3624);
+    }
 }

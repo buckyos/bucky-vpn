@@ -7,10 +7,9 @@ mod setting;
 mod windows_main;
 
 use crate::api::Api;
-use crate::cli::Cli;
+use crate::cli::{Cli, LocalApiConfig, load_env_config, load_file_config, resolve_data_dir};
 use crate::p2p_vpn::{JoinRecord, init_p2p_vpn_client_manager, vpn_client_manager};
 use crate::setting::Setting;
-use config::builder::DefaultState;
 use p2p_frame::endpoint::{Endpoint, Protocol};
 use p2p_frame::stack::{P2pConfig, create_p2p_env};
 use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
@@ -18,39 +17,14 @@ use sfo_http::http_server::HttpServerConfig;
 use sfo_http::tide_server::TideHttpServer;
 use std::fs::create_dir_all;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 const SN_PORT: u16 = 3624;
 
 async fn run_daemon() {
-    let mut config = config::ConfigBuilder::<DefaultState>::default();
-
-    config = config.add_source(config::Environment::with_prefix("VPN").separator("_"));
-    let config = config.build().unwrap();
-
-    let vpn_config_path = match config.get_string("data.dir") {
-        Ok(dir) => PathBuf::from(dir),
-        Err(_) => {
-            #[cfg(target_os = "windows")]
-            {
-                std::env::current_exe()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .join("data")
-            }
-            #[cfg(target_os = "macos")]
-            {
-                PathBuf::from("/Library/Application Support/BuckyVPN")
-            }
-            #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-            {
-                PathBuf::from("/var/bucky_vpn")
-            }
-        }
-    };
+    let config = load_env_config();
+    let vpn_config_path = resolve_data_dir(&config);
 
     let p2p_port = config.get_int("p2p.port").unwrap_or(3622) as u16;
 
@@ -100,6 +74,8 @@ async fn run_daemon() {
             .await
             .unwrap(),
     );
+    let file_config = load_file_config(vpn_config_path.join("setting.toml").as_path());
+    let local_api = LocalApiConfig::from_sources(&config, &file_config, setting.as_ref());
     if let Some(records) = setting.get::<Vec<JoinRecord>>("joined_networks") {
         for record in records {
             tokio::spawn(async move {
@@ -141,7 +117,7 @@ async fn run_daemon() {
     // let stack = create_p2p_stack(stack_config).await.unwrap();
     // stack.wait_online(None).await.unwrap();
 
-    let http_config = HttpServerConfig::new("127.0.0.1", 4536);
+    let http_config = HttpServerConfig::new(local_api.bind_ip(), local_api.bind_port());
     let mut http_server = TideHttpServer::new(http_config);
     Api::register_api(&mut http_server, setting);
     http_server.run().await.unwrap();

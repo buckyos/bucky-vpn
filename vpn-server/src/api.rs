@@ -1,4 +1,5 @@
 use crate::pn_traffic_service::PnTrafficServiceRef;
+use crate::server_config::ConfigPnServerSelectorRef;
 use crate::sqlite_store_factory::VpnServerRef;
 use crate::user_store::UserManagerRef;
 use p2p_frame::pn::PnUserTrafficSnapshot;
@@ -9,6 +10,7 @@ use sfo_http::http_server::{HttpMethod, HttpServer, Request, Response};
 use sfo_http::openapi::OpenApiServer;
 use sfo_http::openapi::utoipa;
 use std::net::{IpAddr, Ipv4Addr};
+use vpn_frame::PnServerInfo;
 use vpn_frame::deserialize_u64_from_string;
 use vpn_frame::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
 use vpn_frame::serialize_u64_as_string;
@@ -78,6 +80,51 @@ struct UpdateJoinCommentReq {
 #[derive(Serialize, Deserialize, utoipa::ToSchema)]
 struct DeleteJoinedNodeReq {
     pub node_id: String,
+}
+
+#[derive(Serialize, Deserialize, utoipa::ToSchema)]
+pub struct JsonPnServerInfo {
+    pub id: String,
+    pub ip: String,
+    pub port: u16,
+}
+
+impl JsonPnServerInfo {
+    fn into_pn_server_info(self) -> VpnResult<PnServerInfo> {
+        Ok(PnServerInfo::new(
+            self.id,
+            self.ip
+                .parse()
+                .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?,
+            self.port,
+        ))
+    }
+}
+
+impl From<PnServerInfo> for JsonPnServerInfo {
+    fn from(value: PnServerInfo) -> Self {
+        Self {
+            id: value.id,
+            ip: value.ip.to_string(),
+            port: value.port,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, utoipa::ToSchema)]
+struct ProxyNodeApprovalReq {
+    pub pn_server: JsonPnServerInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, utoipa::ToSchema)]
+struct JsonProxyNode {
+    pub pn_server: JsonPnServerInfo,
+    pub status: String,
+    pub live: bool,
+    pub updated_at: String,
+    pub comment: String,
 }
 
 #[derive(Serialize, Deserialize, utoipa::ToSchema)]
@@ -168,6 +215,8 @@ pub struct JsonNetwork {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ipv6_seg: Option<String>,
     pub ipv6_mask: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pn_server: Option<JsonPnServerInfo>,
 }
 
 impl JsonUserTrafficStats {
@@ -195,7 +244,126 @@ impl Api {
         user_manager: UserManagerRef,
         vpn_server: VpnServerRef,
         traffic_service: PnTrafficServiceRef,
+        pn_server_selector: ConfigPnServerSelectorRef,
     ) {
+        let tmp_user_manager = user_manager.clone();
+        let tmp_pn_server_selector = pn_server_selector.clone();
+        server.serve("/pn_proxy_nodes", HttpMethod::GET, move |req: Req| {
+            let user_manager = tmp_user_manager.clone();
+            let pn_server_selector = tmp_pn_server_selector.clone();
+            async move {
+                let result: VpnResult<Vec<JsonProxyNode>> = async move {
+                    let session = req
+                        .header(AUTHORIZATION)
+                        .ok_or_else(|| vpn_err!(VpnErrorCode::InvalidParam))?
+                        .to_str()
+                        .map_err(|_| vpn_err!(VpnErrorCode::InvalidParam))?
+                        .to_string();
+                    if !session.to_lowercase().starts_with("bearer ") {
+                        return Err(vpn_err!(VpnErrorCode::InvalidParam));
+                    }
+                    let session = session.split_at("Bearer ".len()).1;
+                    let _user = user_manager
+                        .decode_session(session)
+                        .await
+                        .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
+                    let nodes = pn_server_selector
+                        .list_proxy_nodes()
+                        .await?
+                        .into_iter()
+                        .map(|node| JsonProxyNode {
+                            pn_server: node.pn_server.into(),
+                            status: node.status.as_str().to_string(),
+                            live: node.live,
+                            updated_at: node.updated_at.to_string(),
+                            comment: node.comment,
+                        })
+                        .collect();
+                    Ok(nodes)
+                }
+                .await;
+                Ok(Resp::from_result(result))
+            }
+        });
+
+        let tmp_user_manager = user_manager.clone();
+        let tmp_pn_server_selector = pn_server_selector.clone();
+        server.serve(
+            "/approve_pn_proxy_node",
+            HttpMethod::POST,
+            move |mut req: Req| {
+                let user_manager = tmp_user_manager.clone();
+                let pn_server_selector = tmp_pn_server_selector.clone();
+                async move {
+                    let result: VpnResult<()> = async move {
+                        let session = req
+                            .header(AUTHORIZATION)
+                            .ok_or_else(|| vpn_err!(VpnErrorCode::InvalidParam))?
+                            .to_str()
+                            .map_err(|_| vpn_err!(VpnErrorCode::InvalidParam))?
+                            .to_string();
+                        if !session.to_lowercase().starts_with("bearer ") {
+                            return Err(vpn_err!(VpnErrorCode::InvalidParam));
+                        }
+                        let session = session.split_at("Bearer ".len()).1;
+                        let _user = user_manager
+                            .decode_session(session)
+                            .await
+                            .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
+                        let req = req
+                            .body_json::<ProxyNodeApprovalReq>()
+                            .await
+                            .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
+                        let pn_server = req.pn_server.into_pn_server_info()?;
+                        pn_server_selector
+                            .approve_proxy_node(&pn_server, req.comment.as_deref())
+                            .await
+                    }
+                    .await;
+                    Ok(Resp::from_result(result))
+                }
+            },
+        );
+
+        let tmp_user_manager = user_manager.clone();
+        let tmp_pn_server_selector = pn_server_selector.clone();
+        server.serve(
+            "/reject_pn_proxy_node",
+            HttpMethod::POST,
+            move |mut req: Req| {
+                let user_manager = tmp_user_manager.clone();
+                let pn_server_selector = tmp_pn_server_selector.clone();
+                async move {
+                    let result: VpnResult<()> = async move {
+                        let session = req
+                            .header(AUTHORIZATION)
+                            .ok_or_else(|| vpn_err!(VpnErrorCode::InvalidParam))?
+                            .to_str()
+                            .map_err(|_| vpn_err!(VpnErrorCode::InvalidParam))?
+                            .to_string();
+                        if !session.to_lowercase().starts_with("bearer ") {
+                            return Err(vpn_err!(VpnErrorCode::InvalidParam));
+                        }
+                        let session = session.split_at("Bearer ".len()).1;
+                        let _user = user_manager
+                            .decode_session(session)
+                            .await
+                            .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
+                        let req = req
+                            .body_json::<ProxyNodeApprovalReq>()
+                            .await
+                            .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
+                        let pn_server = req.pn_server.into_pn_server_info()?;
+                        pn_server_selector
+                            .reject_proxy_node(&pn_server, req.comment.as_deref())
+                            .await
+                    }
+                    .await;
+                    Ok(Resp::from_result(result))
+                }
+            },
+        );
+
         let tmp_user_manager = user_manager.clone();
         let tmp_vpn_server = vpn_server.clone();
         let tmp_traffic_service = traffic_service.clone();
@@ -489,6 +657,7 @@ impl Api {
                             .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?,
                     );
                     network.mask = req.mask;
+                    network.pn_server = vpn_server.select_pn_server(network.id).await?;
 
                     vpn_server.network_manager().update_network(&network).await
                 }
@@ -631,6 +800,7 @@ impl Api {
                             mask: v.mask,
                             ipv6_seg: v.ipv6_seg.as_ref().map(|v| v.to_string()),
                             ipv6_mask: v.ipv6_mask,
+                            pn_server: v.pn_server.clone().map(Into::into),
                         })
                         .collect();
                     Ok(list)

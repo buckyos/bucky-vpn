@@ -4,7 +4,8 @@ use crate::server::{
 };
 use crate::{
     GetVpnInfoReq, GetVpnInfoResp, JoinNetworkGroupReq, JoinNetworkGroupResp, NodeVpnInfo,
-    QueryNodeReq, QueryNodeResp, VpnCmdCode, VpnCmdHeader, VpnTunnelId,
+    PnServerInfo, QueryNodeReq, QueryNodeResp, ReportPnTrafficStatsReq, ReportPnTrafficStatsResp,
+    ValidatePnConnectionReq, ValidatePnConnectionResp, VpnCmdCode, VpnCmdHeader, VpnTunnelId,
 };
 use async_trait::async_trait;
 use bucky_raw_codec::{RawConvertTo, RawFrom};
@@ -53,6 +54,16 @@ impl OnlineNode {
 #[async_trait]
 pub trait VpnCmdServer: CmdServer<u16, u8> {
     async fn get_peer_wan_ip(&self, peer_id: &PeerId) -> VpnResult<Vec<IpAddr>>;
+}
+
+#[async_trait]
+pub trait PnServerSelector: Send + Sync + 'static {
+    async fn is_valid(&self, pn_server: &PnServerInfo) -> VpnResult<bool>;
+    async fn select(&self, network_id: NetworkId) -> VpnResult<Option<PnServerInfo>>;
+
+    async fn report_heartbeat(&self, _pn_server: &PnServerInfo) -> VpnResult<()> {
+        Ok(())
+    }
 }
 
 struct OnlineNodesState {
@@ -132,9 +143,11 @@ impl OnlineNodesState {
 }
 
 pub struct VpnServer<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> {
+    store_factory: Arc<F>,
     network_manager: Arc<NetworkManager<S, F>>,
     node_manager: Arc<NodeManager<S, F>>,
     cmd_server: Arc<T>,
+    pn_server_selector: Option<Arc<dyn PnServerSelector>>,
     version: u8,
     online_nodes: Mutex<OnlineNodesState>,
     offline_monitor_handle: Mutex<Option<JoinHandle<()>>>,
@@ -143,11 +156,29 @@ pub type VpnServerRef<T, S, F> = Arc<VpnServer<T, S, F>>;
 
 impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
     pub fn new(cmd_server: Arc<T>, factory: Arc<F>) -> Arc<Self> {
+        Self::new_with_optional_pn_server_selector(cmd_server, factory, None)
+    }
+
+    pub fn new_with_pn_server_selector(
+        cmd_server: Arc<T>,
+        factory: Arc<F>,
+        pn_server_selector: Arc<dyn PnServerSelector>,
+    ) -> Arc<Self> {
+        Self::new_with_optional_pn_server_selector(cmd_server, factory, Some(pn_server_selector))
+    }
+
+    fn new_with_optional_pn_server_selector(
+        cmd_server: Arc<T>,
+        factory: Arc<F>,
+        pn_server_selector: Option<Arc<dyn PnServerSelector>>,
+    ) -> Arc<Self> {
         let node_manager = NodeManager::new(factory.clone());
         Arc::new(Self {
+            store_factory: factory.clone(),
             network_manager: NetworkManager::new(factory.clone(), node_manager.clone()),
             node_manager,
             cmd_server,
+            pn_server_selector,
             version: 0,
             online_nodes: Mutex::new(OnlineNodesState::new()),
             offline_monitor_handle: Mutex::new(None),
@@ -160,6 +191,14 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
 
     pub fn node_manager(&self) -> &Arc<NodeManager<S, F>> {
         &self.node_manager
+    }
+
+    pub async fn select_pn_server(&self, network_id: NetworkId) -> VpnResult<Option<PnServerInfo>> {
+        if let Some(selector) = &self.pn_server_selector {
+            selector.select(network_id).await
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn start(self: &Arc<Self>) {
@@ -333,6 +372,102 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
                 }
             },
         );
+
+        let this = self.clone();
+        self.cmd_server.register_cmd_handler(
+            VpnCmdCode::ReportPnTrafficStats as u8,
+            move |_local_id: PeerId,
+                  _peer_id: PeerId,
+                  tunnel_id: VpnTunnelId,
+                  _header: VpnCmdHeader,
+                  mut body: CmdBody| {
+                let this = this.clone();
+                async move {
+                    let data = body.read_all().await?;
+                    let req = ReportPnTrafficStatsReq::clone_from_slice(data.as_slice())
+                        .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
+                    let seq = req.seq;
+                    let resp = match this
+                        .handle_report_pn_traffic_stats_req(
+                            &req.node_id,
+                            req.pn_server.as_ref(),
+                            req.tx_bytes,
+                            req.rx_bytes,
+                        )
+                        .await
+                    {
+                        Ok(()) => ReportPnTrafficStatsResp { seq, result: 0 },
+                        Err(e) => {
+                            log::error!("handle_report_pn_traffic_stats_req failed: {:?}", e);
+                            ReportPnTrafficStatsResp {
+                                seq,
+                                result: e.code() as u8,
+                            }
+                        }
+                    };
+                    this.cmd_server
+                        .send_by_specify_tunnel(
+                            &_peer_id,
+                            tunnel_id,
+                            VpnCmdCode::ReportPnTrafficStatsResp as u8,
+                            this.version,
+                            resp.to_vec()
+                                .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?
+                                .as_slice(),
+                        )
+                        .await?;
+                    Ok(None)
+                }
+            },
+        );
+
+        let this = self.clone();
+        self.cmd_server.register_cmd_handler(
+            VpnCmdCode::ValidatePnConnection as u8,
+            move |_local_id: PeerId,
+                  _peer_id: PeerId,
+                  tunnel_id: VpnTunnelId,
+                  _header: VpnCmdHeader,
+                  mut body: CmdBody| {
+                let this = this.clone();
+                async move {
+                    let data = body.read_all().await?;
+                    let req = ValidatePnConnectionReq::clone_from_slice(data.as_slice())
+                        .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
+                    let seq = req.seq;
+                    let resp = match this
+                        .handle_validate_pn_connection_req(&req.from, &req.to)
+                        .await
+                    {
+                        Ok(allowed) => ValidatePnConnectionResp {
+                            seq,
+                            result: 0,
+                            allowed,
+                        },
+                        Err(e) => {
+                            log::error!("handle_validate_pn_connection_req failed: {:?}", e);
+                            ValidatePnConnectionResp {
+                                seq,
+                                result: e.code() as u8,
+                                allowed: false,
+                            }
+                        }
+                    };
+                    this.cmd_server
+                        .send_by_specify_tunnel(
+                            &_peer_id,
+                            tunnel_id,
+                            VpnCmdCode::ValidatePnConnectionResp as u8,
+                            this.version,
+                            resp.to_vec()
+                                .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?
+                                .as_slice(),
+                        )
+                        .await?;
+                    Ok(None)
+                }
+            },
+        );
     }
 
     async fn handle_join_network_group_req(
@@ -382,10 +517,13 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
         }
         let mut info_list = vec![];
         let node_networks = self.network_manager.get_networks_of_node(&node_id).await?;
-        for node_network in node_networks.iter() {
+        for node_network in node_networks {
+            let mut node_network = node_network;
             if node_network.ip.is_none() {
                 continue;
             }
+            self.ensure_node_network_pn_server(&mut node_network)
+                .await?;
 
             let members = self
                 .network_manager
@@ -411,11 +549,38 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
                     .collect()
             };
             info_list.push(NodeVpnInfo {
-                node_info: node_network.clone(),
+                node_info: node_network,
                 members,
             });
         }
         Ok((node.as_ref().unwrap().info_version, info_list))
+    }
+
+    async fn ensure_node_network_pn_server(
+        &self,
+        node_network: &mut crate::NodeNetwork,
+    ) -> VpnResult<()> {
+        let Some(selector) = &self.pn_server_selector else {
+            return Ok(());
+        };
+
+        let current_pn_server = node_network.pn_server.as_ref();
+        let need_reassign = match current_pn_server {
+            Some(pn_server) => !selector.is_valid(pn_server).await?,
+            None => true,
+        };
+        if !need_reassign {
+            return Ok(());
+        }
+
+        let selected = selector.select(node_network.id).await?;
+        if selected.as_ref() != current_pn_server {
+            self.network_manager
+                .update_network_pn_server(&node_network.id, selected.clone())
+                .await?;
+            node_network.pn_server = selected;
+        }
+        Ok(())
     }
 
     async fn handle_query_node_req(
@@ -429,6 +594,50 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
             .await
     }
 
+    async fn handle_report_pn_traffic_stats_req(
+        &self,
+        node_id: &NodeId,
+        pn_server: Option<&PnServerInfo>,
+        tx_bytes: u64,
+        rx_bytes: u64,
+    ) -> VpnResult<()> {
+        if let (Some(selector), Some(pn_server)) = (&self.pn_server_selector, pn_server) {
+            selector.report_heartbeat(pn_server).await?;
+        }
+        let mut store = self.store_factory.get_vpn_store().await?;
+        store
+            .add_pn_traffic_delta(node_id, tx_bytes, rx_bytes)
+            .await
+    }
+
+    pub async fn validate_pn_connection(
+        &self,
+        source_node_id: &NodeId,
+        target_node_id: &NodeId,
+    ) -> VpnResult<bool> {
+        let mut store = self.store_factory.get_vpn_store().await?;
+        let source_groups = store.get_joined_network_group(source_node_id).await?;
+        let target_groups = store.get_joined_network_group(target_node_id).await?;
+        let allowed_target_groups = target_groups
+            .iter()
+            .filter(|joined| joined.allow_join)
+            .map(|joined| joined.group_id)
+            .collect::<std::collections::HashSet<_>>();
+
+        Ok(source_groups
+            .iter()
+            .any(|joined| joined.allow_join && allowed_target_groups.contains(&joined.group_id)))
+    }
+
+    async fn handle_validate_pn_connection_req(
+        &self,
+        source_node_id: &NodeId,
+        target_node_id: &NodeId,
+    ) -> VpnResult<bool> {
+        self.validate_pn_connection(source_node_id, target_node_id)
+            .await
+    }
+
     pub async fn get_peer_ip_list(&self, peer_id: &PeerId) -> VpnResult<Vec<IpAddr>> {
         self.cmd_server.get_peer_wan_ip(peer_id).await
     }
@@ -437,23 +646,27 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
         &self,
         node_id: &NodeId,
     ) -> Option<(Option<String>, Vec<IpAddr>)> {
-        let online_nodes = self.online_nodes.lock().unwrap();
-        if let Some(node) = online_nodes.get_node(node_id) {
-            if !node.is_expire() {
-                let ips = self
-                    .cmd_server
-                    .get_peer_wan_ip(&PeerId::from(node_id.as_slice()))
-                    .await
-                    .unwrap_or(vec![]);
-                if ips.is_empty() {
+        let version = {
+            let online_nodes = self.online_nodes.lock().unwrap();
+            if let Some(node) = online_nodes.get_node(node_id) {
+                if node.is_expire() {
                     return None;
                 }
-                Some((node.version.clone(), ips))
+                node.version.clone()
             } else {
-                None
+                return None;
             }
-        } else {
+        };
+
+        let ips = self
+            .cmd_server
+            .get_peer_wan_ip(&PeerId::from(node_id.as_slice()))
+            .await
+            .unwrap_or(vec![]);
+        if ips.is_empty() {
             None
+        } else {
+            Some((version, ips))
         }
     }
 }
