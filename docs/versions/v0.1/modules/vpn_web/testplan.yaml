@@ -1,0 +1,58 @@
+schema_version: 1
+version: v0.1
+module: vpn_web
+defaults:
+  workdir: vpn_web
+  timeout_sec: 1800
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: 运行现有 Flutter 测试；默认不新增 `vpn_web` 测试
+    test_targets:
+      - vpn_web/test
+    preconditions:
+      tools:
+        - flutter
+      env: []
+      services: []
+      notes:
+        - 当前 widget smoke test 与真实应用壳可能不一致
+        - 仓库规则：除非用户明确要求，否则不要新增 `vpn_web` 测试用例
+    steps:
+      - id: vpn-web-unit
+        name: 运行现有 flutter test
+        run: ["python3", "./harness/scripts/test-run.py", "vpn_web", "unit"]
+  dv:
+    mode: enabled
+    summary: 运行 Flutter 静态分析
+    test_targets:
+      - vpn_web/lib
+    preconditions:
+      tools:
+        - flutter
+      env: []
+      services: []
+      notes: []
+    steps:
+      - id: vpn-web-dv
+        name: 运行 flutter analyze
+        run: ["python3", "./harness/scripts/test-run.py", "vpn_web", "dv"]
+  integration:
+    mode: enabled
+    summary: 构建 Web 应用 bundle
+    test_targets:
+      - vpn_web/lib
+      - vpn_web/web
+    preconditions:
+      tools:
+        - flutter
+      env: []
+      services: []
+      notes:
+        - 构建前应确保生成模型与源码同步
+        - 前端验证优先使用 analyze 和 build，而不是补新测试
+    steps:
+      - id: vpn-web-integration
+        name: 构建 Flutter Web 应用
+        run: ["python3", "./harness/scripts/test-run.py", "vpn_web", "integration"]

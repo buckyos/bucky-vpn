@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "created_at": "2026-06-24T17:04:19+00:00",
+  "evidence_file": "harness/evidence/admission/20260624-proxy-node-control.md",
+  "version": "v0.1",
+  "module": "bucky-vpn-server",
+  "submodule": null,
+  "change_ids": [
+    "CHG-pn-config-no-static-addresses",
+    "CHG-external-pn-active-control",
+    "CHG-pure-pn-sn-address",
+    "CHG-pn-sn-heartbeat",
+    "CHG-colocated-pn-default-allowed",
+    "CHG-pn-traffic-db-interface",
+    "CHG-local-pn-toggle-preserved"
+  ],
+  "doc_hashes": {
+    "docs/versions/v0.1/modules/bucky-vpn-server/proposal.md": "e5c281e62918e665c680b4b9177778e101a658e6d7e27fa1b5f87f793a654aab",
+    "docs/versions/v0.1/modules/bucky-vpn-server/design.md": "f0173db8a818710f574460c360c0870714bd91b60438ad986e087e50e45c7eca"
+  },
+  "scope_paths": [
+    "vpn-server/src/server_config.rs",
+    "vpn-server/src/main.rs",
+    "vpn-server/src/vpn_control_client.rs",
+    "vpn-server/src/pn_connection_validator.rs",
+    "vpn-server/src/pn_traffic_service.rs",
+    "vpn-server/src/sqlite_store_factory.rs"
+  ]
+}

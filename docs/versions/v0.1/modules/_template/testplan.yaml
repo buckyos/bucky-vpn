@@ -1,0 +1,50 @@
+schema_version: 1
+version: v0.1
+module: example-module
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: 核心逻辑与子模块单元验证
+    test_targets:
+      - tests/unit/example-module
+    preconditions:
+      tools: []
+      env: []
+      services: []
+      notes: []
+    steps:
+      - id: example-unit
+        name: 运行 unit 测试
+        run: ["python3", "./harness/scripts/test-run.py", "example-module", "unit"]
+  dv:
+    mode: enabled
+    summary: 单模块可运行验证
+    test_targets:
+      - tests/dv/example-module
+    preconditions:
+      tools: []
+      env: []
+      services: []
+      notes: []
+    steps:
+      - id: example-dv
+        name: 运行 dv 测试
+        run: ["python3", "./harness/scripts/test-run.py", "example-module", "dv"]
+  integration:
+    mode: enabled
+    summary: 邻接模块集成验证
+    test_targets:
+      - tests/integration/example-module
+    preconditions:
+      tools: []
+      env: []
+      services: []
+      notes: []
+    steps:
+      - id: example-integration
+        name: 运行 integration 测试
+        run: ["python3", "./harness/scripts/test-run.py", "example-module", "integration"]

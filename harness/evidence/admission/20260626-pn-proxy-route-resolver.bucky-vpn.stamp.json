@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "created_at": "2026-06-26T03:26:49+00:00",
+  "evidence_file": "harness/evidence/admission/20260626-pn-proxy-route-resolver.md",
+  "version": "v0.1",
+  "module": "bucky-vpn",
+  "submodule": null,
+  "change_ids": [
+    "CHG-client-pn-proxy-route-resolver"
+  ],
+  "doc_hashes": {
+    "docs/versions/v0.1/modules/bucky-vpn/proposal.md": "7e5181dd0349e78bbc3c3ee89099d131d9040c23aba30f2b5545af575327dc21",
+    "docs/versions/v0.1/modules/bucky-vpn/design.md": "89777e44629920e031ef135cd800db09efac483e25bfc8363f4be47853b0a64d"
+  },
+  "scope_paths": [
+    "vpn-client/src/p2p_vpn.rs"
+  ]
+}

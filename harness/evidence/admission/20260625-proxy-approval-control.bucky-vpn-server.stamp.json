@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "created_at": "2026-06-25T09:34:13+00:00",
+  "evidence_file": "harness/evidence/admission/20260625-proxy-approval-control.md",
+  "version": "v0.1",
+  "module": "bucky-vpn-server",
+  "submodule": null,
+  "change_ids": [
+    "CHG-external-pn-approval-persistence",
+    "CHG-external-pn-approval-http-api"
+  ],
+  "doc_hashes": {
+    "docs/versions/v0.1/modules/bucky-vpn-server/proposal.md": "6bc7383840ca99bc7f162823e830fe43d37f76b08d889bd836cced94a5f02ccc",
+    "docs/versions/v0.1/modules/bucky-vpn-server/design.md": "b42efd4289b63d7fc943b09e396d4ca3ba02316c1ea4b896e00635c140f4611d"
+  },
+  "scope_paths": [
+    "vpn-server/src/sqlite_store_factory.rs",
+    "vpn-server/src/server_config.rs",
+    "vpn-server/src/main.rs",
+    "vpn-server/src/api.rs"
+  ]
+}

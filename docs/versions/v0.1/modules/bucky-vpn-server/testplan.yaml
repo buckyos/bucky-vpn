@@ -1,0 +1,73 @@
+schema_version: 1
+version: v0.1
+module: bucky-vpn-server
+defaults:
+  workdir: .
+  timeout_sec: 1800
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: 运行服务端 crate 级 Rust 测试入口
+    test_targets:
+      - vpn-server
+    preconditions:
+      tools:
+        - cargo
+      env: []
+      services: []
+      notes:
+        - 当前仓库中 `bucky-vpn-server` 的专门测试覆盖较少，0 test 也属于可能结果
+        - 该入口仍应保持可执行，用于拦截编译和基础链接回归
+        - 本轮若实现 PN relay 鉴权，应在该层补 source-target 授权相关 Rust 测试
+        - 本轮若实现 PN 节点/用户统计，应在该层至少覆盖节点快照映射、当前用户聚合逻辑和跨重启累计恢复
+        - 本轮控制节点/代理节点配置应覆盖默认 YAML 选择、旧 TOML fallback、SN/PN 开关缺省开启、移除静态代理地址、纯代理节点控制节点地址解析、内置代理节点默认允许和心跳入口
+    steps:
+      - id: bucky-vpn-server-unit
+        name: 运行 bucky-vpn-server crate 测试
+        change_ids: ["CHG-pn-config-no-static-addresses", "CHG-external-pn-active-control", "CHG-external-pn-approval-persistence", "CHG-pure-pn-sn-address", "CHG-pn-sn-heartbeat", "CHG-colocated-pn-default-allowed", "CHG-pn-traffic-db-interface", "CHG-local-pn-toggle-preserved"]
+        run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn-server", "unit"]
+  dv:
+    mode: enabled
+    summary: 构建服务端二进制 crate，验证装配链路未断裂
+    test_targets:
+      - vpn-server
+    preconditions:
+      tools:
+        - cargo
+      env: []
+      services: []
+      notes:
+        - 重点覆盖 `main.rs`、store factory 和 API 接线带来的编译级回归
+        - 新增自有 PN relay 装配后，该入口需要覆盖 `PROXY_SERVICE` 监听与桥接依赖是否仍可编译
+        - 新增 PN 统计视图后，该入口需要覆盖 `PnServer` 句柄接线、统计持久化服务和 API 响应结构是否仍可编译
+        - 新增控制节点/代理节点配置后，该入口需要覆盖 `sn.enabled=false`、`pn.enabled=false`、纯代理节点连接控制节点和 heartbeat wiring 的装配编译边界
+    steps:
+      - id: bucky-vpn-server-dv
+        name: 构建 bucky-vpn-server crate
+        change_ids: ["CHG-pn-config-no-static-addresses", "CHG-external-pn-active-control", "CHG-external-pn-approval-http-api", "CHG-pure-pn-sn-address", "CHG-pn-sn-heartbeat", "CHG-colocated-pn-default-allowed", "CHG-pn-traffic-db-interface", "CHG-local-pn-toggle-preserved"]
+        run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn-server", "dv"]
+  integration:
+    mode: enabled
+    summary: 验证服务端改动后的 workspace 兼容性
+    test_targets:
+      - vpn-server
+      - vpn-frame
+      - vpn-client
+    preconditions:
+      tools:
+        - cargo
+      env: []
+      services: []
+      notes:
+        - 使用 workspace 测试作为跨 crate 兼容性门禁
+        - 重点关注服务端 store contract、账户会话接线和共享运行时 trait 兼容性
+        - 当前未覆盖完整 HTTP/API 冒烟；该层主要承担跨 crate 回归拦截
+        - 若补充 PN relay 集成测试，必须覆盖同组已审批成功与跨组/未审批拒绝两类场景
+        - 若补充 PN 统计集成测试，必须覆盖节点级字段、当前用户聚合字段和重启后累计值延续
+        - 若补充控制节点/代理节点配置集成测试，必须覆盖无配置文件默认启动、YAML 显式关闭 SN、YAML 显式关闭 PN、纯代理节点连接控制节点和心跳超时恢复语义
+    steps:
+      - id: bucky-vpn-server-integration
+        name: 运行 workspace 测试
+        change_ids: ["CHG-pn-config-no-static-addresses", "CHG-external-pn-active-control", "CHG-external-pn-approval-persistence", "CHG-external-pn-approval-http-api", "CHG-pure-pn-sn-address", "CHG-pn-sn-heartbeat", "CHG-colocated-pn-default-allowed", "CHG-pn-traffic-db-interface", "CHG-local-pn-toggle-preserved"]
+        run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn-server", "integration"]
