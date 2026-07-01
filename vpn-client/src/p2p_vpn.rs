@@ -1,6 +1,4 @@
 #![allow(unused)]
-
-use base58::ToBase58;
 use p2p_frame::endpoint::{Endpoint, Protocol};
 use p2p_frame::error::{P2pErrorCode, P2pResult};
 use p2p_frame::networks::TunnelPurpose;
@@ -258,7 +256,7 @@ impl VpnTunnelFactory<P2pVpnTunnelRecv, P2pVpnTunnelSend> for P2pVpnTunnelFactor
             "create p2p vpn tunnel group {} network {} target {}",
             network_group_id,
             network_id,
-            node_id.as_slice().to_base58()
+            node_id.to_base36()
         );
         let (read, write) = self
             .stack
@@ -446,11 +444,7 @@ impl
         let sn_id = P2pId::from_str(sn_id)
             .map_err(into_vpn_err!(VpnErrorCode::Failed, "parse sn_id failed"))?;
         let local_id = local_identity.get_id();
-        log::info!(
-            "create client base58:{} base36:{}",
-            local_id.as_slice().to_base58(),
-            local_id.to_string()
-        );
+        log::info!("create client id:{}", local_id.to_string());
 
         let sn_ep = Endpoint::from((Protocol::Quic, SocketAddr::new(ip.ip(), sn_port)));
 

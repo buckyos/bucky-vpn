@@ -22,6 +22,7 @@ levels:
     steps:
       - id: vpn-web-unit
         name: 运行现有 flutter test
+        change_ids: ["CHG-proxy-node-management-tab", "CHG-proxy-node-real-address-display", "CHG-vpn-web-node-id-base36"]
         run: ["python3", "./harness/scripts/test-run.py", "vpn_web", "unit"]
   dv:
     mode: enabled
@@ -37,6 +38,7 @@ levels:
     steps:
       - id: vpn-web-dv
         name: 运行 flutter analyze
+        change_ids: ["CHG-proxy-node-management-tab", "CHG-proxy-node-real-address-display", "CHG-vpn-web-node-id-base36"]
         run: ["python3", "./harness/scripts/test-run.py", "vpn_web", "dv"]
   integration:
     mode: enabled
@@ -55,4 +57,5 @@ levels:
     steps:
       - id: vpn-web-integration
         name: 构建 Flutter Web 应用
+        change_ids: ["CHG-proxy-node-management-tab", "CHG-proxy-node-real-address-display", "CHG-vpn-web-node-id-base36"]
         run: ["python3", "./harness/scripts/test-run.py", "vpn_web", "integration"]

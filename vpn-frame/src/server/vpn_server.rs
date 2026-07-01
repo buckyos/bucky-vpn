@@ -67,7 +67,7 @@ pub trait PnServerSelector: Send + Sync + 'static {
         pn_server: &PnServerInfo,
         pn_node_id: &NodeId,
     ) -> VpnResult<bool> {
-        Ok(pn_server.id == pn_node_id.to_base58())
+        Ok(pn_server.id == pn_node_id.to_base36())
     }
 
     async fn can_accept_connections_from(&self, _pn_node_id: &NodeId) -> VpnResult<bool> {
@@ -448,8 +448,7 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
         req: JoinNetworkGroupReq,
     ) -> VpnResult<()> {
         log::info!(
-            "join peer base58 {} base36 {} to group {}",
-            peer_id.to_base58(),
+            "join peer {} to group {}",
             peer_id.to_base36(),
             req.group_id.to_string()
         );
@@ -602,9 +601,9 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
         if !allowed {
             log::warn!(
                 "pn connection rejected by group policy source={} source_groups=[{}] target={} target_groups=[{}]",
-                source_node_id.to_base58(),
+                source_node_id.to_base36(),
                 format_joined_groups(&source_groups),
-                target_node_id.to_base58(),
+                target_node_id.to_base36(),
                 format_joined_groups(&target_groups)
             );
         }
@@ -625,9 +624,9 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
         if !selector.can_accept_connections_from(pn_node_id).await? {
             log::warn!(
                 "pn connection rejected because pn node is not authorized pn_node={} source={} target={}",
-                pn_node_id.to_base58(),
-                source_node_id.to_base58(),
-                target_node_id.to_base58()
+                pn_node_id.to_base36(),
+                source_node_id.to_base36(),
+                target_node_id.to_base36()
             );
             return Ok(false);
         }
@@ -637,9 +636,9 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
         {
             log::warn!(
                 "pn connection rejected because source client is not assigned to pn node pn_node={} source={} target={}",
-                pn_node_id.to_base58(),
-                source_node_id.to_base58(),
-                target_node_id.to_base58()
+                pn_node_id.to_base36(),
+                source_node_id.to_base36(),
+                target_node_id.to_base36()
             );
             return Ok(false);
         }
@@ -667,8 +666,8 @@ impl<T: VpnCmdServer, S: VpnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
         }
         log::warn!(
             "source client has no network assigned to pn node pn_node={} source={} source_networks=[{}]",
-            pn_node_id.to_base58(),
-            source_node_id.to_base58(),
+            pn_node_id.to_base36(),
+            source_node_id.to_base36(),
             format_node_network_pn_assignments(&source_networks)
         );
         Ok(false)

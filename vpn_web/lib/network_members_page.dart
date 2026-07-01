@@ -1,13 +1,10 @@
-import 'package:base_x/base_x.dart';
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 
 import 'api.dart';
-import 'base58.dart';
 
 const double _tableColumnSpacing = 28;
 const double _tableHorizontalMargin = 16;
-final BaseXCodec _base36 = BaseXCodec('0123456789abcdefghijklmnoqprstuvwxyz');
 
 class NetworkMembersPage extends StatefulWidget {
   final Network network;
@@ -96,18 +93,9 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
     }
   }
 
-  String _nodeIdToBase36(String nodeId) {
-    try {
-      return _base36.encode(base58.decode(nodeId));
-    } catch (_) {
-      return nodeId;
-    }
-  }
-
   String getNodeName(String nodeId) {
-    final base36NodeId = _nodeIdToBase36(nodeId);
     for (final node in _joinedNodes) {
-      if (node.nodeId == nodeId || node.nodeId == base36NodeId) {
+      if (node.nodeId == nodeId) {
         return node.comment.isNotEmpty ? node.comment : node.name;
       }
     }
@@ -284,7 +272,7 @@ class _NetworkMembersPageState extends State<NetworkMembersPage> {
                                     SizedBox(
                                       width: 320,
                                       child: SelectableText(
-                                        _nodeIdToBase36(member.nodeId),
+                                        member.nodeId,
                                       ),
                                     ),
                                   ),

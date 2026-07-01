@@ -47,6 +47,38 @@ Map<String, dynamic> _$TrafficStatsToJson(TrafficStats instance) =>
       'rx_speed': instance.rxSpeed,
     };
 
+PnServerInfo _$PnServerInfoFromJson(Map<String, dynamic> json) => PnServerInfo(
+      id: json['id'] as String,
+      ip: json['ip'] as String,
+      port: (json['port'] as num).toInt(),
+    );
+
+Map<String, dynamic> _$PnServerInfoToJson(PnServerInfo instance) =>
+    <String, dynamic>{
+      'id': instance.id,
+      'ip': instance.ip,
+      'port': instance.port,
+    };
+
+ProxyNode _$ProxyNodeFromJson(Map<String, dynamic> json) => ProxyNode(
+      pnServer:
+          PnServerInfo.fromJson(json['pn_server'] as Map<String, dynamic>),
+      observedAddr: json['observed_addr'] as String?,
+      status: json['status'] as String,
+      live: json['live'] as bool,
+      updatedAt: json['updated_at'] as String,
+      comment: json['comment'] as String?,
+    );
+
+Map<String, dynamic> _$ProxyNodeToJson(ProxyNode instance) => <String, dynamic>{
+      'pn_server': instance.pnServer,
+      'observed_addr': instance.observedAddr,
+      'status': instance.status,
+      'live': instance.live,
+      'updated_at': instance.updatedAt,
+      'comment': instance.comment,
+    };
+
 JoinedNode _$JoinedNodeFromJson(Map<String, dynamic> json) => JoinedNode(
       groupId: json['group_id'] as String,
       nodeId: json['node_id'] as String,

@@ -73,6 +73,51 @@ class TrafficStats {
 }
 
 @JsonSerializable()
+class PnServerInfo {
+  String id;
+  String ip;
+  int port;
+
+  PnServerInfo({
+    required this.id,
+    required this.ip,
+    required this.port,
+  });
+
+  factory PnServerInfo.fromJson(Map<String, dynamic> json) =>
+      _$PnServerInfoFromJson(json);
+  Map<String, dynamic> toJson() => _$PnServerInfoToJson(this);
+}
+
+@JsonSerializable()
+class ProxyNode {
+  @JsonKey(name: 'pn_server')
+  PnServerInfo pnServer;
+  @JsonKey(name: 'observed_addr')
+  String? observedAddr;
+  String status;
+  bool live;
+  @JsonKey(name: 'updated_at')
+  String updatedAt;
+  String? comment;
+
+  ProxyNode({
+    required this.pnServer,
+    this.observedAddr,
+    required this.status,
+    required this.live,
+    required this.updatedAt,
+    this.comment,
+  });
+
+  bool get isAllowed => status == 'approved';
+
+  factory ProxyNode.fromJson(Map<String, dynamic> json) =>
+      _$ProxyNodeFromJson(json);
+  Map<String, dynamic> toJson() => _$ProxyNodeToJson(this);
+}
+
+@JsonSerializable()
 class JoinedNode {
   @JsonKey(name: 'group_id')
   String groupId;
@@ -309,6 +354,85 @@ class Api {
       }
     } else {
       return (result, null);
+    }
+  }
+
+  Future<(HttpResult, List<ProxyNode>?)> getProxyNodes() async {
+    String? session = window.localStorage["session"];
+    if (session == null) {
+      return (HttpResult(-1), null);
+    }
+
+    var (result, resp) = await _client.getJson("/pn_proxy_nodes",
+        headers: {"authorization": "Bearer $session"});
+    if (result.isSuccess) {
+      if (resp is Map) {
+        if (resp["err"] == 0) {
+          var data = resp["result"] as List;
+          return (
+            HttpResult(0),
+            data
+                .map((e) => ProxyNode.fromJson(e as Map<String, dynamic>))
+                .toList()
+          );
+        } else {
+          return (HttpResult(resp["err"], msg: resp["msg"] as String), null);
+        }
+      } else {
+        return (HttpResult(-1), null);
+      }
+    } else {
+      return (result, null);
+    }
+  }
+
+  Future<HttpResult> approveProxyNode(PnServerInfo pnServer,
+      {String? comment}) async {
+    return _setProxyNodeApproval(
+      "/approve_pn_proxy_node",
+      pnServer,
+      comment: comment,
+    );
+  }
+
+  Future<HttpResult> rejectProxyNode(PnServerInfo pnServer,
+      {String? comment}) async {
+    return _setProxyNodeApproval(
+      "/reject_pn_proxy_node",
+      pnServer,
+      comment: comment,
+    );
+  }
+
+  Future<HttpResult> _setProxyNodeApproval(
+    String path,
+    PnServerInfo pnServer, {
+    String? comment,
+  }) async {
+    String? session = window.localStorage["session"];
+    if (session == null) {
+      return HttpResult(-1);
+    }
+
+    final req = <String, dynamic>{"pn_server": pnServer.toJson()};
+    if (comment != null && comment.isNotEmpty) {
+      req["comment"] = comment;
+    }
+
+    var (result, resp) = await _client
+        .postJson(path, req, headers: {"authorization": "Bearer $session"});
+    if (result.isSuccess) {
+      if (resp is Map) {
+        if (resp["err"] == 0) {
+          return HttpResult(0);
+        } else {
+          return HttpResult(resp["err"], msg: resp["msg"] as String);
+        }
+      } else {
+        return HttpResult(-1);
+      }
+    } else {
+      return result;
     }
   }
 

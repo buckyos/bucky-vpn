@@ -165,7 +165,7 @@ impl PnTrafficService {
                 {
                     log::warn!(
                         "report proxy node heartbeat failed: node={} code={:?} msg={}",
-                        node_id.to_base58(),
+                        node_id.to_base36(),
                         err.code(),
                         err.msg()
                     );
@@ -327,7 +327,7 @@ impl PnTrafficService {
         if groups.is_empty() {
             log::debug!(
                 "recorded pn traffic delta for node {} without joined group",
-                node_id.to_base58()
+                node_id.to_base36()
             );
         }
 

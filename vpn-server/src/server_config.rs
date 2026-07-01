@@ -184,7 +184,7 @@ impl ConfigPnServerSelector {
     }
 
     fn is_same_pn_node_id(pn_server: &PnServerInfo, node_id: &NodeId) -> bool {
-        if pn_server.id == node_id.to_base58() {
+        if pn_server.id == node_id.to_base36() {
             return true;
         }
         P2pId::from_str(&pn_server.id)

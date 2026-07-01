@@ -2,9 +2,9 @@
 module: bucky-vpn-server
 version: v0.1
 status: approved
-approved_by: auto-pipeline
-approved_at: 2026-06-25
-approved_content_sha256: 9582f003bd7d374d77fc96de0d090453ab232fd390897201dcda93989fa656c1
+approved_by: user-request
+approved_at: 2026-07-01T17:44:43+08:00
+approved_content_sha256: e5cddb263eb334844333224ac4c2097a66720c5cfa9d66ec5fd45d46e3e9915c
 ---
 
 # bucky-vpn-server Testing
@@ -28,8 +28,9 @@ approved_content_sha256: 9582f003bd7d374d77fc96de0d090453ab232fd390897201dcda939
 | `process-assembly` | 组装控制节点、内置代理节点、外部代理控制 client 和统计服务。 | `pn.enabled=true` 时内置代理默认可选；纯代理节点连接控制节点后启动心跳。 | dv | `python3 ./harness/scripts/test-run.py bucky-vpn-server dv` | runtime branch covered by compile/DV only; full network smoke deferred |
 | `control-node-control` | 管理外部代理节点批准、心跳 liveness 和选择状态。 | 使用控制命令上报 endpoint heartbeat，控制节点 selector 只选择 approved + live 的远端代理。 | unit/dv | `vpn-server/src/server_config.rs`, `vpn-server/src/pn_traffic_service.rs`, dv build | full multi-process smoke deferred |
 | `sqlite-persistence` | 持久化外部代理节点批准状态。 | `pn_proxy_node` schema、pending/approved/rejected 状态和旧库迁移可编译。 | unit/dv | `cargo check -p bucky-vpn-server`, `python3 ./harness/scripts/test-run.py bucky-vpn-server unit` | direct SQLite restart fixture deferred |
-| `http-api` | 暴露外部代理节点列表、批准和拒绝接口。 | 新接口复用 Bearer session，注册到 HTTP 控制面。 | dv/integration | `cargo check -p bucky-vpn-server`, workspace test | direct HTTP smoke deferred |
+| `http-api` | 暴露外部代理节点列表、真实连接来源地址、批准和拒绝接口。 | 新接口复用 Bearer session，注册到 HTTP 控制面；列表响应在可用时返回 `observed_addr`，缺失时不改变审批状态。 | dv/integration | `cargo check -p bucky-vpn-server`, workspace test | direct HTTP smoke deferred |
 | `traffic-statistics` | 通过 SQLite-backed 接口持久化代理流量。 | 真实 delta 和 heartbeat zero delta 复用 remote reporter / store 接口。 | unit/integration | `vpn-server/src/pn_traffic_service.rs`, integration entry | no full restart test in this task |
+| `node-id-text` | HTTP/API、SQLite key、selector 比较和日志中的 NodeId 文本格式。 | 新输出和新写入使用 base36；非 NodeId base58 编码保持不变。 | unit/dv/integration | `vpn-server/src/api.rs`, `vpn-server/src/sqlite_store_factory.rs`, `vpn-server/src/server_config.rs`, `vpn-server/src/pn_traffic_service.rs` | old database migration fixture deferred |
 
 ## Module-Level Tests
 | behavior | validation | entry | expected_result |
@@ -44,8 +45,9 @@ approved_content_sha256: 9582f003bd7d374d77fc96de0d090453ab232fd390897201dcda939
 | YAML config | Missing optional PN fields keeps local default; `pn.control_server` supplies pure proxy control-node address. | Invalid control endpoint fails parsing. | unit config tests |
 | External proxy control channel | Pure proxy node can create control client and use control commands. | Missing `pn.control_server` while SN disabled logs warning and rejects proxy connections. | dv build plus future integration |
 | Heartbeat over traffic report | Remote reporter sends zero delta heartbeat with proxy endpoint through existing command; selector admits and expires remote proxy by TTL. | Reporter error logs warning and next tick retries. | unit selector TTL tests plus dv build |
-| HTTP proxy approval API | Authenticated users can list, approve and reject proxy nodes. | Missing/invalid Bearer token is rejected by existing session decode path. | dv compile plus future HTTP smoke |
+| HTTP proxy approval API | Authenticated users can list, approve and reject proxy nodes, and list responses expose observed address when runtime peer WAN address is available. | Missing/invalid Bearer token is rejected by existing session decode path; missing peer WAN observation leaves `observed_addr` absent/null. | dv compile plus future HTTP smoke |
 | Traffic persistence | Non-zero deltas write through existing SQLite-backed interface. | Zero heartbeat does not create local parallel store. | unit/integration future |
+| Server NodeId text contract | API responses, SQLite new key writes, selector comparisons and NodeId logs use base36. | Old base58 SQLite rows are not automatically migrated; password hashes still use existing non-NodeId base58. | unit/dv/integration |
 
 ## Direct Change Coverage
 | change_id | design_source | validation_id | testplan_level | testplan_step_id | gap | gap_manual_reason |
@@ -54,11 +56,13 @@ approved_content_sha256: 9582f003bd7d374d77fc96de0d090453ab232fd390897201dcda939
 | CHG-external-pn-active-control | `Directly Mapped Change Items` | VAL-external-proxy-control | unit | bucky-vpn-server-unit | no | Selector registration/expiry is covered by unit tests; full multi-process registration integration is deferred. |
 | CHG-external-pn-approval-persistence | `Directly Mapped Change Items` | VAL-proxy-approval-persistence | unit | bucky-vpn-server-unit | no | `pn_proxy_node` schema and store/selector integration compile; direct restart fixture is deferred. |
 | CHG-external-pn-approval-http-api | `Directly Mapped Change Items` | VAL-proxy-approval-http-api | dv | bucky-vpn-server-dv | no | API route registration and request/response types compile; direct HTTP smoke is deferred. |
+| CHG-external-pn-observed-address | `Directly Mapped Change Items` | VAL-proxy-observed-address | dv | bucky-vpn-server-dv | no | `/pn_proxy_nodes` response DTO and runtime peer WAN lookup wiring compile; direct live peer observation smoke is deferred. |
 | CHG-pure-pn-sn-address | `Directly Mapped Change Items` | VAL-pure-proxy-control-address | unit | bucky-vpn-server-unit | no | not-applicable: covered by `pn.control_server` parsing test |
 | CHG-pn-sn-heartbeat | `Directly Mapped Change Items` | VAL-proxy-heartbeat | unit | bucky-vpn-server-unit | no | Heartbeat endpoint liveness is covered by selector TTL tests; reporter error log assertion remains deferred. |
 | CHG-colocated-pn-default-allowed | `Directly Mapped Change Items` | VAL-colocated-default | unit | bucky-vpn-server-unit | no | not-applicable: selector uses local endpoint when `pn.enabled=true` |
 | CHG-pn-traffic-db-interface | `Directly Mapped Change Items` | VAL-traffic-db-interface | unit | bucky-vpn-server-unit | no | Existing storage path is covered; full restart persistence remains integration follow-up. |
 | CHG-local-pn-toggle-preserved | `Directly Mapped Change Items` | VAL-local-toggle | unit | bucky-vpn-server-unit | no | not-applicable: config tests cover default and disabled paths |
+| CHG-server-node-id-base36 | `Directly Mapped Change Items` | VAL-server-node-id-base36 | dv | bucky-vpn-server-dv | no | cargo check and workspace compatibility cover API/store/log call sites; old database migration remains out of scope. |
 
 ## Case-Type Coverage
 | change_id | case_type | required | validation_id | level | status | gap_manual_reason |
@@ -91,6 +95,13 @@ approved_content_sha256: 9582f003bd7d374d77fc96de0d090453ab232fd390897201dcda939
 | CHG-external-pn-approval-http-api | compatibility | yes | VAL-proxy-approval-http-api | dv | covered | not-applicable: existing API registration pattern is preserved |
 | CHG-external-pn-approval-http-api | lifecycle | yes | VAL-proxy-approval-http-api | integration | manual | End-to-end approve -> select flow needs HTTP/runtime harness and is deferred. |
 | CHG-external-pn-approval-http-api | cross-module | no | VAL-proxy-approval-http-api | dv | not-applicable | API is local to `bucky-vpn-server`; Flutter Web UI is explicitly out of scope. |
+| CHG-external-pn-observed-address | normal | yes | VAL-proxy-observed-address | dv | covered | not-applicable: DTO field and runtime peer WAN query path compile through crate build. |
+| CHG-external-pn-observed-address | boundary | yes | VAL-proxy-observed-address | dv | manual | Missing peer WAN observation should return absent/null; direct handler assertion is deferred. |
+| CHG-external-pn-observed-address | negative | yes | VAL-proxy-observed-address | dv | manual | Invalid or unparsable proxy id should not break list response; no direct fixture added. |
+| CHG-external-pn-observed-address | error | yes | VAL-proxy-observed-address | dv | manual | Peer WAN query failure should leave `observed_addr` absent/null; no injected runtime failure fixture added. |
+| CHG-external-pn-observed-address | compatibility | yes | VAL-proxy-observed-address | dv | covered | not-applicable: existing `pn_server`, status, live, updated_at, and comment fields remain in response. |
+| CHG-external-pn-observed-address | lifecycle | yes | VAL-proxy-observed-address | integration | manual | Address changes with runtime observation; full live proxy connection smoke is deferred. |
+| CHG-external-pn-observed-address | cross-module | yes | VAL-proxy-observed-address | integration | manual | Consumed by `vpn_web`; workspace/front-backend runtime smoke requires a running server and browser. |
 | CHG-pure-pn-sn-address | normal | yes | VAL-pure-proxy-control-address | unit | covered | not-applicable: valid endpoint parsed |
 | CHG-pure-pn-sn-address | boundary | yes | VAL-pure-proxy-control-address | unit | covered | not-applicable: IPv4 endpoint parsing covered |
 | CHG-pure-pn-sn-address | negative | yes | VAL-pure-proxy-control-address-invalid | unit | covered | not-applicable: invalid endpoint parse fails |
@@ -126,6 +137,13 @@ approved_content_sha256: 9582f003bd7d374d77fc96de0d090453ab232fd390897201dcda939
 | CHG-local-pn-toggle-preserved | compatibility | yes | VAL-local-toggle | unit | covered | not-applicable: no-config default preserved |
 | CHG-local-pn-toggle-preserved | lifecycle | yes | VAL-local-toggle | dv | covered | not-applicable: startup assembly compiles |
 | CHG-local-pn-toggle-preserved | cross-module | no | VAL-local-toggle | unit | not-applicable | Toggle is local server assembly behavior. |
+| CHG-server-node-id-base36 | normal | yes | VAL-server-node-id-base36 | dv | covered | not-applicable: NodeId output call sites compile with base36. |
+| CHG-server-node-id-base36 | boundary | yes | VAL-server-node-id-base36 | unit | covered | not-applicable: parse helper can accept canonical NodeId text at API boundaries. |
+| CHG-server-node-id-base36 | negative | yes | VAL-server-node-id-base36 | dv | manual | Malformed HTTP NodeId rejection is not directly smoked in this task. |
+| CHG-server-node-id-base36 | error | yes | VAL-server-node-id-base36 | dv | manual | Database key lookup failure follows existing store error handling; no injected DB fixture added. |
+| CHG-server-node-id-base36 | compatibility | yes | VAL-server-node-id-base36 | integration | manual | Old base58 SQLite migration is explicitly deferred; non-NodeId base58 password hashes remain unchanged by review. |
+| CHG-server-node-id-base36 | lifecycle | no | VAL-server-node-id-base36 | unit | not-applicable | Encoding selection has no runtime lifecycle by itself. |
+| CHG-server-node-id-base36 | cross-module | yes | VAL-server-node-id-base36-integration | integration | covered | Workspace compatibility covers direct consumers of server API/store contract. |
 
 ## Design Element Coverage
 | element_type | design_source | derived_cases | level | status | gap_manual_reason |
@@ -134,10 +152,12 @@ approved_content_sha256: 9582f003bd7d374d77fc96de0d090453ab232fd390897201dcda939
 | state-transition | `Data and State` heartbeat row | alive -> timeout unavailable -> restored | unit | covered | not-applicable: `remote_proxy_heartbeat_adds_temporary_selectable_proxy` and `remote_proxy_heartbeat_expires_from_selection` cover selector liveness |
 | state-transition | `Data and State` approval row | absent -> pending -> approved/rejected, approved + live selectable | unit | manual | Store/selector path compiles; direct SQLite fixture assertion deferred. |
 | parameter-domain | `Interfaces and Dependencies` HTTP approval rows | list, approve and reject proxy nodes with Bearer auth | dv | manual | Route registration compiles; direct HTTP smoke deferred. |
+| parameter-domain | `Interfaces and Dependencies` `observed_addr` row | observed peer WAN address present vs absent/null | dv | manual | DTO and wiring compile; direct handler/runtime assertion deferred. |
 | failure-path | `Key Call Flows` heartbeat maintenance | reporter failure logs warning and retries | unit | gap | No assertion hook for log/retry in current implementation. |
 | error-handling | `Key Call Flows` config parse failure | invalid control endpoint errors at startup/config parse | unit | covered | not-applicable: parser returns error |
 | invariant | `Invariants to Preserve` | no config keeps local SN/PN default enabled | unit | covered | not-applicable: unit config coverage |
 | concurrency | `Key Call Flows` background flush/heartbeat | heartbeat task and flush task use locked reporter state safely | dv | manual | Concurrency stress is deferred; compile plus manual review only. |
+| parameter-domain | `Interfaces and Dependencies` server NodeId text | base36 NodeId request/response/key/log values; malformed values; non-NodeId base58 exclusion | dv | covered | none |
 
 ## Validation Rationale
 The lowest reliable layer for config and selector behavior is unit tests in `server_config.rs`. Heartbeat reuses the control command path and now carries the proxy endpoint used by selector liveness. Full multi-process proxy registration smoke and restart persistence tests require a broader integration harness and remain recorded as gaps for acceptance visibility.
@@ -153,7 +173,9 @@ The lowest reliable layer for config and selector behavior is unit tests in `ser
 | `ConfigPnServerSelector::is_valid/select` | remote proxy TTL expired | remote proxy endpoint is removed from selection | `vpn-server/src/server_config.rs` | covered | not-applicable: selector unit test |
 | `SqliteVpnStore` proxy approval methods | pending/approved/rejected states | approval state schema and store API compile | none | manual | Direct SQLite fixture test not added in this stage. |
 | `ConfigPnServerSelector` with store | approved + live selection | unapproved proxy should stay out of selection | none | manual | Direct selector-with-store fixture not added in this stage. |
+| `/pn_proxy_nodes` DTO mapping | observed peer WAN address present or missing | response can include `observed_addr` without changing approval state | none | manual | Direct HTTP handler/runtime fixture not added in this stage. |
 | `PnTrafficService::start_remote_heartbeat` | reporter failure branch | warning and retry behavior | none | gap | Needs fake reporter/log assertion not added in this task. |
+| service NodeId text helpers | API parse/output and SQLite key formatting | base36 is used for NodeId strings and password hash base58 is untouched | `vpn-server/src/api.rs`, `vpn-server/src/sqlite_store_factory.rs` | covered | none |
 
 ## DV Tests
 | workflow | kind | entry | expected_result | test_file_or_script | status | gap_manual_reason |
@@ -161,7 +183,9 @@ The lowest reliable layer for config and selector behavior is unit tests in `ser
 | bucky-vpn-server crate build | lifecycle | `python3 ./harness/scripts/test-run.py bucky-vpn-server dv` | crate builds after config/control/heartbeat changes | `harness/scripts/test-run.py` | covered | not-applicable: unified entry |
 | control-node assembly | main | `python3 ./harness/scripts/test-run.py bucky-vpn-server dv` | main assembly compiles with local and remote proxy branches | `harness/scripts/test-run.py` | covered | not-applicable: build-level DV |
 | proxy approval API registration | main | `python3 ./harness/scripts/test-run.py bucky-vpn-server dv` | HTTP control plane compiles with selector-backed approval routes | `harness/scripts/test-run.py` | covered | not-applicable: build-level DV |
+| proxy observed address response | main | `python3 ./harness/scripts/test-run.py bucky-vpn-server dv` | `/pn_proxy_nodes` response compiles with observed address field and runtime peer WAN lookup wiring | `harness/scripts/test-run.py` | covered | not-applicable: build-level DV |
 | pure proxy control failure | failure | `python3 ./harness/scripts/test-run.py bucky-vpn-server dv` | missing control server branch remains non-panicking compile path | `harness/scripts/test-run.py` | covered | not-applicable: branch compiles |
+| server NodeId base36 contract | main | `python3 ./harness/scripts/test-run.py bucky-vpn-server dv` | server crate builds after replacing NodeId base58 output/key call sites with base36 | `harness/scripts/test-run.py` | covered | none |
 
 ## Integration Tests
 | contract_or_flow | modules_involved | success_case | failure_case | test_file | status | gap_manual_reason |
@@ -170,6 +194,7 @@ The lowest reliable layer for config and selector behavior is unit tests in `ser
 | external proxy lifecycle | bucky-vpn-server, vpn-frame, p2p-frame | external proxy reports endpoint heartbeat and selector admits it | heartbeat timeout removes selection | `vpn-server/src/server_config.rs` unit tests plus workspace test | manual | Selector lifecycle is unit covered; full multi-process runtime harness remains future work. |
 | proxy approval lifecycle | bucky-vpn-server, SQLite, HTTP API | admin approves proxy and approved + live proxy becomes selectable | rejected or unapproved proxy is not selected | none | gap | Needs HTTP/runtime fixture and SQLite restart fixture. |
 | durable traffic persistence | bucky-vpn-server, SQLite | restart continues cumulative values | write failure does not advance baseline | none | gap | Requires restart fixture not present in this task. |
+| server NodeId base36 compatibility | bucky-vpn-server, vpn-frame, bucky-vpn, vpn_web | workspace/front-end consumers use base36 NodeId strings consistently | stale base58-only consumer fails build or manual review | `harness/scripts/test-run.py` | covered | none |
 
 ## Definition of Done
 - Proposal and design are approved and traceable by `change_id`.
@@ -177,3 +202,8 @@ The lowest reliable layer for config and selector behavior is unit tests in `ser
 - `testplan.yaml` maps every changed `change_id` to unified test entries.
 - Unit validation is run through `python3 ./harness/scripts/test-run.py bucky-vpn-server unit`.
 - Known integration gaps are explicit in this testing document.
+
+## Approval Record
+- approver: user-request
+- approval_date: 2026-07-01T17:44:43+08:00
+- user_statement: "确认，自动处理后续步骤"

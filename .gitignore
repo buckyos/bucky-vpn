@@ -2,3 +2,4 @@
 .idea
 __pycache__/
 test-results/
+test_data

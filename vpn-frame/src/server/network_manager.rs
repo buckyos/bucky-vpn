@@ -242,7 +242,7 @@ impl<S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
             return Err(vpn_err!(
                 VpnErrorCode::NotFoundNode,
                 "can't find joined node {}",
-                node_id.to_base58()
+                node_id.to_base36()
             ));
         }
 
@@ -305,7 +305,7 @@ impl<S: VpnStore, F: VpnStoreFactory<S>> NetworkManager<S, F> {
             return Err(vpn_err!(
                 VpnErrorCode::NotFoundNode,
                 "can't find node {}",
-                node_id.to_base58()
+                node_id.to_base36()
             ));
         }
 

@@ -21,7 +21,7 @@ levels:
     steps:
       - id: bucky-vpn-unit
         name: 运行 bucky-vpn crate 测试
-        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address"]
+        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36"]
         run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn", "unit"]
   dv:
     mode: enabled
@@ -37,7 +37,7 @@ levels:
     steps:
       - id: bucky-vpn-dv
         name: 构建 bucky-vpn crate
-        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address"]
+        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36"]
         run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn", "dv"]
   integration:
     mode: enabled
@@ -64,5 +64,5 @@ levels:
     steps:
       - id: bucky-vpn-integration
         name: 运行 PN proxy 多拓扑和流量上报进程集成测试
-        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address"]
+        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36"]
         run: ["python3", "./harness/scripts/bucky-vpn-process-integration.py", "--use-base-image", "--parallel-instances", "2"]

@@ -25,6 +25,18 @@ impl NodeId {
         })?))
     }
 
+    pub fn to_canonical_string(&self) -> String {
+        self.to_base36()
+    }
+
+    pub fn from_canonical_string(value: &str) -> VpnResult<Self> {
+        Self::from_base36(value)
+    }
+
+    pub fn from_base36_or_base58(value: &str) -> VpnResult<Self> {
+        Self::from_base36(value).or_else(|_| Self::from_base58(value))
+    }
+
     pub fn as_slice(&self) -> &[u8] {
         self.0.as_slice()
     }

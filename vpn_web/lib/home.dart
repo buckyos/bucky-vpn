@@ -7,6 +7,7 @@ import 'package:vpn_web/networks_page.dart';
 
 import 'api.dart';
 import 'joined_nodes_page.dart';
+import 'proxy_nodes_page.dart';
 import 'traffic_stats.dart';
 
 class Home extends StatefulWidget {
@@ -26,7 +27,7 @@ class _HomeState extends State<Home> with SingleTickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _tabController.addListener(() {
       if (!mounted) {
         return;
@@ -378,6 +379,7 @@ class _HomeState extends State<Home> with SingleTickerProviderStateMixin {
                               tabs: const [
                                 Tab(text: 'Joined Nodes'),
                                 Tab(text: 'My Networks'),
+                                Tab(text: 'Proxy Nodes'),
                               ],
                             ),
                             const SizedBox(height: 14),
@@ -386,7 +388,8 @@ class _HomeState extends State<Home> with SingleTickerProviderStateMixin {
                                 index: _activeTabIndex,
                                 children: const [
                                   JoinedNodesPage(),
-                                  NetworksPage()
+                                  NetworksPage(),
+                                  ProxyNodesPage(),
                                 ],
                               ),
                             ),
