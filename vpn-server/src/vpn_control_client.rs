@@ -3,11 +3,11 @@ use crate::server_config::PnControlServerConfig;
 use crate::sqlite_store_factory::PersistedTrafficStats;
 use p2p_frame::endpoint::{Endpoint, Protocol};
 use p2p_frame::networks::{IncomingTunnelValidateContext, IncomingTunnelValidator, ValidateResult};
-use p2p_frame::p2p_identity::{P2pId, P2pIdentityRef, P2pSn};
+use p2p_frame::p2p_identity::{P2pId, P2pIdentityRef};
 use p2p_frame::pn::{PnConnectionValidateContext, PnConnectionValidator};
-use p2p_frame::sn::client::{SnClientTunnelFactory, SnCmdClient};
-use p2p_frame::sn::types::{SnTunnelClassification, SnTunnelRead, SnTunnelWrite};
-use p2p_frame::stack::{P2pConfig, P2pStackConfig, create_p2p_env, create_p2p_stack};
+use p2p_frame::sn::types::{SnTunnelClassification, SnTunnelRead, SnTunnelWrite, sn_cmd_purpose};
+use p2p_frame::stack::{P2pConfig, create_p2p_env};
+use p2p_frame::ttp::{TtpClient, TtpClientRef, TtpConnector, TtpTarget};
 use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::str::FromStr;
@@ -15,7 +15,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use vpn_frame::PnServerInfo;
 use vpn_frame::client::VpnServerClient;
-use vpn_frame::cmd_server::client::{ClassifiedClientSendGuard, ClassifiedCmdSend};
+use vpn_frame::cmd_server::client::{
+    ClassifiedClientSendGuard, ClassifiedCmdSend, ClassifiedCmdTunnel, ClassifiedCmdTunnelFactory,
+    DefaultClassifiedCmdClient,
+};
+use vpn_frame::cmd_server::errors::{CmdErrorCode, CmdResult, into_cmd_err};
 use vpn_frame::errors::{VpnErrorCode, VpnResult, into_vpn_err};
 use vpn_frame::server::NodeId;
 
@@ -26,13 +30,96 @@ pub type P2pControlCmdSendGuard = ClassifiedClientSendGuard<
     (),
     SnTunnelRead,
     SnTunnelWrite,
-    SnClientTunnelFactory,
+    ControlCmdTunnelFactory,
+    u16,
+    u8,
+>;
+pub type ControlCmdClient = DefaultClassifiedCmdClient<
+    SnTunnelClassification,
+    (),
+    SnTunnelRead,
+    SnTunnelWrite,
+    ControlCmdTunnelFactory,
     u16,
     u8,
 >;
 pub type VpnControlClient =
-    VpnServerClient<(), P2pControlCmdSend, P2pControlCmdSendGuard, SnCmdClient>;
+    VpnServerClient<(), P2pControlCmdSend, P2pControlCmdSendGuard, ControlCmdClient>;
 pub type VpnControlClientRef = Arc<VpnControlClient>;
+
+pub struct ControlCmdTunnelFactory {
+    ttp_client: TtpClientRef,
+    control_id: P2pId,
+    control_endpoint: Endpoint,
+}
+
+impl ControlCmdTunnelFactory {
+    fn new(ttp_client: TtpClientRef, control_id: P2pId, control_endpoint: Endpoint) -> Self {
+        Self {
+            ttp_client,
+            control_id,
+            control_endpoint,
+        }
+    }
+
+    async fn open_cmd_tunnel(
+        &self,
+        local_ep: Option<&Endpoint>,
+    ) -> CmdResult<ClassifiedCmdTunnel<SnTunnelRead, SnTunnelWrite>> {
+        let purpose = sn_cmd_purpose().map_err(into_cmd_err!(
+            CmdErrorCode::Failed,
+            "encode control cmd purpose failed"
+        ))?;
+        let target = TtpTarget {
+            local_ep: local_ep.copied(),
+            remote_ep: self.control_endpoint,
+            remote_id: self.control_id.clone(),
+            remote_name: Some(self.control_id.to_string()),
+        };
+        self.ttp_client
+            .connect_server(target.clone())
+            .await
+            .map_err(into_cmd_err!(
+                CmdErrorCode::Failed,
+                "connect control ttp server failed"
+            ))?;
+        let (meta, read, write) = self
+            .ttp_client
+            .open_control_stream(&target, purpose)
+            .await
+            .map_err(into_cmd_err!(
+                CmdErrorCode::Failed,
+                "open control cmd stream failed"
+            ))?;
+        let local = meta
+            .local_ep
+            .unwrap_or(local_ep.copied().unwrap_or_default());
+        let remote = meta.remote_ep.unwrap_or(self.control_endpoint);
+        let local_id = meta.local_id;
+        let remote_id = meta.remote_id;
+        Ok(ClassifiedCmdTunnel::new(
+            SnTunnelRead::new(read, local, remote, local_id.clone(), remote_id.clone()),
+            SnTunnelWrite::new(write, local, remote, local_id, remote_id),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl ClassifiedCmdTunnelFactory<SnTunnelClassification, (), SnTunnelRead, SnTunnelWrite>
+    for ControlCmdTunnelFactory
+{
+    async fn create_tunnel(
+        &self,
+        classification: Option<SnTunnelClassification>,
+    ) -> CmdResult<ClassifiedCmdTunnel<SnTunnelRead, SnTunnelWrite>> {
+        self.open_cmd_tunnel(
+            classification
+                .as_ref()
+                .and_then(|classification| classification.local_ep.as_ref()),
+        )
+        .await
+    }
+}
 
 pub async fn create_vpn_control_client(
     local_identity: P2pIdentityRef,
@@ -53,24 +140,21 @@ pub async fn create_vpn_control_client(
         .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
     let control_id =
         P2pId::from_str(&control_server.id).map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
-    let stack = create_p2p_stack(
-        P2pStackConfig::new(p2p_env, local_identity)
-            .set_conn_timeout(conn_timeout)
-            .set_support_proxy(true)
-            .add_sn(P2pSn::new(
-                control_id.clone(),
-                control_id.to_string(),
-                vec![control_server.endpoint.clone()],
-            )),
-    )
-    .await
-    .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
-    stack
-        .wait_online(Some(conn_timeout))
+    p2p_env
+        .net_manager()
+        .add_listen_device(local_identity.clone())
         .await
         .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
+    p2p_env
+        .net_manager()
+        .listen(p2p_env.endpoints(), p2p_env.port_mapping().clone())
+        .await
+        .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
+    let ttp_client = TtpClient::new(local_identity, p2p_env.net_manager().clone());
+    let factory =
+        ControlCmdTunnelFactory::new(ttp_client, control_id, control_server.endpoint.clone());
     Ok(VpnServerClient::new(
-        stack.sn_client().get_cmd_client().clone(),
+        ControlCmdClient::new(factory, 1),
         conn_timeout,
     ))
 }
