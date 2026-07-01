@@ -1,14 +1,16 @@
 use crate::sqlite_store_factory::{ProxyNodeApproval, ProxyNodeApprovalStatus, SqliteStoreFactory};
 use config::builder::DefaultState;
 use p2p_frame::endpoint::{Endpoint, Protocol};
+use p2p_frame::p2p_identity::P2pId;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use vpn_frame::PnServerInfo;
 use vpn_frame::errors::VpnResult;
-use vpn_frame::server::{NetworkId, PnServerSelector, VpnStoreFactory};
+use vpn_frame::server::{NetworkId, NodeId, PnServerSelector, VpnStoreFactory};
 
 const DEFAULT_YAML_CONFIG: &str = "config.yaml";
 const LEGACY_TOML_CONFIG: &str = "config.toml";
@@ -54,7 +56,7 @@ pub fn build_server_config(
         .set_default("http.ip", "0.0.0.0")?
         .set_default("http.port", 3445)?
         .set_default("sn.enabled", true)?
-        .set_default("pn.enabled", true)?
+        .set_default("pn.enabled", false)?
         .set_default("pn.report_interval_secs", 5)?;
 
     if config_file.exists() {
@@ -74,7 +76,7 @@ pub fn get_sn_server_config(config: &config::Config) -> SnServerConfig {
 pub fn get_pn_server_config(
     config: &config::Config,
 ) -> Result<PnServerConfig, config::ConfigError> {
-    let enabled = config.get_bool("pn.enabled").unwrap_or(true);
+    let enabled = config.get_bool("pn.enabled").unwrap_or(false);
 
     Ok(PnServerConfig {
         enabled,
@@ -91,6 +93,10 @@ pub fn get_pn_server_config(
 pub fn should_start_pn_server(sn_config: &SnServerConfig, pn_config: &PnServerConfig) -> bool {
     let _ = sn_config;
     pn_config.enabled
+}
+
+pub fn is_standalone_proxy_node(sn_config: &SnServerConfig, pn_config: &PnServerConfig) -> bool {
+    !sn_config.enabled && should_start_pn_server(sn_config, pn_config)
 }
 
 pub fn resolve_service_endpoints(
@@ -175,6 +181,15 @@ impl ConfigPnServerSelector {
         self.live_remote_pn_servers()
             .iter()
             .any(|server| server == pn_server)
+    }
+
+    fn is_same_pn_node_id(pn_server: &PnServerInfo, node_id: &NodeId) -> bool {
+        if pn_server.id == node_id.to_base58() {
+            return true;
+        }
+        P2pId::from_str(&pn_server.id)
+            .map(|pn_id| pn_id.as_slice() == node_id.as_slice())
+            .unwrap_or(false)
     }
 
     async fn is_remote_approved(&self, pn_server: &PnServerInfo) -> VpnResult<bool> {
@@ -269,6 +284,31 @@ impl PnServerSelector for ConfigPnServerSelector {
         Ok(Some(pn_servers[index].clone()))
     }
 
+    async fn matches_pn_node(
+        &self,
+        pn_server: &PnServerInfo,
+        pn_node_id: &NodeId,
+    ) -> VpnResult<bool> {
+        Ok(Self::is_same_pn_node_id(pn_server, pn_node_id))
+    }
+
+    async fn can_accept_connections_from(&self, pn_node_id: &NodeId) -> VpnResult<bool> {
+        if self
+            .pn_servers
+            .iter()
+            .any(|server| Self::is_same_pn_node_id(server, pn_node_id))
+        {
+            return Ok(true);
+        }
+
+        for pn_server in self.live_remote_pn_servers() {
+            if Self::is_same_pn_node_id(&pn_server, pn_node_id) {
+                return self.is_remote_approved(&pn_server).await;
+            }
+        }
+        Ok(false)
+    }
+
     async fn report_heartbeat(&self, pn_server: &PnServerInfo) -> VpnResult<()> {
         if let Some(store_factory) = &self.store_factory {
             let mut store = store_factory.get_vpn_store().await?;
@@ -325,6 +365,10 @@ mod tests {
         dir
     }
 
+    fn pn_server_id_for(node_id: &NodeId) -> String {
+        P2pId::from(node_id.as_slice()).to_string()
+    }
+
     #[test]
     fn default_config_prefers_yaml_over_legacy_toml() {
         let dir = new_temp_dir();
@@ -349,13 +393,33 @@ mod tests {
     }
 
     #[test]
-    fn sn_and_pn_config_default_to_enabled_without_config_file() {
+    fn sn_defaults_enabled_and_pn_defaults_disabled_without_config_file() {
         let dir = new_temp_dir();
         let config = build_server_config(None, &dir).unwrap();
         let sn_config = get_sn_server_config(&config);
         let pn_config = get_pn_server_config(&config).unwrap();
 
         assert!(sn_config.enabled);
+        assert!(!pn_config.enabled);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn yaml_can_enable_pn_server() {
+        let dir = new_temp_dir();
+        fs::write(
+            dir.join(DEFAULT_YAML_CONFIG),
+            r#"
+pn:
+  enabled: true
+"#,
+        )
+        .unwrap();
+
+        let config = build_server_config(None, &dir).unwrap();
+        let pn_config = get_pn_server_config(&config).unwrap();
+
         assert!(pn_config.enabled);
 
         let _ = fs::remove_dir_all(dir);
@@ -404,6 +468,26 @@ pn:
         assert!(should_start_pn_server(&disabled_sn, &enabled_pn));
         assert!(!should_start_pn_server(&enabled_sn, &disabled_pn));
         assert!(!should_start_pn_server(&disabled_sn, &disabled_pn));
+    }
+
+    #[test]
+    fn standalone_proxy_node_requires_disabled_sn_and_enabled_pn() {
+        let enabled_sn = SnServerConfig { enabled: true };
+        let disabled_sn = SnServerConfig { enabled: false };
+        let enabled_pn = PnServerConfig {
+            enabled: true,
+            control_server: None,
+            report_interval_secs: 5,
+        };
+        let disabled_pn = PnServerConfig {
+            enabled: false,
+            control_server: None,
+            report_interval_secs: 5,
+        };
+
+        assert!(is_standalone_proxy_node(&disabled_sn, &enabled_pn));
+        assert!(!is_standalone_proxy_node(&enabled_sn, &enabled_pn));
+        assert!(!is_standalone_proxy_node(&disabled_sn, &disabled_pn));
     }
 
     #[test]
@@ -476,6 +560,100 @@ pn:
 
         assert!(!selector.is_valid(&remote_proxy).await.unwrap());
         assert_eq!(selector.select(1).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn local_proxy_node_can_accept_connections_without_heartbeat() {
+        let local_node = NodeId::from(vec![9u8; 32].as_slice());
+        let local_proxy = PnServerInfo::new(
+            pn_server_id_for(&local_node),
+            "127.0.0.1".parse().unwrap(),
+            4600,
+        );
+        let selector = ConfigPnServerSelector::new_with_remote_ttl(
+            vec![local_proxy.clone()],
+            Duration::from_secs(30),
+        );
+
+        assert!(
+            selector
+                .can_accept_connections_from(&local_node)
+                .await
+                .unwrap()
+        );
+        assert!(
+            selector
+                .matches_pn_node(&local_proxy, &local_node)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_proxy_node_must_be_live_and_approved_to_accept_connections() {
+        let db_dir = new_temp_dir();
+        let db_path = db_dir.join("vpn.db");
+        let store_factory = Arc::new(
+            SqliteStoreFactory::create(db_path.to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        {
+            let mut store = store_factory.get_vpn_store().await.unwrap();
+            store.init_db().await.unwrap();
+        }
+        let selector = ConfigPnServerSelector::new_with_store_and_remote_ttl(
+            Vec::new(),
+            store_factory.clone(),
+            Duration::from_secs(30),
+        );
+        let remote_node = NodeId::from(vec![7u8; 32].as_slice());
+        let remote_proxy = PnServerInfo::new(
+            pn_server_id_for(&remote_node),
+            "127.0.0.1".parse().unwrap(),
+            4700,
+        );
+
+        assert!(
+            !selector
+                .can_accept_connections_from(&remote_node)
+                .await
+                .unwrap()
+        );
+
+        selector.report_heartbeat(&remote_proxy).await.unwrap();
+        assert!(
+            !selector
+                .can_accept_connections_from(&remote_node)
+                .await
+                .unwrap()
+        );
+
+        selector
+            .approve_proxy_node(&remote_proxy, Some("ok"))
+            .await
+            .unwrap();
+        assert!(
+            selector
+                .can_accept_connections_from(&remote_node)
+                .await
+                .unwrap()
+        );
+
+        selector
+            .reject_proxy_node(&remote_proxy, Some("no"))
+            .await
+            .unwrap();
+        assert!(
+            !selector
+                .can_accept_connections_from(&remote_node)
+                .await
+                .unwrap()
+        );
+
+        drop(selector);
+        drop(store_factory);
+        let _ = fs::remove_dir_all(db_dir);
     }
 
     #[test]

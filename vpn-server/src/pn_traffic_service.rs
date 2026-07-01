@@ -4,7 +4,7 @@ use p2p_frame::pn::{PnServer, PnUserTrafficSnapshot};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use vpn_frame::errors::VpnResult;
+use vpn_frame::errors::{VpnErrorCode, VpnResult, vpn_err};
 use vpn_frame::server::{NetworkGroupId, NetworkStore, NodeId, VpnStore, VpnStoreFactory};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -57,10 +57,7 @@ pub struct TrackedPnTrafficSnapshotProvider {
 }
 
 impl TrackedPnTrafficSnapshotProvider {
-    pub fn new(
-        provider: PnTrafficSnapshotProviderRef,
-        node_set: PnTrafficNodeSetRef,
-    ) -> Arc<Self> {
+    pub fn new(provider: PnTrafficSnapshotProviderRef, node_set: PnTrafficNodeSetRef) -> Arc<Self> {
         Arc::new(Self { provider, node_set })
     }
 }
@@ -101,7 +98,7 @@ pub type PnTrafficReporterRef = Arc<dyn PnTrafficReporter>;
 
 pub struct PnTrafficService {
     snapshot_provider: PnTrafficSnapshotProviderRef,
-    store_factory: Arc<SqliteStoreFactory>,
+    store_factory: Option<Arc<SqliteStoreFactory>>,
     flush_state: Mutex<HashMap<NodeId, FlushState>>,
     remote_reporter: Mutex<Option<PnTrafficReporterRef>>,
 }
@@ -115,7 +112,18 @@ impl PnTrafficService {
     ) -> PnTrafficServiceRef {
         Arc::new(Self {
             snapshot_provider,
-            store_factory,
+            store_factory: Some(store_factory),
+            flush_state: Mutex::new(HashMap::new()),
+            remote_reporter: Mutex::new(None),
+        })
+    }
+
+    pub fn new_without_store(
+        snapshot_provider: PnTrafficSnapshotProviderRef,
+    ) -> PnTrafficServiceRef {
+        Arc::new(Self {
+            snapshot_provider,
+            store_factory: None,
             flush_state: Mutex::new(HashMap::new()),
             remote_reporter: Mutex::new(None),
         })
@@ -170,7 +178,7 @@ impl PnTrafficService {
         let runtime = self.snapshot_provider.get_node_traffic_snapshot(node_id);
         let flush_state = self.get_flush_state(node_id);
         let persisted = {
-            let mut store = self.store_factory.get_vpn_store().await?;
+            let mut store = self.store_factory()?.get_vpn_store().await?;
             store.get_persisted_node_traffic(node_id).await?
         };
         Ok(merge_persisted_and_runtime(persisted, runtime, flush_state))
@@ -181,7 +189,7 @@ impl PnTrafficService {
         group_id: &NetworkGroupId,
     ) -> VpnResult<PnUserTrafficSnapshot> {
         let (persisted, joined_nodes) = {
-            let mut store = self.store_factory.get_vpn_store().await?;
+            let mut store = self.store_factory()?.get_vpn_store().await?;
             (
                 store.get_persisted_group_traffic(group_id).await?,
                 store.get_joined_nodes(group_id).await?,
@@ -215,9 +223,11 @@ impl PnTrafficService {
     }
 
     pub async fn flush_all(&self) -> VpnResult<()> {
-        let mut node_ids = {
-            let mut store = self.store_factory.get_vpn_store().await?;
+        let mut node_ids = if let Some(store_factory) = &self.store_factory {
+            let mut store = store_factory.get_vpn_store().await?;
             store.list_all_joined_node_ids().await?
+        } else {
+            Vec::new()
         };
         node_ids.extend(self.snapshot_provider.list_tracked_node_ids());
         let mut seen = HashSet::new();
@@ -283,7 +293,7 @@ impl PnTrafficService {
         }
 
         let groups = {
-            let mut store = self.store_factory.get_vpn_store().await?;
+            let mut store = self.store_factory()?.get_vpn_store().await?;
             store.begin_transaction().await?;
             let result: VpnResult<Vec<_>> = async {
                 store.add_persisted_node_traffic(node_id, delta).await?;
@@ -339,6 +349,15 @@ impl PnTrafficService {
 
     fn remote_reporter(&self) -> Option<PnTrafficReporterRef> {
         self.remote_reporter.lock().unwrap().clone()
+    }
+
+    fn store_factory(&self) -> VpnResult<&Arc<SqliteStoreFactory>> {
+        self.store_factory.as_ref().ok_or_else(|| {
+            vpn_err!(
+                VpnErrorCode::Failed,
+                "pn traffic service has no local sqlite store"
+            )
+        })
     }
 }
 

@@ -11,6 +11,7 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 export UV_PROJECT_ENVIRONMENT=".venv"
+export OSTYPE="${OSTYPE:-unknown}"
 VENV_PYTHON=".venv/bin/python"
 
 if [ ! -x "$VENV_PYTHON" ]; then

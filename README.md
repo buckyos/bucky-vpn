@@ -9,6 +9,13 @@ BuckyVPN是一个p2p实现的VPN工具，现在支持Windows、Debian/Ubuntu、M
 
 ### 服务端部署：
 
+`vpn-server` 默认优先读取当前目录下的 `config.yaml`，也可以通过 `--config` 指定配置文件。配置示例模板见 `vpn-server/config/config.example.yaml`：
+
+```sh
+cp vpn-server/config/config.example.yaml config.yaml
+bucky-vpn-server --config config.yaml
+```
+
 ```sh
 docker pull harbor.mynode.site:8443/library/bucky-vpn-server
 
@@ -38,4 +45,3 @@ Options:
   -n, --name <name>              The name of the node seen on the server
   -h, --help                     Print help
 ```
-

@@ -2,7 +2,7 @@ use crate::pn_traffic_service::{PnTrafficNodeTrackerRef, PnTrafficReporter};
 use crate::server_config::PnControlServerConfig;
 use crate::sqlite_store_factory::PersistedTrafficStats;
 use p2p_frame::endpoint::{Endpoint, Protocol};
-use p2p_frame::networks::ValidateResult;
+use p2p_frame::networks::{IncomingTunnelValidateContext, IncomingTunnelValidator, ValidateResult};
 use p2p_frame::p2p_identity::{P2pId, P2pIdentityRef, P2pSn};
 use p2p_frame::pn::{PnConnectionValidateContext, PnConnectionValidator};
 use p2p_frame::sn::client::{SnClientTunnelFactory, SnCmdClient};
@@ -105,6 +105,12 @@ pub struct VpnCmdPnConnectionValidator {
     traffic_node_tracker: Option<PnTrafficNodeTrackerRef>,
 }
 
+pub struct VpnCmdIncomingTunnelValidator {
+    client: VpnControlClientRef,
+}
+
+struct RejectAllIncomingTunnelValidator;
+
 impl VpnCmdPnConnectionValidator {
     pub fn new_with_traffic_node_tracker(
         client: VpnControlClientRef,
@@ -114,6 +120,59 @@ impl VpnCmdPnConnectionValidator {
             client,
             traffic_node_tracker: Some(traffic_node_tracker),
         })
+    }
+}
+
+impl VpnCmdIncomingTunnelValidator {
+    pub fn new(client: VpnControlClientRef) -> Arc<Self> {
+        Arc::new(Self { client })
+    }
+}
+
+pub fn reject_all_incoming_tunnel_validator() -> p2p_frame::networks::IncomingTunnelValidatorRef {
+    Arc::new(RejectAllIncomingTunnelValidator)
+}
+
+#[async_trait::async_trait]
+impl IncomingTunnelValidator for RejectAllIncomingTunnelValidator {
+    async fn validate(
+        &self,
+        ctx: &IncomingTunnelValidateContext,
+    ) -> p2p_frame::error::P2pResult<ValidateResult> {
+        Ok(ValidateResult::Reject(format!(
+            "incoming tunnel rejected because remote validation is unavailable remote={} local={}",
+            ctx.remote_id, ctx.local_id
+        )))
+    }
+}
+
+#[async_trait::async_trait]
+impl IncomingTunnelValidator for VpnCmdIncomingTunnelValidator {
+    async fn validate(
+        &self,
+        ctx: &IncomingTunnelValidateContext,
+    ) -> p2p_frame::error::P2pResult<ValidateResult> {
+        let remote_node_id = NodeId::from(ctx.remote_id.as_slice());
+        let allowed = self
+            .client
+            .validate_pn_connection(remote_node_id.clone(), remote_node_id)
+            .await
+            .map_err(|err| {
+                p2p_frame::error::p2p_err!(
+                    p2p_frame::error::P2pErrorCode::InternalError,
+                    "validate incoming tunnel by vpn server failed: code={:?} msg={}",
+                    err.code(),
+                    err.msg()
+                )
+            })?;
+        if allowed {
+            Ok(ValidateResult::Accept)
+        } else {
+            Ok(ValidateResult::Reject(format!(
+                "incoming tunnel rejected by vpn server remote={} local={}",
+                ctx.remote_id, ctx.local_id
+            )))
+        }
     }
 }
 

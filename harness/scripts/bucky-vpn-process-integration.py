@@ -98,19 +98,19 @@ SCENARIOS = (
             ClientSpec("client-b", ("mesh-a",)),
         ),
     ),
-    # Scenario(
-    #     name="three-clients-two-proxies-three-pairwise-networks",
-    #     servers=(
-    #         ServerSpec("control", sn_enabled=True, pn_enabled=False),
-    #         ServerSpec("proxy-one", sn_enabled=False, pn_enabled=True, control_server="control"),
-    #         ServerSpec("proxy-two", sn_enabled=False, pn_enabled=True, control_server="control"),
-    #     ),
-    #     clients=(
-    #         ClientSpec("client-a", ("mesh-ab", "mesh-ac")),
-    #         ClientSpec("client-b", ("mesh-ab", "mesh-bc")),
-    #         ClientSpec("client-c", ("mesh-ac", "mesh-bc")),
-    #     ),
-    # ),
+    Scenario(
+        name="three-clients-two-proxies-three-pairwise-networks",
+        servers=(
+            ServerSpec("control", sn_enabled=True, pn_enabled=False),
+            ServerSpec("proxy-one", sn_enabled=False, pn_enabled=True, control_server="control"),
+            ServerSpec("proxy-two", sn_enabled=False, pn_enabled=True, control_server="control"),
+        ),
+        clients=(
+            ClientSpec("client-a", ("mesh-ab", "mesh-ac")),
+            ClientSpec("client-b", ("mesh-ab", "mesh-bc")),
+            ClientSpec("client-c", ("mesh-ac", "mesh-bc")),
+        ),
+    ),
 )
 
 BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -731,6 +731,7 @@ def wait_client_virtual_ping(
     source: ClientRuntime,
     target_ip: str,
     label: str,
+    diagnostic_processes: list[RemoteProcess] | None = None,
     timeout_sec: int = 60,
 ) -> None:
     deadline = time.monotonic() + timeout_sec
@@ -761,18 +762,29 @@ def wait_client_virtual_ping(
             break
         time.sleep(1)
 
+    processes = diagnostic_processes or [source.process]
+    seen: set[tuple[str, str]] = set()
+    unique_processes: list[RemoteProcess] = []
+    for process in processes:
+        key = (process.instance.name, process.log_path)
+        if key not in seen:
+            seen.add(key)
+            unique_processes.append(process)
+
     raise IntegrationError(
         f"virtual data-plane ping failed for {label} target {target_ip}\n"
         f"stdout:\n{last_stdout}\nstderr:\n{last_stderr}\n"
-        f"{remote_log_tail(source.process)}"
+        f"{format_process_log_tails(unique_processes)}"
     )
 
 
 def assert_client_data_plane_via_pn(
     clients: list[ClientRuntime],
     network_ip_by_client: dict[str, dict[str, str]],
+    server_processes: list[RemoteProcess],
 ) -> None:
     client_by_name = {client.spec.name: client for client in clients}
+    diagnostic_processes = server_processes + [client.process for client in clients]
     for network_name, ip_by_client in sorted(network_ip_by_client.items()):
         for source_name, source_ip in sorted(ip_by_client.items()):
             source = client_by_name[source_name]
@@ -780,7 +792,7 @@ def assert_client_data_plane_via_pn(
                 if target_name == source_name:
                     continue
                 label = f"{network_name}:{source_name}({source_ip})->{target_name}({target_ip})"
-                wait_client_virtual_ping(source, target_ip, label)
+                wait_client_virtual_ping(source, target_ip, label, diagnostic_processes)
 
 
 def traffic_u64(item: dict[str, Any], field: str) -> int:
@@ -1295,9 +1307,30 @@ def start_server(
         remote_log_path,
         remote_pid_path,
     )
-    wait_remote_tcp(instance, "127.0.0.1", http_port, timeout_sec=30, process=process)
     timestamp = int(time.time())
     base_url = f"http://127.0.0.1:{http_port}"
+
+    if not spec.sn_enabled:
+        time.sleep(1)
+        if process.poll() is not None:
+            raise IntegrationError(
+                f"{spec.name} exited after startup\n{remote_log_tail(process)}"
+            )
+        return process, {
+            "name": spec.name,
+            "base_url": base_url,
+            "token": None,
+            "id": None,
+            "sn_ip": instance.ip,
+            "sn_port": sn_port,
+            "http_port": http_port,
+            "data_dir": remote_data_dir,
+            "instance": instance,
+            "process": process,
+            "log_path": process.log_path,
+        }
+
+    wait_remote_tcp(instance, "127.0.0.1", http_port, timeout_sec=30, process=process)
     token_result = http_json_remote(
         instance,
         base_url,
@@ -1385,18 +1418,19 @@ def assign_joined_clients_to_networks(
     for client in clients:
         if client.node_id is None:
             raise IntegrationError(f"{client.spec.name} has no joined node id")
-        http_json_remote(
+        http_json_remote_retry(
             control["instance"],
             control["base_url"],
             "POST",
             "/allow_join",
             {"node_id": client.node_id, "allow_join": True},
             token=control["token"],
+            attempts=5,
         )
         for network_name in client.spec.networks:
             network = network_by_name[network_name]
             ip_addr = f"10.{network_index_by_name[network_name]}.0.{client.index + 2}"
-            http_json_remote(
+            http_json_remote_retry(
                 control["instance"],
                 control["base_url"],
                 "POST",
@@ -1407,6 +1441,7 @@ def assign_joined_clients_to_networks(
                     "ip_addr": ip_addr,
                 },
                 token=control["token"],
+                attempts=5,
             )
             network_ip_by_client.setdefault(network_name, {})[client.spec.name] = ip_addr
     return network_ip_by_client
@@ -1765,7 +1800,11 @@ def run_scenario(
         )
         wait_client_vpn_runtime_ready(client_runtimes, network_ip_by_client)
         install_control_underlay_isolation(client_instances, server_instances, scenario)
-        assert_client_data_plane_via_pn(client_runtimes, network_ip_by_client)
+        assert_client_data_plane_via_pn(
+            client_runtimes,
+            network_ip_by_client,
+            processes[: len(scenario.servers)],
+        )
         wait_pn_traffic_reported(control, network_by_name, client_runtimes)
         assert_client_logs_clean(client_runtimes)
     finally:
@@ -1832,7 +1871,11 @@ def main(argv: list[str]) -> int:
         if not binary.exists():
             raise IntegrationError(f"missing binary {binary}; run cargo build first")
 
-    temp_root = Path(tempfile.mkdtemp(prefix="bucky-vpn-process-integration-"))
+    temp_parent = REPO_ROOT / "test-results" / "tmp"
+    temp_parent.mkdir(parents=True, exist_ok=True)
+    temp_root = Path(
+        tempfile.mkdtemp(prefix="bucky-vpn-process-integration-", dir=temp_parent)
+    )
     print(f"process-integration: workdir {temp_root}")
     run_id = str(os.getpid())
     succeeded = False

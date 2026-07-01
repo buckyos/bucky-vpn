@@ -1,16 +1,14 @@
 use crate::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
-use crate::sequence::{Sequence, SequenceGenerator};
+use crate::sequence::SequenceGenerator;
 use crate::server::{NetworkGroupId, NetworkId, NodeId};
 use crate::{
     GetVpnInfoReq, GetVpnInfoResp, JoinNetworkGroupReq, JoinNetworkGroupResp, NodeVpnInfo,
     PnServerInfo, QueryNodeReq, QueryNodeResp, ReportPnTrafficStatsReq, ReportPnTrafficStatsResp,
-    ValidatePnConnectionReq, ValidatePnConnectionResp, VpnCmdCode, VpnCmdHeader, VpnTunnelId,
+    ValidatePnConnectionReq, ValidatePnConnectionResp, VpnCmdCode,
 };
 use bucky_raw_codec::{RawConvertTo, RawFrom};
-use callback_result::CallbackWaiter;
+use sfo_cmd_server::CmdTunnelMeta;
 use sfo_cmd_server::client::{CmdClient, CmdSend, SendGuard};
-use sfo_cmd_server::errors::{CmdErrorCode, into_cmd_err};
-use sfo_cmd_server::{CmdBody, CmdTunnelMeta, PeerId};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -25,12 +23,6 @@ pub struct VpnServerClient<
     version: u8,
     conn_timeout: Duration,
     gen_seq: Arc<SequenceGenerator>,
-    join_resp_waiter: CallbackWaiter<Sequence, VpnResult<JoinNetworkGroupResp>>,
-    get_vpn_info_resp_waiter: CallbackWaiter<Sequence, VpnResult<GetVpnInfoResp>>,
-    query_node_resp_waiter: CallbackWaiter<Sequence, VpnResult<QueryNodeResp>>,
-    report_pn_traffic_resp_waiter: CallbackWaiter<Sequence, VpnResult<ReportPnTrafficStatsResp>>,
-    validate_pn_connection_resp_waiter:
-        CallbackWaiter<Sequence, VpnResult<ValidatePnConnectionResp>>,
     _p: std::marker::PhantomData<Arc<Mutex<(M, S, G)>>>,
 }
 
@@ -38,122 +30,13 @@ impl<M: CmdTunnelMeta, S: CmdSend<M>, G: SendGuard<M, S>, T: CmdClient<u16, u8, 
     VpnServerClient<M, S, G, T>
 {
     pub fn new(cmd_client: Arc<T>, conn_timeout: Duration) -> Arc<Self> {
-        let this = Arc::new(Self {
+        Arc::new(Self {
             cmd_client,
             version: 0,
             conn_timeout,
             gen_seq: Arc::new(SequenceGenerator::new()),
-            join_resp_waiter: CallbackWaiter::new(),
-            get_vpn_info_resp_waiter: CallbackWaiter::new(),
-            query_node_resp_waiter: CallbackWaiter::new(),
-            report_pn_traffic_resp_waiter: CallbackWaiter::new(),
-            validate_pn_connection_resp_waiter: CallbackWaiter::new(),
             _p: Default::default(),
-        });
-        this.register_cmd_handler();
-        this
-    }
-
-    fn register_cmd_handler(self: &Arc<Self>) {
-        let this = self.clone();
-        self.cmd_client.register_cmd_handler(
-            VpnCmdCode::JoinNetworkGroupResp as u8,
-            move |_local_id: PeerId,
-                  _peer_id: PeerId,
-                  _tunnel_id: VpnTunnelId,
-                  _header: VpnCmdHeader,
-                  mut body: CmdBody| {
-                let this = this.clone();
-                async move {
-                    let data = body.read_all().await?;
-                    let resp = JoinNetworkGroupResp::clone_from_slice(data.as_slice())
-                        .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
-                    let _ = this.join_resp_waiter.set_result(resp.seq, Ok(resp));
-                    Ok(None)
-                }
-            },
-        );
-
-        let this = self.clone();
-        self.cmd_client.register_cmd_handler(
-            VpnCmdCode::GetVpnInfoResp as u8,
-            move |_local_id: PeerId,
-                  _peer_id: PeerId,
-                  _tunnel_id: VpnTunnelId,
-                  _header: VpnCmdHeader,
-                  mut body: CmdBody| {
-                let this = this.clone();
-                async move {
-                    let data = body.read_all().await?;
-                    let resp = GetVpnInfoResp::clone_from_slice(data.as_slice())
-                        .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
-                    let _ = this.get_vpn_info_resp_waiter.set_result(resp.seq, Ok(resp));
-                    Ok(None)
-                }
-            },
-        );
-
-        let this = self.clone();
-        self.cmd_client.register_cmd_handler(
-            VpnCmdCode::QueryNodeResp as u8,
-            move |_local_id: PeerId,
-                  _peer_id: PeerId,
-                  _tunnel_id: VpnTunnelId,
-                  _header: VpnCmdHeader,
-                  mut body: CmdBody| {
-                let this = this.clone();
-                async move {
-                    let data = body.read_all().await?;
-                    let resp = QueryNodeResp::clone_from_slice(data.as_slice())
-                        .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
-                    log::info!("recv query node resp: {:?}", resp.seq);
-                    let _ = this.query_node_resp_waiter.set_result(resp.seq, Ok(resp));
-                    Ok(None)
-                }
-            },
-        );
-
-        let this = self.clone();
-        self.cmd_client.register_cmd_handler(
-            VpnCmdCode::ReportPnTrafficStatsResp as u8,
-            move |_local_id: PeerId,
-                  _peer_id: PeerId,
-                  _tunnel_id: VpnTunnelId,
-                  _header: VpnCmdHeader,
-                  mut body: CmdBody| {
-                let this = this.clone();
-                async move {
-                    let data = body.read_all().await?;
-                    let resp = ReportPnTrafficStatsResp::clone_from_slice(data.as_slice())
-                        .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
-                    let _ = this
-                        .report_pn_traffic_resp_waiter
-                        .set_result(resp.seq, Ok(resp));
-                    Ok(None)
-                }
-            },
-        );
-
-        let this = self.clone();
-        self.cmd_client.register_cmd_handler(
-            VpnCmdCode::ValidatePnConnectionResp as u8,
-            move |_local_id: PeerId,
-                  _peer_id: PeerId,
-                  _tunnel_id: VpnTunnelId,
-                  _header: VpnCmdHeader,
-                  mut body: CmdBody| {
-                let this = this.clone();
-                async move {
-                    let data = body.read_all().await?;
-                    let resp = ValidatePnConnectionResp::clone_from_slice(data.as_slice())
-                        .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
-                    let _ = this
-                        .validate_pn_connection_resp_waiter
-                        .set_result(resp.seq, Ok(resp));
-                    Ok(None)
-                }
-            },
-        );
+        })
     }
 
     pub async fn join_network_group(
@@ -166,24 +49,25 @@ impl<M: CmdTunnelMeta, S: CmdSend<M>, G: SendGuard<M, S>, T: CmdClient<u16, u8, 
             name,
             group_id: network_group_id,
         };
-        let future = self
-            .join_resp_waiter
-            .create_timeout_result_future(req.seq, self.conn_timeout)
-            .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
-        self.cmd_client
-            .send(
+        let mut body = self
+            .cmd_client
+            .send_with_resp(
                 VpnCmdCode::JoinNetworkGroup as u8,
                 self.version,
                 req.to_vec()
                     .map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?
                     .as_slice(),
+                self.conn_timeout,
             )
             .await
             .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
 
-        let ret = future
+        let data = body
+            .read_all()
             .await
-            .map_err(into_vpn_err!(VpnErrorCode::Timeout))??;
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        let ret = JoinNetworkGroupResp::clone_from_slice(data.as_slice())
+            .map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
         if ret.result != 0 {
             Err(vpn_err!(VpnErrorCode::Failed, "result = {}", ret.result))
         } else {
@@ -201,24 +85,25 @@ impl<M: CmdTunnelMeta, S: CmdSend<M>, G: SendGuard<M, S>, T: CmdClient<u16, u8, 
             info_version: cur_version,
             client_version,
         };
-        let future = self
-            .get_vpn_info_resp_waiter
-            .create_timeout_result_future(req.seq, self.conn_timeout)
-            .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
-        self.cmd_client
-            .send(
+        let mut body = self
+            .cmd_client
+            .send_with_resp(
                 VpnCmdCode::GetVpnInfo as u8,
                 self.version,
                 req.to_vec()
                     .map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?
                     .as_slice(),
+                self.conn_timeout,
             )
             .await
             .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
 
-        let ret = future
+        let data = body
+            .read_all()
             .await
-            .map_err(into_vpn_err!(VpnErrorCode::Timeout))??;
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        let ret = GetVpnInfoResp::clone_from_slice(data.as_slice())
+            .map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
         if ret.result != 0 {
             Err(vpn_err!(VpnErrorCode::Failed, "result = {}", ret.result))
         } else {
@@ -239,24 +124,25 @@ impl<M: CmdTunnelMeta, S: CmdSend<M>, G: SendGuard<M, S>, T: CmdClient<u16, u8, 
             ip,
         };
 
-        let future = self
-            .query_node_resp_waiter
-            .create_timeout_result_future(req.seq, self.conn_timeout)
-            .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
-        self.cmd_client
-            .send(
+        let mut body = self
+            .cmd_client
+            .send_with_resp(
                 VpnCmdCode::QueryNode as u8,
                 self.version,
                 req.to_vec()
                     .map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?
                     .as_slice(),
+                self.conn_timeout,
             )
             .await
             .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
 
-        let ret = future
+        let data = body
+            .read_all()
             .await
-            .map_err(into_vpn_err!(VpnErrorCode::Timeout))??;
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        let ret = QueryNodeResp::clone_from_slice(data.as_slice())
+            .map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
         Ok(ret.node_id)
     }
 
@@ -274,24 +160,25 @@ impl<M: CmdTunnelMeta, S: CmdSend<M>, G: SendGuard<M, S>, T: CmdClient<u16, u8, 
             tx_bytes,
             rx_bytes,
         };
-        let future = self
-            .report_pn_traffic_resp_waiter
-            .create_timeout_result_future(req.seq, self.conn_timeout)
-            .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
-        self.cmd_client
-            .send(
+        let mut body = self
+            .cmd_client
+            .send_with_resp(
                 VpnCmdCode::ReportPnTrafficStats as u8,
                 self.version,
                 req.to_vec()
                     .map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?
                     .as_slice(),
+                self.conn_timeout,
             )
             .await
             .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
 
-        let ret = future
+        let data = body
+            .read_all()
             .await
-            .map_err(into_vpn_err!(VpnErrorCode::Timeout))??;
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        let ret = ReportPnTrafficStatsResp::clone_from_slice(data.as_slice())
+            .map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
         if ret.result != 0 {
             Err(vpn_err!(VpnErrorCode::Failed, "result = {}", ret.result))
         } else {
@@ -305,24 +192,25 @@ impl<M: CmdTunnelMeta, S: CmdSend<M>, G: SendGuard<M, S>, T: CmdClient<u16, u8, 
             from,
             to,
         };
-        let future = self
-            .validate_pn_connection_resp_waiter
-            .create_timeout_result_future(req.seq, self.conn_timeout)
-            .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
-        self.cmd_client
-            .send(
+        let mut body = self
+            .cmd_client
+            .send_with_resp(
                 VpnCmdCode::ValidatePnConnection as u8,
                 self.version,
                 req.to_vec()
                     .map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?
                     .as_slice(),
+                self.conn_timeout,
             )
             .await
             .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
 
-        let ret = future
+        let data = body
+            .read_all()
             .await
-            .map_err(into_vpn_err!(VpnErrorCode::Timeout))??;
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        let ret = ValidatePnConnectionResp::clone_from_slice(data.as_slice())
+            .map_err(into_vpn_err!(VpnErrorCode::RawCodecError))?;
         if ret.result != 0 {
             Err(vpn_err!(VpnErrorCode::Failed, "result = {}", ret.result))
         } else {

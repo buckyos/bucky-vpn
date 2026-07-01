@@ -12,11 +12,15 @@ pub struct SqlitePnConnectionValidator {
 
 pub struct VpnServerPnConnectionValidator {
     vpn_server: VpnServerRef,
+    local_pn_node_id: NodeId,
 }
 
 impl VpnServerPnConnectionValidator {
-    pub fn new(vpn_server: VpnServerRef) -> Arc<Self> {
-        Arc::new(Self { vpn_server })
+    pub fn new(vpn_server: VpnServerRef, local_pn_node_id: NodeId) -> Arc<Self> {
+        Arc::new(Self {
+            vpn_server,
+            local_pn_node_id,
+        })
     }
 }
 
@@ -27,7 +31,11 @@ impl PnConnectionValidator for VpnServerPnConnectionValidator {
         let target_node_id = NodeId::from(ctx.to.as_slice());
         let allowed = self
             .vpn_server
-            .validate_pn_connection(&source_node_id, &target_node_id)
+            .validate_pn_connection_from_pn_node(
+                &self.local_pn_node_id,
+                &source_node_id,
+                &target_node_id,
+            )
             .await
             .map_err(|err| {
                 p2p_err!(
@@ -41,7 +49,7 @@ impl PnConnectionValidator for VpnServerPnConnectionValidator {
             Ok(ValidateResult::Accept)
         } else {
             Ok(ValidateResult::Reject(format!(
-                "pn connection requires source={} and target={} to share an allowed group",
+                "pn connection rejected by vpn server policy source={} target={}",
                 ctx.from, ctx.to
             )))
         }
@@ -119,8 +127,11 @@ mod tests {
     use p2p_frame::p2p_identity::P2pId;
     use p2p_frame::pn::PnChannelKind;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
     use vpn_frame::server::JoinedNode;
+
+    static TEST_DB_SEQ: AtomicU64 = AtomicU64::new(0);
 
     async fn new_test_validator() -> (
         Arc<SqliteStoreFactory>,
@@ -128,8 +139,9 @@ mod tests {
         PathBuf,
     ) {
         let db_dir = std::env::temp_dir().join(format!(
-            "bucky-vpn-server-pn-validator-{}-{}",
+            "bucky-vpn-server-pn-validator-{}-{}-{}",
             std::process::id(),
+            TEST_DB_SEQ.fetch_add(1, Ordering::Relaxed),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()

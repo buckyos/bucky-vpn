@@ -6,19 +6,22 @@ use crate::pn_traffic_service::{
 };
 use crate::server_config::{
     ConfigPnServerSelector, build_server_config, endpoint_to_pn_server, get_pn_server_config,
-    get_sn_server_config, resolve_service_endpoints, select_default_config_file,
-    should_start_pn_server,
+    get_sn_server_config, is_standalone_proxy_node, resolve_service_endpoints,
+    select_default_config_file, should_start_pn_server,
 };
 use crate::sqlite_store_factory::{P2pSnCmdServer, SqliteStoreFactory};
 use crate::user_store::{SqliteUserStore, User};
 use crate::vpn_control_client::{
-    VpnCmdPnConnectionValidator, VpnCmdPnTrafficReporter, create_vpn_control_client,
+    VpnCmdIncomingTunnelValidator, VpnCmdPnConnectionValidator, VpnCmdPnTrafficReporter,
+    create_vpn_control_client, reject_all_incoming_tunnel_validator,
 };
 use base58::ToBase58;
 use p2p_frame::endpoint::{Endpoint, Protocol};
-use p2p_frame::p2p_identity::{P2pIdentity, P2pIdentityFactory};
+use p2p_frame::p2p_identity::{P2pIdentity, P2pIdentityFactory, P2pIdentityRef};
 use p2p_frame::pn::PnServer;
 use p2p_frame::sn::service::{SnServiceConfig, create_sn_service};
+use p2p_frame::stack::{P2pConfig, create_p2p_env};
+use p2p_frame::ttp::{TtpServer, TtpServerRef};
 use p2p_frame::x509;
 use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
 use sfo_account::{AccountServer, AccountStore, DefaultAccountManager, hash_data};
@@ -45,6 +48,32 @@ mod vpn_control_client;
 #[derive(utoipa::OpenApi)]
 #[openapi(paths(), components())]
 struct ApiDoc;
+
+async fn start_proxy_ttp_server(
+    local_identity: P2pIdentityRef,
+    endpoints: Vec<Endpoint>,
+    incoming_tunnel_validator: p2p_frame::networks::IncomingTunnelValidatorRef,
+) -> p2p_frame::error::P2pResult<TtpServerRef> {
+    let p2p_env = create_p2p_env(
+        P2pConfig::new(
+            Arc::new(X509IdentityFactory),
+            Arc::new(X509IdentityCertFactory),
+            endpoints,
+        )
+        .set_incoming_tunnel_validator(incoming_tunnel_validator),
+    )
+    .await?;
+    p2p_env
+        .net_manager()
+        .add_listen_device(local_identity.clone())
+        .await?;
+    let ttp_server = TtpServer::new(local_identity, p2p_env.net_manager().clone())?;
+    p2p_env
+        .net_manager()
+        .listen(p2p_env.endpoints(), p2p_env.port_mapping().clone())
+        .await?;
+    Ok(ttp_server)
+}
 
 #[tokio::main]
 async fn main() {
@@ -101,19 +130,6 @@ async fn main() {
     if !data_dir.exists() {
         tokio::fs::create_dir_all(data_dir.as_path()).await.unwrap();
     }
-    let db_path = data_dir.join("vpn.db").to_string_lossy().to_string();
-    let pool = SqlPool::open(db_path.as_str(), 5, Some(SqliteJournalMode::Wal))
-        .await
-        .unwrap();
-
-    let user_store = SqliteUserStore::new(pool.clone());
-    user_store.init_user_store().await.unwrap();
-
-    let store_factory = Arc::new(SqliteStoreFactory::from_pool(pool));
-    {
-        let mut store = store_factory.get_vpn_store().await.unwrap();
-        store.init_db().await.unwrap();
-    }
     let sn_endpoint = Endpoint::from((
         Protocol::Quic,
         SocketAddr::V4(SocketAddrV4::new(
@@ -123,7 +139,7 @@ async fn main() {
     ));
     let eps = resolve_service_endpoints(sn_endpoint.clone(), &sn_server_config, &pn_config);
     let start_pn_server = should_start_pn_server(&sn_server_config, &pn_config);
-    let start_shared_ttp_listener = sn_server_config.enabled || start_pn_server;
+    let standalone_proxy_node = is_standalone_proxy_node(&sn_server_config, &pn_config);
 
     let identity_file = data_dir.join("identity");
     let identity = if identity_file.exists() {
@@ -149,90 +165,123 @@ async fn main() {
     } else {
         Vec::new()
     };
+    let remote_control_client = if standalone_proxy_node {
+        match pn_config.control_server.as_ref() {
+            Some(control_server) => match create_vpn_control_client(
+                control_identity.clone(),
+                control_server,
+                std::time::Duration::from_secs(5),
+            )
+            .await
+            {
+                Ok(client) => Some(client),
+                Err(err) => {
+                    log::error!(
+                        "create vpn control client failed: code={:?} msg={}",
+                        err.code(),
+                        err.msg()
+                    );
+                    None
+                }
+            },
+            None => {
+                log::warn!(
+                    "standalone proxy node requires pn.control_server for remote tunnel validation"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     let sn_service_config = SnServiceConfig::new(
         local_identity,
         Arc::new(X509IdentityFactory),
         Arc::new(X509IdentityCertFactory),
     );
     let sn_service = create_sn_service(sn_service_config).await;
-    if start_shared_ttp_listener {
+    let pn_ttp_server = if sn_server_config.enabled {
         sn_service.start().await.unwrap();
-        if !sn_server_config.enabled {
-            log::info!(
-                "default sn server disabled by config file {}, shared ttp listener started for pn server",
-                config_file
-            );
-        }
+        Some(sn_service.ttp_server())
+    } else if standalone_proxy_node {
+        let incoming_tunnel_validator: p2p_frame::networks::IncomingTunnelValidatorRef =
+            if let Some(client) = remote_control_client.as_ref() {
+                VpnCmdIncomingTunnelValidator::new(client.clone())
+            } else {
+                reject_all_incoming_tunnel_validator()
+            };
+        let ttp_server = start_proxy_ttp_server(
+            control_identity.clone(),
+            eps.clone(),
+            incoming_tunnel_validator,
+        )
+        .await
+        .unwrap();
+        log::info!(
+            "default sn server disabled by config file {}, standalone proxy ttp listener started",
+            config_file
+        );
+        Some(ttp_server)
     } else {
         log::info!("default sn server disabled by config file {}", config_file);
-    }
+        None
+    };
 
-    let pn_server_selector = Arc::new(ConfigPnServerSelector::new_with_store(
-        pn_servers,
-        store_factory.clone(),
-    ));
-    let vpn_server = VpnServer::new_with_pn_server_selector(
-        Arc::new(P2pSnCmdServer::new(sn_service.clone())),
-        store_factory.clone(),
-        pn_server_selector.clone(),
-    );
-    let network_manager = vpn_server.network_manager().clone();
+    let control_runtime = if sn_server_config.enabled {
+        let db_path = data_dir.join("vpn.db").to_string_lossy().to_string();
+        let pool = SqlPool::open(db_path.as_str(), 5, Some(SqliteJournalMode::Wal))
+            .await
+            .unwrap();
 
-    user_store.update_password(
-        &admin_name,
-        hash_data(vec![admin_name.as_bytes(), admin_password.as_bytes()].as_slice())
-            .to_base58()
-            .as_str(),
-    );
-    if user_store.get_account(&admin_name).await.unwrap().is_none() {
-        let network_id = network_manager.new_network_group().await.unwrap();
-        let user = User {
-            id: admin_name.clone(),
-            password: hash_data(vec![admin_name.as_bytes(), admin_password.as_bytes()].as_slice())
+        let user_store = SqliteUserStore::new(pool.clone());
+        user_store.init_user_store().await.unwrap();
+
+        let store_factory = Arc::new(SqliteStoreFactory::from_pool(pool));
+        {
+            let mut store = store_factory.get_vpn_store().await.unwrap();
+            store.init_db().await.unwrap();
+        }
+
+        let pn_server_selector = Arc::new(ConfigPnServerSelector::new_with_store(
+            pn_servers,
+            store_factory.clone(),
+        ));
+        let vpn_server = VpnServer::new_with_pn_server_selector(
+            Arc::new(P2pSnCmdServer::new(sn_service.clone())),
+            store_factory.clone(),
+            pn_server_selector.clone(),
+        );
+        let network_manager = vpn_server.network_manager().clone();
+
+        user_store.update_password(
+            &admin_name,
+            hash_data(vec![admin_name.as_bytes(), admin_password.as_bytes()].as_slice())
+                .to_base58()
+                .as_str(),
+        );
+        if user_store.get_account(&admin_name).await.unwrap().is_none() {
+            let network_id = network_manager.new_network_group().await.unwrap();
+            let user = User {
+                id: admin_name.clone(),
+                password: hash_data(
+                    vec![admin_name.as_bytes(), admin_password.as_bytes()].as_slice(),
+                )
                 .to_base58(),
-            network_id,
-            server_id: local_id.to_string(),
-        };
-        user_store.add_account(&user).await.unwrap();
-    }
+                network_id,
+                server_id: local_id.to_string(),
+            };
+            user_store.add_account(&user).await.unwrap();
+        }
 
-    let user_manager = DefaultAccountManager::new(user_store, jwt_key.into_bytes());
+        let user_manager = DefaultAccountManager::new(user_store, jwt_key.into_bytes());
 
-    vpn_server.start();
+        vpn_server.start();
+        Some((store_factory, user_manager, vpn_server, pn_server_selector))
+    } else {
+        None
+    };
 
     let traffic_service = if start_pn_server {
-        let remote_control_client = if !sn_server_config.enabled {
-            match pn_config.control_server.as_ref() {
-                Some(control_server) => {
-                    match create_vpn_control_client(
-                        control_identity,
-                        control_server,
-                        std::time::Duration::from_secs(5),
-                    )
-                    .await
-                    {
-                        Ok(client) => Some(client),
-                        Err(err) => {
-                            log::error!(
-                                "create vpn control client failed: code={:?} msg={}",
-                                err.code(),
-                                err.msg()
-                            );
-                            None
-                        }
-                    }
-                }
-                None => {
-                    log::warn!(
-                        "pn server is enabled while sn server is disabled, but pn.control_server is not configured"
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
         let traffic_node_set = PnTrafficNodeSet::new();
         let pn_validator: p2p_frame::pn::PnConnectionValidatorRef =
             if let Some(client) = remote_control_client.as_ref() {
@@ -240,18 +289,24 @@ async fn main() {
                     client.clone(),
                     traffic_node_set.clone(),
                 )
-            } else if sn_server_config.enabled {
-                VpnServerPnConnectionValidator::new(vpn_server.clone())
+            } else if let Some((_, _, vpn_server, _)) = control_runtime.as_ref() {
+                VpnServerPnConnectionValidator::new(
+                    vpn_server.clone(),
+                    NodeId::from(local_id.as_slice()),
+                )
             } else {
                 p2p_frame::pn::reject_all_pn_connection_validator()
             };
         let pn_server =
-            PnServer::new_with_connection_validator(sn_service.ttp_server(), pn_validator);
+            PnServer::new_with_connection_validator(pn_ttp_server.clone().unwrap(), pn_validator);
         pn_server.start().await.unwrap();
         let traffic_snapshot_provider =
             TrackedPnTrafficSnapshotProvider::new(pn_server.clone(), traffic_node_set);
-        let traffic_service =
-            PnTrafficService::new(traffic_snapshot_provider, store_factory.clone());
+        let traffic_service = if let Some((store_factory, _, _, _)) = control_runtime.as_ref() {
+            PnTrafficService::new(traffic_snapshot_provider, store_factory.clone())
+        } else {
+            PnTrafficService::new_without_store(traffic_snapshot_provider)
+        };
         if let Some(client) = remote_control_client {
             traffic_service.set_remote_reporter(VpnCmdPnTrafficReporter::new(
                 client,
@@ -272,31 +327,37 @@ async fn main() {
         traffic_service
     } else {
         log::info!("default pn server disabled by config file {}", config_file);
-        PnTrafficService::new(
-            Arc::new(NoopPnTrafficSnapshotProvider),
-            store_factory.clone(),
-        )
+        if let Some((store_factory, _, _, _)) = control_runtime.as_ref() {
+            PnTrafficService::new(
+                Arc::new(NoopPnTrafficSnapshotProvider),
+                store_factory.clone(),
+            )
+        } else {
+            PnTrafficService::new_without_store(Arc::new(NoopPnTrafficSnapshotProvider))
+        }
     };
 
-    let http_config = HttpServerConfig::new(http_ip, http_port)
-        .allow_any_header()
-        .allow_any_origin()
-        .allow_any_methods()
-        .expose_any_header();
-    let mut http_server = TideHttpServer::new(http_config);
-    http_server.set_api_doc(ApiDoc::openapi());
-    http_server.enable_api_doc(true);
+    if let Some((_, user_manager, vpn_server, pn_server_selector)) = control_runtime {
+        let http_config = HttpServerConfig::new(http_ip, http_port)
+            .allow_any_header()
+            .allow_any_origin()
+            .allow_any_methods()
+            .expose_any_header();
+        let mut http_server = TideHttpServer::new(http_config);
+        http_server.set_api_doc(ApiDoc::openapi());
+        http_server.enable_api_doc(true);
 
-    AccountServer::register_server(&mut http_server, user_manager.clone());
-    Api::register_api(
-        &mut http_server,
-        user_manager.clone(),
-        vpn_server.clone(),
-        traffic_service.clone(),
-        pn_server_selector.clone(),
-    );
+        AccountServer::register_server(&mut http_server, user_manager.clone());
+        Api::register_api(
+            &mut http_server,
+            user_manager.clone(),
+            vpn_server.clone(),
+            traffic_service.clone(),
+            pn_server_selector.clone(),
+        );
 
-    http_server.run().await.unwrap();
+        http_server.run().await.unwrap();
+    }
 
     std::future::pending::<()>().await;
 }
