@@ -5,26 +5,30 @@
 #   bucky-vpn-server --config config.yaml
 #
 # VPN_ 前缀的环境变量可以覆盖配置项，例如：
-# VPN_ADMIN_NAME、VPN_ADMIN_PASSWORD、VPN_JWT_KEY、VPN_DATA_DIR。
+# VPN_SN_ADMIN_NAME、VPN_SN_ADMIN_PASSWORD、VPN_SN_JWT_KEY、VPN_DATA_DIR。
 
 # SN 服务和内置 PN 代理节点使用的 QUIC/P2P 监听地址。
 ip: "0.0.0.0"
 port: 3624
 
-# HTTP 管理 API 监听地址。
-# 如果前面有 nginx 或容器端口映射，这里保留进程内部端口即可。
-http:
-  ip: "0.0.0.0"
-  port: 3445
-
-# 本机 SN 控制服务。
+# 本机 SN 控制服务和控制节点管理面。
 sn:
   enabled: true
 
-# 本机 PN 代理服务。
-pn:
-  enabled: true
-  report_interval_secs: 5
+  # HTTP 管理 API 监听地址。
+  # 如果前面有 nginx 或容器端口映射，这里保留进程内部端口即可。
+  http:
+    ip: "0.0.0.0"
+    port: 3445
+
+  # 管理员账号。启动时会把这里的密码写入该账号；账号不存在时会自动创建。
+  admin:
+    name: "admin"
+    password: "change-me"
+
+  # HTTP 登录会话使用的 JWT 签名密钥。部署时请替换为足够长的随机字符串。
+  jwt:
+    key: "change-me-to-a-long-random-secret"
 
   # 纯代理节点部署时，将 sn.enabled 设为 false、pn.enabled 设为 true，
   # 然后取消下面注释并填入控制节点的身份 ID 和 endpoint。
@@ -32,14 +36,10 @@ pn:
   #   id: "control-server-node-id"
   #   endpoint: "203.0.113.10:3624"
 
-# 管理员账号。启动时会把这里的密码写入该账号；账号不存在时会自动创建。
-admin:
-  name: "admin"
-  password: "change-me"
-
-# HTTP 登录会话使用的 JWT 签名密钥。部署时请替换为足够长的随机字符串。
-jwt:
-  key: "change-me-to-a-long-random-secret"
+# 本机 PN 代理服务。
+pn:
+  enabled: true
+  report_interval_secs: 5
 
 # identity、SQLite 数据库和日志使用的数据目录。
 data:

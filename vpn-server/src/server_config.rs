@@ -20,6 +20,23 @@ pub struct SnServerConfig {
     pub enabled: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SnHttpConfig {
+    pub ip: String,
+    pub port: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SnAdminConfig {
+    pub name: String,
+    pub password: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SnJwtConfig {
+    pub key: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct PnServerConfig {
     pub enabled: bool,
@@ -71,6 +88,33 @@ pub fn get_sn_server_config(config: &config::Config) -> SnServerConfig {
     SnServerConfig {
         enabled: config.get_bool("sn.enabled").unwrap_or(true),
     }
+}
+
+pub fn get_sn_http_config(config: &config::Config) -> Result<SnHttpConfig, config::ConfigError> {
+    let ip = get_string_prefer(config, "sn.http.ip", "http.ip")?;
+    let port = get_int_prefer(config, "sn.http.port", "http.port")?;
+    if port <= 0 || port > u16::MAX as i64 {
+        return Err(config::ConfigError::Message(format!(
+            "sn.http.port contains invalid port {port}"
+        )));
+    }
+    Ok(SnHttpConfig {
+        ip,
+        port: port as u16,
+    })
+}
+
+pub fn get_sn_admin_config(config: &config::Config) -> Result<SnAdminConfig, config::ConfigError> {
+    Ok(SnAdminConfig {
+        name: get_string_prefer(config, "sn.admin.name", "admin.name")?,
+        password: get_string_prefer(config, "sn.admin.password", "admin.password")?,
+    })
+}
+
+pub fn get_sn_jwt_config(config: &config::Config) -> Result<SnJwtConfig, config::ConfigError> {
+    Ok(SnJwtConfig {
+        key: get_string_prefer(config, "sn.jwt.key", "jwt.key")?,
+    })
 }
 
 pub fn get_pn_server_config(
@@ -325,16 +369,61 @@ impl PnServerSelector for ConfigPnServerSelector {
 fn get_pn_control_server_config(
     config: &config::Config,
 ) -> Result<Option<PnControlServerConfig>, config::ConfigError> {
-    let id = match config.get_string("pn.control_server.id") {
+    get_control_server_config_at(config, "sn.control_server").and_then(|config_at_sn| {
+        match config_at_sn {
+            Some(control_server) => Ok(Some(control_server)),
+            None => get_control_server_config_at(config, "pn.control_server"),
+        }
+    })
+}
+
+fn get_control_server_config_at(
+    config: &config::Config,
+    prefix: &str,
+) -> Result<Option<PnControlServerConfig>, config::ConfigError> {
+    let id_key = format!("{prefix}.id");
+    let endpoint_key = format!("{prefix}.endpoint");
+    let id = match config.get_string(id_key.as_str()) {
         Ok(id) => id,
-        Err(config::ConfigError::NotFound(_)) => return Ok(None),
+        Err(config::ConfigError::NotFound(_)) => {
+            if config.get_string(endpoint_key.as_str()).is_ok() {
+                return Err(config::ConfigError::Message(format!(
+                    "{prefix}.id is required when {prefix}.endpoint is configured"
+                )));
+            }
+            return Ok(None);
+        }
         Err(err) => return Err(err),
     };
-    let endpoint = config.get_string("pn.control_server.endpoint")?;
+    let endpoint = config.get_string(endpoint_key.as_str())?;
     Ok(Some(PnControlServerConfig {
         id,
         endpoint: parse_quic_endpoint(&endpoint)?,
     }))
+}
+
+fn get_string_prefer(
+    config: &config::Config,
+    preferred: &str,
+    legacy: &str,
+) -> Result<String, config::ConfigError> {
+    match config.get_string(preferred) {
+        Ok(value) => Ok(value),
+        Err(config::ConfigError::NotFound(_)) => config.get_string(legacy),
+        Err(err) => Err(err),
+    }
+}
+
+fn get_int_prefer(
+    config: &config::Config,
+    preferred: &str,
+    legacy: &str,
+) -> Result<i64, config::ConfigError> {
+    match config.get_int(preferred) {
+        Ok(value) => Ok(value),
+        Err(config::ConfigError::NotFound(_)) => config.get_int(legacy),
+        Err(err) => Err(err),
+    }
 }
 
 fn parse_quic_endpoint(address: &str) -> Result<Endpoint, config::ConfigError> {
@@ -350,12 +439,16 @@ fn parse_quic_endpoint(address: &str) -> Result<Endpoint, config::ConfigError> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEST_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
     fn new_temp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "bucky-vpn-server-config-{}-{}",
+            "bucky-vpn-server-config-{}-{}-{}",
             std::process::id(),
+            TEST_DIR_SEQ.fetch_add(1, Ordering::Relaxed),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -445,6 +538,101 @@ pn:
 
         assert!(!sn_config.enabled);
         assert!(!pn_config.enabled);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn yaml_can_configure_sn_owned_management_config() {
+        let dir = new_temp_dir();
+        fs::write(
+            dir.join(DEFAULT_YAML_CONFIG),
+            r#"
+sn:
+  http:
+    ip: "127.0.0.1"
+    port: 8080
+  admin:
+    name: "owner"
+    password: "secret"
+  jwt:
+    key: "sn-jwt-secret"
+"#,
+        )
+        .unwrap();
+
+        let config = build_server_config(None, &dir).unwrap();
+        let http_config = get_sn_http_config(&config).unwrap();
+        let admin_config = get_sn_admin_config(&config).unwrap();
+        let jwt_config = get_sn_jwt_config(&config).unwrap();
+
+        assert_eq!(
+            http_config,
+            SnHttpConfig {
+                ip: "127.0.0.1".to_string(),
+                port: 8080,
+            }
+        );
+        assert_eq!(
+            admin_config,
+            SnAdminConfig {
+                name: "owner".to_string(),
+                password: "secret".to_string(),
+            }
+        );
+        assert_eq!(
+            jwt_config,
+            SnJwtConfig {
+                key: "sn-jwt-secret".to_string(),
+            }
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_top_level_management_config_remains_compatible() {
+        let dir = new_temp_dir();
+        fs::write(
+            dir.join(DEFAULT_YAML_CONFIG),
+            r#"
+http:
+  ip: "127.0.0.2"
+  port: 9090
+admin:
+  name: "legacy"
+  password: "legacy-secret"
+jwt:
+  key: "legacy-jwt-secret"
+"#,
+        )
+        .unwrap();
+
+        let config = build_server_config(None, &dir).unwrap();
+        let http_config = get_sn_http_config(&config).unwrap();
+        let admin_config = get_sn_admin_config(&config).unwrap();
+        let jwt_config = get_sn_jwt_config(&config).unwrap();
+
+        assert_eq!(
+            http_config,
+            SnHttpConfig {
+                ip: "127.0.0.2".to_string(),
+                port: 9090,
+            }
+        );
+        assert_eq!(
+            admin_config,
+            SnAdminConfig {
+                name: "legacy".to_string(),
+                password: "legacy-secret".to_string(),
+            }
+        );
+        assert_eq!(
+            jwt_config,
+            SnJwtConfig {
+                key: "legacy-jwt-secret".to_string(),
+            }
+        );
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -657,15 +845,16 @@ pn:
     }
 
     #[test]
-    fn yaml_can_configure_pn_control_server() {
+    fn yaml_can_configure_sn_control_server() {
         let dir = new_temp_dir();
         fs::write(
             dir.join(DEFAULT_YAML_CONFIG),
             r#"
-pn:
+sn:
   control_server:
     id: "server-peer"
     endpoint: "127.0.0.1:3624"
+pn:
   report_interval_secs: 9
 "#,
         )
@@ -682,6 +871,34 @@ pn:
             })
         );
         assert_eq!(pn_config.report_interval_secs, 9);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_pn_control_server_remains_compatible() {
+        let dir = new_temp_dir();
+        fs::write(
+            dir.join(DEFAULT_YAML_CONFIG),
+            r#"
+pn:
+  control_server:
+    id: "legacy-server-peer"
+    endpoint: "127.0.0.1:4624"
+"#,
+        )
+        .unwrap();
+
+        let config = build_server_config(None, &dir).unwrap();
+        let pn_config = get_pn_server_config(&config).unwrap();
+
+        assert_eq!(
+            pn_config.control_server,
+            Some(PnControlServerConfig {
+                id: "legacy-server-peer".to_string(),
+                endpoint: parse_quic_endpoint("127.0.0.1:4624").unwrap(),
+            })
+        );
 
         let _ = fs::remove_dir_all(dir);
     }

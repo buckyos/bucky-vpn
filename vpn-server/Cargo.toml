@@ -7,6 +7,7 @@ edition = "2024"
 tokio = { version = "1", features = ["full"] }
 async-std = {version = "1.13.1", features = ["tokio1"]}
 async-trait = "0.1.85"
+bucky-raw-codec = {version = "0.1", features = ["derive"]}
 p2p-frame = {git = "https://github.com/buckyos/bucky-p2p.git", features = ["x509"]}
 #p2p-frame = { path = "../../p2p/p2p-frame", features = ["x509"] }
 sfo-account = { version = "0.1", features = ["login"]}

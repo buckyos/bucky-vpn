@@ -6,14 +6,16 @@ use crate::pn_traffic_service::{
 };
 use crate::server_config::{
     ConfigPnServerSelector, build_server_config, endpoint_to_pn_server, get_pn_server_config,
-    get_sn_server_config, is_standalone_proxy_node, resolve_service_endpoints,
-    select_default_config_file, should_start_pn_server,
+    get_sn_admin_config, get_sn_http_config, get_sn_jwt_config, get_sn_server_config,
+    is_standalone_proxy_node, resolve_service_endpoints, select_default_config_file,
+    should_start_pn_server,
 };
 use crate::sqlite_store_factory::{P2pSnCmdServer, SqliteStoreFactory};
 use crate::user_store::{SqliteUserStore, User};
 use crate::vpn_control_client::{
     VpnCmdIncomingTunnelValidator, VpnCmdPnConnectionValidator, VpnCmdPnTrafficReporter,
-    create_vpn_control_client, reject_all_incoming_tunnel_validator,
+    create_proxy_control_cmd_service, create_vpn_control_client,
+    register_proxy_control_cmd_listener, reject_all_incoming_tunnel_validator,
 };
 use base58::ToBase58;
 use p2p_frame::endpoint::{Endpoint, Protocol};
@@ -98,15 +100,18 @@ async fn main() {
     let config_file = explicit_config_file.unwrap_or(default_config.as_str());
     let config = build_server_config(explicit_config_file, data_folder.as_path()).unwrap();
     let sn_server_config = get_sn_server_config(&config);
+    let sn_http_config = get_sn_http_config(&config).unwrap();
+    let sn_admin_config = get_sn_admin_config(&config).unwrap();
+    let sn_jwt_config = get_sn_jwt_config(&config).unwrap();
     let pn_config = get_pn_server_config(&config).unwrap();
 
     let ip = config.get_string("ip").unwrap();
     let port = config.get_int("port").unwrap() as u16;
-    let http_ip = config.get_string("http.ip").unwrap();
-    let http_port = config.get_int("http.port").unwrap() as u16;
-    let admin_name = config.get_string("admin.name").unwrap();
-    let admin_password = config.get_string("admin.password").unwrap();
-    let jwt_key = config.get_string("jwt.key").unwrap().to_string();
+    let http_ip = sn_http_config.ip;
+    let http_port = sn_http_config.port;
+    let admin_name = sn_admin_config.name;
+    let admin_password = sn_admin_config.password;
+    let jwt_key = sn_jwt_config.key;
     let data_dir = match config.get_string("data.dir") {
         Ok(dir) => PathBuf::from(dir),
         Err(_) => dirs::data_dir().unwrap().join("bucky-vpn-server"),
@@ -186,7 +191,7 @@ async fn main() {
             },
             None => {
                 log::warn!(
-                    "standalone proxy node requires pn.control_server for remote tunnel validation"
+                    "standalone proxy node requires sn.control_server for remote tunnel validation"
                 );
                 None
             }
@@ -246,8 +251,9 @@ async fn main() {
             pn_servers,
             store_factory.clone(),
         ));
+        let cmd_server = Arc::new(P2pSnCmdServer::new(sn_service.clone()));
         let vpn_server = VpnServer::new_with_pn_server_selector(
-            Arc::new(P2pSnCmdServer::new(sn_service.clone())),
+            cmd_server,
             store_factory.clone(),
             pn_server_selector.clone(),
         );
@@ -276,6 +282,25 @@ async fn main() {
         let user_manager = DefaultAccountManager::new(user_store, jwt_key.into_bytes());
 
         vpn_server.start();
+        let proxy_control_cmd_service = create_proxy_control_cmd_service(
+            vpn_server.clone(),
+            store_factory.clone(),
+            pn_server_selector.clone(),
+        );
+        if let Err(err) = register_proxy_control_cmd_listener(
+            sn_service.ttp_server(),
+            proxy_control_cmd_service,
+            pn_server_selector.clone(),
+        )
+        .await
+        {
+            log::error!(
+                "start proxy control listener failed: code={:?} msg={}",
+                err.code(),
+                err.msg()
+            );
+            panic!("start proxy control listener failed");
+        }
         Some((store_factory, user_manager, vpn_server, pn_server_selector))
     } else {
         None
