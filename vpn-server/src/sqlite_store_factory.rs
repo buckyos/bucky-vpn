@@ -127,6 +127,7 @@ impl SqliteVpnStore {
             .execute_sql(sql_query(sql))
             .await
             .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        self.ensure_network_pn_server_columns().await?;
 
         let sql = r#"CREATE TABLE IF NOT EXISTS network_member (
             network_id integer NOT NULL,
@@ -194,6 +195,31 @@ impl SqliteVpnStore {
             .execute_sql(sql_query(sql))
             .await
             .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+
+        Ok(())
+    }
+
+    async fn ensure_network_pn_server_columns(&mut self) -> VpnResult<()> {
+        let rows = self
+            .conn
+            .query_all(sql_query("PRAGMA table_info(network)"))
+            .await
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        let columns: Vec<String> = rows.iter().map(|row| row.get("name")).collect();
+
+        for (column, definition) in [
+            ("pn_server_id", "TEXT NOT NULL DEFAULT ''"),
+            ("pn_server_ip", "TEXT NOT NULL DEFAULT ''"),
+            ("pn_server_port", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if !columns.iter().any(|existing| existing == column) {
+                let sql = format!("ALTER TABLE network ADD COLUMN {} {}", column, definition);
+                self.conn
+                    .execute_sql(sql_query(&sql))
+                    .await
+                    .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+            }
+        }
 
         Ok(())
     }
