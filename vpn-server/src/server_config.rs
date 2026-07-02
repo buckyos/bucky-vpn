@@ -73,7 +73,7 @@ pub fn build_server_config(
         .set_default("http.ip", "0.0.0.0")?
         .set_default("http.port", 3445)?
         .set_default("sn.enabled", true)?
-        .set_default("pn.enabled", false)?
+        .set_default("pn.enabled", true)?
         .set_default("pn.report_interval_secs", 5)?;
 
     if config_file.exists() {
@@ -120,7 +120,7 @@ pub fn get_sn_jwt_config(config: &config::Config) -> Result<SnJwtConfig, config:
 pub fn get_pn_server_config(
     config: &config::Config,
 ) -> Result<PnServerConfig, config::ConfigError> {
-    let enabled = config.get_bool("pn.enabled").unwrap_or(false);
+    let enabled = config.get_bool("pn.enabled").unwrap_or(true);
 
     Ok(PnServerConfig {
         enabled,
@@ -369,12 +369,7 @@ impl PnServerSelector for ConfigPnServerSelector {
 fn get_pn_control_server_config(
     config: &config::Config,
 ) -> Result<Option<PnControlServerConfig>, config::ConfigError> {
-    get_control_server_config_at(config, "sn.control_server").and_then(|config_at_sn| {
-        match config_at_sn {
-            Some(control_server) => Ok(Some(control_server)),
-            None => get_control_server_config_at(config, "pn.control_server"),
-        }
-    })
+    get_control_server_config_at(config, "pn.control_server")
 }
 
 fn get_control_server_config_at(
@@ -486,14 +481,14 @@ mod tests {
     }
 
     #[test]
-    fn sn_defaults_enabled_and_pn_defaults_disabled_without_config_file() {
+    fn sn_and_pn_default_enabled_without_config_file() {
         let dir = new_temp_dir();
         let config = build_server_config(None, &dir).unwrap();
         let sn_config = get_sn_server_config(&config);
         let pn_config = get_pn_server_config(&config).unwrap();
 
         assert!(sn_config.enabled);
-        assert!(!pn_config.enabled);
+        assert!(pn_config.enabled);
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -845,16 +840,15 @@ jwt:
     }
 
     #[test]
-    fn yaml_can_configure_sn_control_server() {
+    fn yaml_can_configure_pn_control_server() {
         let dir = new_temp_dir();
         fs::write(
             dir.join(DEFAULT_YAML_CONFIG),
             r#"
-sn:
+pn:
   control_server:
     id: "server-peer"
     endpoint: "127.0.0.1:3624"
-pn:
   report_interval_secs: 9
 "#,
         )
@@ -876,14 +870,14 @@ pn:
     }
 
     #[test]
-    fn legacy_pn_control_server_remains_compatible() {
+    fn sn_control_server_is_not_pn_control_config() {
         let dir = new_temp_dir();
         fs::write(
             dir.join(DEFAULT_YAML_CONFIG),
             r#"
-pn:
+sn:
   control_server:
-    id: "legacy-server-peer"
+    id: "sn-server-peer"
     endpoint: "127.0.0.1:4624"
 "#,
         )
@@ -892,13 +886,7 @@ pn:
         let config = build_server_config(None, &dir).unwrap();
         let pn_config = get_pn_server_config(&config).unwrap();
 
-        assert_eq!(
-            pn_config.control_server,
-            Some(PnControlServerConfig {
-                id: "legacy-server-peer".to_string(),
-                endpoint: parse_quic_endpoint("127.0.0.1:4624").unwrap(),
-            })
-        );
+        assert_eq!(pn_config.control_server, None);
 
         let _ = fs::remove_dir_all(dir);
     }

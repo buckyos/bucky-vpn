@@ -30,16 +30,16 @@ sn:
   jwt:
     key: "change-me-to-a-long-random-secret"
 
+# 本机 PN 代理服务。
+pn:
+  enabled: true
+  report_interval_secs: 5
+
   # 纯代理节点部署时，将 sn.enabled 设为 false、pn.enabled 设为 true，
   # 然后取消下面注释并填入控制节点的身份 ID 和 endpoint。
   # control_server:
   #   id: "control-server-node-id"
   #   endpoint: "203.0.113.10:3624"
-
-# 本机 PN 代理服务。
-pn:
-  enabled: true
-  report_interval_secs: 5
 
 # identity、SQLite 数据库和日志使用的数据目录。
 data:

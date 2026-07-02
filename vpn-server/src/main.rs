@@ -100,18 +100,25 @@ async fn main() {
     let config_file = explicit_config_file.unwrap_or(default_config.as_str());
     let config = build_server_config(explicit_config_file, data_folder.as_path()).unwrap();
     let sn_server_config = get_sn_server_config(&config);
-    let sn_http_config = get_sn_http_config(&config).unwrap();
-    let sn_admin_config = get_sn_admin_config(&config).unwrap();
-    let sn_jwt_config = get_sn_jwt_config(&config).unwrap();
     let pn_config = get_pn_server_config(&config).unwrap();
+    let sn_http_config = if sn_server_config.enabled {
+        Some(get_sn_http_config(&config).unwrap())
+    } else {
+        None
+    };
+    let sn_admin_config = if sn_server_config.enabled {
+        Some(get_sn_admin_config(&config).unwrap())
+    } else {
+        None
+    };
+    let sn_jwt_config = if sn_server_config.enabled {
+        Some(get_sn_jwt_config(&config).unwrap())
+    } else {
+        None
+    };
 
     let ip = config.get_string("ip").unwrap();
     let port = config.get_int("port").unwrap() as u16;
-    let http_ip = sn_http_config.ip;
-    let http_port = sn_http_config.port;
-    let admin_name = sn_admin_config.name;
-    let admin_password = sn_admin_config.password;
-    let jwt_key = sn_jwt_config.key;
     let data_dir = match config.get_string("data.dir") {
         Ok(dir) => PathBuf::from(dir),
         Err(_) => dirs::data_dir().unwrap().join("bucky-vpn-server"),
@@ -191,7 +198,7 @@ async fn main() {
             },
             None => {
                 log::warn!(
-                    "standalone proxy node requires sn.control_server for remote tunnel validation"
+                    "standalone proxy node requires pn.control_server for remote tunnel validation"
                 );
                 None
             }
@@ -233,6 +240,12 @@ async fn main() {
     };
 
     let control_runtime = if sn_server_config.enabled {
+        let sn_admin_config = sn_admin_config
+            .as_ref()
+            .expect("sn admin config is parsed when sn is enabled");
+        let sn_jwt_config = sn_jwt_config
+            .as_ref()
+            .expect("sn jwt config is parsed when sn is enabled");
         let db_path = data_dir.join("vpn.db").to_string_lossy().to_string();
         let pool = SqlPool::open(db_path.as_str(), 5, Some(SqliteJournalMode::Wal))
             .await
@@ -260,17 +273,32 @@ async fn main() {
         let network_manager = vpn_server.network_manager().clone();
 
         user_store.update_password(
-            &admin_name,
-            hash_data(vec![admin_name.as_bytes(), admin_password.as_bytes()].as_slice())
-                .to_base58()
-                .as_str(),
+            &sn_admin_config.name,
+            hash_data(
+                vec![
+                    sn_admin_config.name.as_bytes(),
+                    sn_admin_config.password.as_bytes(),
+                ]
+                .as_slice(),
+            )
+            .to_base58()
+            .as_str(),
         );
-        if user_store.get_account(&admin_name).await.unwrap().is_none() {
+        if user_store
+            .get_account(&sn_admin_config.name)
+            .await
+            .unwrap()
+            .is_none()
+        {
             let network_id = network_manager.new_network_group().await.unwrap();
             let user = User {
-                id: admin_name.clone(),
+                id: sn_admin_config.name.clone(),
                 password: hash_data(
-                    vec![admin_name.as_bytes(), admin_password.as_bytes()].as_slice(),
+                    vec![
+                        sn_admin_config.name.as_bytes(),
+                        sn_admin_config.password.as_bytes(),
+                    ]
+                    .as_slice(),
                 )
                 .to_base58(),
                 network_id,
@@ -279,7 +307,8 @@ async fn main() {
             user_store.add_account(&user).await.unwrap();
         }
 
-        let user_manager = DefaultAccountManager::new(user_store, jwt_key.into_bytes());
+        let user_manager =
+            DefaultAccountManager::new(user_store, sn_jwt_config.key.clone().into_bytes());
 
         vpn_server.start();
         let proxy_control_cmd_service = create_proxy_control_cmd_service(
@@ -363,7 +392,8 @@ async fn main() {
     };
 
     if let Some((_, user_manager, vpn_server, pn_server_selector)) = control_runtime {
-        let http_config = HttpServerConfig::new(http_ip, http_port)
+        let sn_http_config = sn_http_config.expect("sn http config is parsed when sn is enabled");
+        let http_config = HttpServerConfig::new(sn_http_config.ip, sn_http_config.port)
             .allow_any_header()
             .allow_any_origin()
             .allow_any_methods()

@@ -52,6 +52,7 @@ class ServerSpec:
     sn_enabled: bool
     pn_enabled: bool
     control_server: str | None = None
+    cpus: int | None = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,23 @@ SCENARIOS = (
         servers=(
             ServerSpec("control", sn_enabled=True, pn_enabled=False),
             ServerSpec("proxy", sn_enabled=False, pn_enabled=True, control_server="control"),
+        ),
+        clients=(
+            ClientSpec("client-a", ("mesh-a",)),
+            ClientSpec("client-b", ("mesh-a",)),
+        ),
+    ),
+    Scenario(
+        name="two-clients-one-cpu-control-and-proxy",
+        servers=(
+            ServerSpec("control", sn_enabled=True, pn_enabled=False, cpus=1),
+            ServerSpec(
+                "proxy",
+                sn_enabled=False,
+                pn_enabled=True,
+                control_server="control",
+                cpus=1,
+            ),
         ),
         clients=(
             ClientSpec("client-a", ("mesh-a",)),
@@ -377,6 +395,16 @@ def prepare_base_instance(base_name: str, image: str) -> None:
     stop_instance_if_needed(base_name)
 
 
+def set_multipass_instance_cpus(name: str, cpus: int) -> None:
+    if cpus < 1:
+        raise IntegrationError(f"Multipass instance {name} cpus must be >= 1, got {cpus}")
+    checked_host(
+        [*multipass_command(), "set", f"local.{name}.cpus={cpus}"],
+        timeout_sec=120,
+        capture=True,
+    )
+
+
 def cleanup_multipass_instance(name: str, keep: bool) -> None:
     if keep:
         print(f"multipass: keeping {name}")
@@ -388,16 +416,32 @@ def cleanup_multipass_instance(name: str, keep: bool) -> None:
 
 
 class MultipassInstance:
-    def __init__(self, name: str, keep: bool, base_instance: str | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        keep: bool,
+        base_instance: str | None = None,
+        cpus: int | None = None,
+    ) -> None:
         self.name = name
         self.keep = keep
         self.ip: str | None = None
         if base_instance is not None:
             clone_multipass_instance(base_instance, name)
+            if cpus is not None:
+                stop_instance_if_needed(name)
+                set_multipass_instance_cpus(name, cpus)
             checked_host([*multipass_command(), "start", name], timeout_sec=420, capture=True)
         else:
             image = os.environ.get("MULTIPASS_IMAGE", DEFAULT_MULTIPASS_IMAGE)
-            checked_host([*multipass_command(), "launch", image, "--name", name], timeout_sec=420, capture=True)
+            command = [*multipass_command(), "launch", image, "--name", name]
+            if cpus is not None:
+                if cpus < 1:
+                    raise IntegrationError(
+                        f"Multipass instance {name} cpus must be >= 1, got {cpus}"
+                    )
+                command.extend(["--cpus", str(cpus)])
+            checked_host(command, timeout_sec=420, capture=True)
         self.ip = self.wait_ip()
         self.exec(["mkdir", "-p", REMOTE_ROOT], timeout_sec=30)
 
@@ -1618,11 +1662,13 @@ def create_instance(
     node_name: str,
     keep: bool,
     base_instance: str | None,
+    cpus: int | None,
 ) -> MultipassInstance:
     name = safe_instance_name("bvi", run_id, scenario.name, node_name)
     source = f" from {base_instance}" if base_instance is not None else ""
-    print(f"multipass: creating {name} for {scenario.name}/{node_name}{source}")
-    return MultipassInstance(name, keep, base_instance=base_instance)
+    cpu_text = f" with {cpus} cpu(s)" if cpus is not None else ""
+    print(f"multipass: creating {name} for {scenario.name}/{node_name}{source}{cpu_text}")
+    return MultipassInstance(name, keep, base_instance=base_instance, cpus=cpus)
 
 
 def create_scenario_instances(
@@ -1632,17 +1678,17 @@ def create_scenario_instances(
     base_instance: str | None,
     parallel_instances: int,
 ) -> tuple[list[MultipassInstance], dict[str, MultipassInstance], dict[str, MultipassInstance]]:
-    nodes: list[tuple[str, str]] = []
-    nodes.extend(("server", spec.name) for spec in scenario.servers)
-    nodes.extend(("client", spec.name) for spec in scenario.clients)
+    nodes: list[tuple[str, str, int | None]] = []
+    nodes.extend(("server", spec.name, spec.cpus) for spec in scenario.servers)
+    nodes.extend(("client", spec.name, None) for spec in scenario.clients)
 
     instances: list[MultipassInstance] = []
     server_instances: dict[str, MultipassInstance] = {}
     client_instances: dict[str, MultipassInstance] = {}
 
-    def create(node: tuple[str, str]) -> tuple[str, str, MultipassInstance]:
-        kind, node_name = node
-        instance = create_instance(run_id, scenario, node_name, keep_instances, base_instance)
+    def create(node: tuple[str, str, int | None]) -> tuple[str, str, MultipassInstance]:
+        kind, node_name, cpus = node
+        instance = create_instance(run_id, scenario, node_name, keep_instances, base_instance, cpus)
         return kind, node_name, instance
 
     try:
@@ -1676,7 +1722,7 @@ def create_scenario_instances(
         for instance in reversed(instances):
             instance.stop()
             cleaned.add(instance.name)
-        for _kind, node_name in reversed(nodes):
+        for _kind, node_name, _cpus in reversed(nodes):
             name = safe_instance_name("bvi", run_id, scenario.name, node_name)
             if name not in cleaned:
                 cleanup_multipass_instance(name, keep_instances)

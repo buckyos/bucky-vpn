@@ -41,7 +41,7 @@ levels:
         run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn", "dv"]
   integration:
     mode: enabled
-    summary: 拉起 vpn-client/vpn-server 进程验证 PN proxy 多拓扑成员接入、proxy 审批、刷新、客户端虚拟网段通信和流量上报
+    summary: 拉起 vpn-client/vpn-server 进程验证 PN proxy 多拓扑成员接入、1 CPU control/proxy 节点、proxy 审批、刷新、客户端虚拟网段通信和流量上报
     test_targets:
       - vpn-client
       - vpn-frame
@@ -56,6 +56,7 @@ levels:
         - 脚本会为每个 vpn-client / vpn-server 节点创建独立 Multipass 实例并在实例内启动真实进程
         - 默认会自动准备/复用停止状态的基础实例，并从该实例 clone 测试节点；如需回退到逐节点 launch，可传 `--no-use-base-image` 或设置 `BUCKY_VPN_INTEGRATION_USE_BASE_IMAGE=0`
         - `--parallel-instances <n>` 控制每个场景内并发创建 VM 的数量，默认保守并发 2 路；统一入口默认显式使用 2 路，可用 `BUCKY_VPN_INTEGRATION_PARALLEL_INSTANCES=<n>` 或直接调用脚本覆盖
+        - 集成脚本包含 control 节点和 proxy 节点均限制为 1 CPU 的 split control/proxy 场景，覆盖低 CPU 节点启动、审批、刷新和数据面通信
         - 脚本会阻断并验证 client 实例底层 IP 之间不可直连，避免虚拟网段通信误走底层直连
         - 每个 client daemon 在自己的实例内使用默认 VPN_API_PORT，本机通过实例 IPv4 访问本地 API
         - 脚本会批准远端 PN proxy nodes、批准 joined nodes、分配网络成员虚拟 IP，并在同一 client 实例内重启 daemon 验证 joined_networks 恢复、成员注册和 TUN runtime readiness
@@ -63,6 +64,6 @@ levels:
         - ping 流量产生后，脚本会轮询 control API，确认 `/get_network_member` 和 `/get_user_traffic_stats` 返回非零流量统计
     steps:
       - id: bucky-vpn-integration
-        name: 运行 PN proxy 多拓扑和流量上报进程集成测试
+        name: 运行 PN proxy 多拓扑、1 CPU control/proxy 和流量上报进程集成测试
         change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36"]
         run: ["python3", "./harness/scripts/bucky-vpn-process-integration.py", "--use-base-image", "--parallel-instances", "2"]
