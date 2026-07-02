@@ -555,13 +555,16 @@ REMOTE_LOG_ERROR_LINES = r"""
 import json
 import sys
 
-path = sys.argv[1]
+path, include_control_refresh_errors_text = sys.argv[1:3]
+include_control_refresh_errors = include_control_refresh_errors_text == "1"
 failures = []
 try:
     with open(path, "r", encoding="utf-8", errors="replace") as handle:
         for line in handle:
             stripped = line.rstrip("\n")
-            if ("connect pn server" in stripped and "failed" in stripped) or "run_proc failed" in stripped:
+            if ("connect pn server" in stripped and "failed" in stripped) or (
+                include_control_refresh_errors and "run_proc failed" in stripped
+            ):
                 failures.append(stripped)
                 if len(failures) >= 50:
                     break
@@ -592,7 +595,10 @@ def remote_log_missing_needles(process: RemoteProcess, needles: list[str]) -> li
     return json.loads(result.stdout)
 
 
-def remote_log_error_lines(process: RemoteProcess) -> list[str]:
+def remote_log_error_lines(
+    process: RemoteProcess,
+    include_control_refresh_errors: bool = True,
+) -> list[str]:
     result = checked_host(
         [
             *multipass_command(),
@@ -604,6 +610,7 @@ def remote_log_error_lines(process: RemoteProcess) -> list[str]:
             "-c",
             REMOTE_LOG_ERROR_LINES,
             process.log_path,
+            "1" if include_control_refresh_errors else "0",
         ],
         timeout_sec=20,
         capture=True,
@@ -1557,10 +1564,13 @@ def wait_client_vpn_runtime_ready(
     )
 
 
-def assert_client_logs_clean(clients: list[ClientRuntime]) -> None:
+def assert_client_logs_clean(
+    clients: list[ClientRuntime],
+    include_control_refresh_errors: bool = True,
+) -> None:
     failures: list[str] = []
     for client in clients:
-        for line in remote_log_error_lines(client.process):
+        for line in remote_log_error_lines(client.process, include_control_refresh_errors):
             failures.append(f"{client.process.log_path}: {line}")
     if failures:
         raise IntegrationError("client runtime reported PN setup errors:\n" + "\n".join(failures))
@@ -1799,6 +1809,7 @@ def run_scenario(
             processes[: len(scenario.servers)],
         )
         wait_client_vpn_runtime_ready(client_runtimes, network_ip_by_client)
+        assert_client_logs_clean(client_runtimes)
         install_control_underlay_isolation(client_instances, server_instances, scenario)
         assert_client_data_plane_via_pn(
             client_runtimes,
@@ -1806,7 +1817,7 @@ def run_scenario(
             processes[: len(scenario.servers)],
         )
         wait_pn_traffic_reported(control, network_by_name, client_runtimes)
-        assert_client_logs_clean(client_runtimes)
+        assert_client_logs_clean(client_runtimes, include_control_refresh_errors=False)
     finally:
         for process in reversed(processes):
             process.stop()
