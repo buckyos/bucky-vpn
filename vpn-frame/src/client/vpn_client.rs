@@ -242,13 +242,12 @@ impl<
                 .get_vpn_info(Some(self.cur_version.load(Ordering::SeqCst)), None)
                 .await?
         };
-        self.tunnel_factory.on_vpn_info_received(&vpn_infos).await?;
-
         if !self.is_first.load(Ordering::Relaxed)
             && server_version == self.cur_version.load(Ordering::SeqCst)
         {
             return Ok(());
         }
+        self.tunnel_factory.on_vpn_info_received(&vpn_infos).await?;
         self.is_first.store(false, Ordering::Relaxed);
         let mut vpn_devices = {
             let mut vpn_devices = self.vpn_devices.lock().unwrap();

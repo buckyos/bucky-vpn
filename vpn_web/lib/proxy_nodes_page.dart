@@ -18,11 +18,13 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   List<ProxyNode>? _proxyNodes;
 
   String _nodeAddress(ProxyNode node) {
-    final observedAddr = node.observedAddr;
-    if (observedAddr != null && observedAddr.isNotEmpty) {
-      return observedAddr;
+    final addresses =
+        node.pnServer.allAddresses.map((addr) => addr.display).toList();
+    final observedAddr = node.observedAddr ?? '';
+    if (observedAddr.isNotEmpty && !addresses.contains(observedAddr)) {
+      addresses.insert(0, observedAddr);
     }
-    return '${node.pnServer.ip}:${node.pnServer.port}';
+    return addresses.join(', ');
   }
 
   Widget _actionLink({

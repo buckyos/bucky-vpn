@@ -97,16 +97,84 @@ pub struct GetVpnInfoReq {
     pub client_version: Option<String>,
 }
 
+fn default_pn_server_address_protocol() -> String {
+    PnServerAddress::PROTOCOL_QUIC.to_string()
+}
+
+#[derive(Debug, RawEncode, RawDecode, Serialize, Deserialize, Clone, Eq, PartialEq, Hash)]
+pub struct PnServerAddress {
+    #[serde(default = "default_pn_server_address_protocol")]
+    pub protocol: String,
+    pub ip: IpAddr,
+    pub port: u16,
+}
+
+impl PnServerAddress {
+    pub const PROTOCOL_QUIC: &'static str = "quic";
+    pub const PROTOCOL_TCP: &'static str = "tcp";
+
+    pub fn new(ip: IpAddr, port: u16) -> Self {
+        Self::new_with_protocol(Self::PROTOCOL_QUIC, ip, port)
+    }
+
+    pub fn new_tcp(ip: IpAddr, port: u16) -> Self {
+        Self::new_with_protocol(Self::PROTOCOL_TCP, ip, port)
+    }
+
+    pub fn new_with_protocol(protocol: impl Into<String>, ip: IpAddr, port: u16) -> Self {
+        Self {
+            protocol: protocol.into(),
+            ip,
+            port,
+        }
+    }
+}
+
 #[derive(Debug, RawEncode, RawDecode, Serialize, Deserialize, Clone, Eq, PartialEq, Hash)]
 pub struct PnServerInfo {
     pub id: String,
     pub ip: IpAddr,
     pub port: u16,
+    #[serde(default)]
+    pub addresses: Vec<PnServerAddress>,
 }
 
 impl PnServerInfo {
     pub fn new(id: String, ip: IpAddr, port: u16) -> Self {
-        Self { id, ip, port }
+        Self::new_with_addresses(id, ip, port, Vec::new())
+    }
+
+    pub fn new_with_primary_address(
+        id: String,
+        primary: PnServerAddress,
+        addresses: Vec<PnServerAddress>,
+    ) -> Self {
+        let mut info = Self {
+            id,
+            ip: primary.ip,
+            port: primary.port,
+            addresses: Vec::new(),
+        };
+        info.add_address(primary);
+        for address in addresses {
+            info.add_address(address);
+        }
+        info
+    }
+
+    pub fn new_with_addresses(
+        id: String,
+        ip: IpAddr,
+        port: u16,
+        addresses: Vec<PnServerAddress>,
+    ) -> Self {
+        Self::new_with_primary_address(id, PnServerAddress::new(ip, port), addresses)
+    }
+
+    pub fn add_address(&mut self, address: PnServerAddress) {
+        if !self.addresses.contains(&address) {
+            self.addresses.push(address);
+        }
     }
 }
 
@@ -193,7 +261,7 @@ pub struct ValidatePnConnectionResp {
 
 #[cfg(test)]
 mod tests {
-    use super::PnServerInfo;
+    use super::{PnServerAddress, PnServerInfo};
     use std::net::IpAddr;
 
     #[test]
@@ -207,6 +275,10 @@ mod tests {
         assert_eq!(pn_server.id, "server-node-id");
         assert_eq!(pn_server.ip, IpAddr::from([127, 0, 0, 1]));
         assert_eq!(pn_server.port, 3624);
+        assert_eq!(
+            pn_server.addresses,
+            vec![PnServerAddress::new(IpAddr::from([127, 0, 0, 1]), 3624)]
+        );
     }
 
     #[test]

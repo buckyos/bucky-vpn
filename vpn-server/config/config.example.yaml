@@ -7,7 +7,8 @@
 # VPN_ 前缀的环境变量可以覆盖配置项，例如：
 # VPN_SN_ADMIN_NAME、VPN_SN_ADMIN_PASSWORD、VPN_SN_JWT_KEY、VPN_DATA_DIR。
 
-# SN 服务和内置 PN 代理节点使用的 QUIC/P2P 监听地址。
+# SN 服务和内置 PN 代理节点使用的 P2P 监听地址。
+# 服务端会在同一 IP/端口上同时监听 QUIC 和 TCP。
 ip: "0.0.0.0"
 port: 3624
 
@@ -34,6 +35,12 @@ sn:
 pn:
   enabled: true
   report_interval_secs: 5
+
+  # 可选：当 PN 节点部署在容器、NAT 或负载均衡后面时，配置进程监听端口
+  # 对外映射后的端口。控制节点会把这里的端口下发给客户端。
+  # port_mapping:
+  #   quic: 3624
+  #   tcp: 3624
 
   # 纯代理节点部署时，将 sn.enabled 设为 false、pn.enabled 设为 true，
   # 然后取消下面注释并填入控制节点的身份 ID 和 endpoint。

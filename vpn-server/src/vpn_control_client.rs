@@ -29,8 +29,8 @@ use vpn_frame::cmd_server::errors::{CmdErrorCode, CmdResult, into_cmd_err};
 use vpn_frame::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
 use vpn_frame::server::{NodeId, PnServerSelector, VpnStore, VpnStoreFactory};
 use vpn_frame::{
-    PnServerInfo, ReportPnTrafficStatsReq, ReportPnTrafficStatsResp, ValidatePnConnectionReq,
-    ValidatePnConnectionResp, VpnCmdCode, VpnCmdHeader, VpnTunnelId,
+    PnServerAddress, PnServerInfo, ReportPnTrafficStatsReq, ReportPnTrafficStatsResp,
+    ValidatePnConnectionReq, ValidatePnConnectionResp, VpnCmdCode, VpnCmdHeader, VpnTunnelId,
 };
 
 const PROXY_CONTROL_SERVICE: &str = "vpn_proxy_control";
@@ -349,16 +349,12 @@ pub async fn register_proxy_control_cmd_listener(
                         );
                         return;
                     };
-                    let pn_server = PnServerInfo::new(
+                    let pn_server = PnServerInfo::new_with_primary_address(
                         meta.remote_id.to_string(),
-                        remote_ep.addr().ip(),
-                        remote_ep.addr().port(),
+                        pn_server_address_from_endpoint(remote_ep),
+                        Vec::new(),
                     );
-                    if let Err(err) = PnServerSelector::report_heartbeat(
-                        pn_server_selector.as_ref(),
-                        &pn_server,
-                    )
-                    .await
+                    if let Err(err) = pn_server_selector.report_observed_heartbeat(&pn_server).await
                     {
                         log::error!(
                             "proxy control connection rejected because proxy heartbeat registration failed remote_id={} code={:?} msg={}",
@@ -379,6 +375,15 @@ pub async fn register_proxy_control_cmd_listener(
         )
         .await
         .map_err(into_vpn_err!(VpnErrorCode::Failed))
+}
+
+fn pn_server_address_from_endpoint(endpoint: Endpoint) -> PnServerAddress {
+    let protocol = match endpoint.protocol() {
+        Protocol::Quic => PnServerAddress::PROTOCOL_QUIC,
+        Protocol::Tcp => PnServerAddress::PROTOCOL_TCP,
+        Protocol::Ext(_) => PnServerAddress::PROTOCOL_QUIC,
+    };
+    PnServerAddress::new_with_protocol(protocol, endpoint.addr().ip(), endpoint.addr().port())
 }
 
 fn into_cmd_tunnel(

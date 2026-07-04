@@ -5,7 +5,7 @@ use crate::pn_traffic_service::{
     TrackedPnTrafficSnapshotProvider,
 };
 use crate::server_config::{
-    ConfigPnServerSelector, build_server_config, endpoint_to_pn_server, get_pn_server_config,
+    ConfigPnServerSelector, build_server_config, endpoints_to_pn_server, get_pn_server_config,
     get_sn_admin_config, get_sn_http_config, get_sn_jwt_config, get_sn_server_config,
     is_standalone_proxy_node, resolve_service_endpoints, select_default_config_file,
     should_start_pn_server,
@@ -169,11 +169,19 @@ async fn main() {
     let control_identity = local_identity.clone();
     let local_id = local_identity.get_id();
     let local_id_string = local_id.to_string();
-    let local_pn_server = endpoint_to_pn_server(&local_id_string, &sn_endpoint);
+    let pn_route_hint = pn_config
+        .control_server
+        .as_ref()
+        .map(|control_server| &control_server.endpoint);
+    let local_pn_server = endpoints_to_pn_server(
+        &local_id_string,
+        &sn_endpoint,
+        &eps,
+        pn_route_hint,
+        &pn_config.port_mapping,
+    );
     let pn_servers = if start_pn_server {
-        eps.iter()
-            .map(|endpoint| endpoint_to_pn_server(&local_id_string, endpoint))
-            .collect()
+        vec![local_pn_server.clone()]
     } else {
         Vec::new()
     };

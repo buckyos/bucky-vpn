@@ -7,6 +7,6 @@ COPY vpn_web/build/web/ /usr/share/nginx/html
 COPY target/x86_64-unknown-linux-musl/release/bucky-vpn-server /usr/share/bucky-vpn-server
 RUN chmod +x /usr/share/bucky-vpn-server
 
-EXPOSE 80
+EXPOSE 80 3624/udp
 
 CMD ["/bin/sh", "/start.sh"]

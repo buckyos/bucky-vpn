@@ -1,16 +1,17 @@
 use crate::sqlite_store_factory::{ProxyNodeApproval, ProxyNodeApprovalStatus, SqliteStoreFactory};
 use config::builder::DefaultState;
+use if_addrs::IfAddr;
 use p2p_frame::endpoint::{Endpoint, Protocol};
 use p2p_frame::p2p_identity::P2pId;
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use vpn_frame::PnServerInfo;
 use vpn_frame::errors::VpnResult;
 use vpn_frame::server::{NetworkId, NodeId, PnServerSelector, VpnStoreFactory};
+use vpn_frame::{PnServerAddress, PnServerInfo};
 
 const DEFAULT_YAML_CONFIG: &str = "config.yaml";
 const LEGACY_TOML_CONFIG: &str = "config.toml";
@@ -42,6 +43,13 @@ pub struct PnServerConfig {
     pub enabled: bool,
     pub control_server: Option<PnControlServerConfig>,
     pub report_interval_secs: u64,
+    pub port_mapping: PnPortMappingConfig,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PnPortMappingConfig {
+    pub quic: Option<u16>,
+    pub tcp: Option<u16>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -131,6 +139,7 @@ pub fn get_pn_server_config(
             .filter(|value| *value > 0)
             .map(|value| value as u64)
             .unwrap_or(5),
+        port_mapping: get_pn_port_mapping_config(config)?,
     })
 }
 
@@ -148,11 +157,118 @@ pub fn resolve_service_endpoints(
     _sn_config: &SnServerConfig,
     _pn_config: &PnServerConfig,
 ) -> Vec<Endpoint> {
-    vec![sn_endpoint]
+    let tcp_endpoint = Endpoint::from((Protocol::Tcp, *sn_endpoint.addr()));
+    if sn_endpoint.protocol() == Protocol::Tcp {
+        vec![sn_endpoint]
+    } else {
+        vec![sn_endpoint, tcp_endpoint]
+    }
 }
 
-pub fn endpoint_to_pn_server(id: &str, endpoint: &Endpoint) -> PnServerInfo {
-    PnServerInfo::new(id.to_string(), endpoint.addr().ip(), endpoint.addr().port())
+pub fn endpoint_to_pn_server(
+    id: &str,
+    endpoint: &Endpoint,
+    route_hint: Option<&Endpoint>,
+) -> PnServerInfo {
+    let addr = endpoint.addr();
+    PnServerInfo::new(
+        id.to_string(),
+        advertised_ip_for(addr.ip(), route_hint),
+        addr.port(),
+    )
+}
+
+pub fn endpoints_to_pn_server(
+    id: &str,
+    primary_endpoint: &Endpoint,
+    endpoints: &[Endpoint],
+    route_hint: Option<&Endpoint>,
+    port_mapping: &PnPortMappingConfig,
+) -> PnServerInfo {
+    let primary = endpoint_to_pn_server_address(primary_endpoint, route_hint, port_mapping);
+    let addresses = endpoints
+        .iter()
+        .map(|endpoint| endpoint_to_pn_server_address(endpoint, route_hint, port_mapping))
+        .collect();
+    PnServerInfo::new_with_primary_address(id.to_string(), primary, addresses)
+}
+
+pub fn endpoint_to_pn_server_address(
+    endpoint: &Endpoint,
+    route_hint: Option<&Endpoint>,
+    port_mapping: &PnPortMappingConfig,
+) -> PnServerAddress {
+    let addr = endpoint.addr();
+    PnServerAddress::new_with_protocol(
+        pn_address_protocol(endpoint.protocol()),
+        advertised_ip_for(addr.ip(), route_hint),
+        mapped_port_for(endpoint.protocol(), addr.port(), port_mapping),
+    )
+}
+
+fn mapped_port_for(
+    protocol: Protocol,
+    listen_port: u16,
+    port_mapping: &PnPortMappingConfig,
+) -> u16 {
+    match protocol {
+        Protocol::Quic => port_mapping.quic.unwrap_or(listen_port),
+        Protocol::Tcp => port_mapping.tcp.unwrap_or(listen_port),
+        Protocol::Ext(_) => listen_port,
+    }
+}
+
+fn pn_address_protocol(protocol: Protocol) -> &'static str {
+    match protocol {
+        Protocol::Quic => PnServerAddress::PROTOCOL_QUIC,
+        Protocol::Tcp => PnServerAddress::PROTOCOL_TCP,
+        Protocol::Ext(_) => PnServerAddress::PROTOCOL_QUIC,
+    }
+}
+
+fn advertised_ip_for(listen_ip: IpAddr, route_hint: Option<&Endpoint>) -> IpAddr {
+    if !listen_ip.is_unspecified() {
+        return listen_ip;
+    }
+
+    route_hint
+        .and_then(|endpoint| route_local_ip(listen_ip, *endpoint.addr()))
+        .or_else(|| first_non_loopback_interface_ip(listen_ip))
+        .unwrap_or(listen_ip)
+}
+
+fn route_local_ip(listen_ip: IpAddr, remote_addr: SocketAddr) -> Option<IpAddr> {
+    if !same_ip_family(listen_ip, remote_addr.ip()) {
+        return None;
+    }
+
+    let socket = UdpSocket::bind(SocketAddr::new(listen_ip, 0)).ok()?;
+    socket.connect(remote_addr).ok()?;
+    let local_ip = socket.local_addr().ok()?.ip();
+    (!local_ip.is_unspecified()).then_some(local_ip)
+}
+
+fn first_non_loopback_interface_ip(listen_ip: IpAddr) -> Option<IpAddr> {
+    if_addrs::get_if_addrs()
+        .ok()?
+        .into_iter()
+        .find_map(|iface| {
+            if iface.is_loopback() {
+                return None;
+            }
+            let ip = match iface.addr {
+                IfAddr::V4(addr) => IpAddr::V4(addr.ip),
+                IfAddr::V6(addr) => IpAddr::V6(addr.ip),
+            };
+            same_ip_family(listen_ip, ip).then_some(ip)
+        })
+}
+
+fn same_ip_family(left: IpAddr, right: IpAddr) -> bool {
+    matches!(
+        (left, right),
+        (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_))
+    )
 }
 
 pub struct ConfigPnServerSelector {
@@ -218,13 +334,74 @@ impl ConfigPnServerSelector {
             .collect()
     }
 
+    fn live_remote_pn_server(&self, id: &str) -> Option<PnServerInfo> {
+        let now = Instant::now();
+        let mut remote_pn_servers = self.remote_pn_servers.lock().unwrap();
+        remote_pn_servers
+            .retain(|_, (_, last_seen)| now.duration_since(*last_seen) <= self.remote_ttl);
+        remote_pn_servers
+            .get(id)
+            .map(|(pn_server, _)| pn_server.clone())
+    }
+
+    fn is_same_pn_server_id(pn_server: &PnServerInfo, id: &str) -> bool {
+        pn_server.id == id
+    }
+
+    fn merge_pn_server_addresses(
+        mut primary: PnServerInfo,
+        secondary: &PnServerInfo,
+    ) -> PnServerInfo {
+        primary.add_address(PnServerAddress::new(secondary.ip, secondary.port));
+        for address in &secondary.addresses {
+            primary.add_address(address.clone());
+        }
+        primary
+    }
+
+    fn merge_reported_remote_pn_server(&self, pn_server: &PnServerInfo) -> PnServerInfo {
+        self.remote_pn_servers
+            .lock()
+            .unwrap()
+            .get(&pn_server.id)
+            .map(|(reported, _)| reported)
+            .map(|reported| Self::merge_pn_server_addresses(reported.clone(), pn_server))
+            .unwrap_or_else(|| pn_server.clone())
+    }
+
+    async fn update_remote_heartbeat(&self, pn_server: PnServerInfo) -> VpnResult<()> {
+        if let Some(store_factory) = &self.store_factory {
+            let mut store = store_factory.get_vpn_store().await?;
+            store.ensure_proxy_node_pending(&pn_server).await?;
+        }
+        self.remote_pn_servers
+            .lock()
+            .unwrap()
+            .insert(pn_server.id.clone(), (pn_server, Instant::now()));
+        Ok(())
+    }
+
+    pub async fn report_observed_heartbeat(&self, pn_server: &PnServerInfo) -> VpnResult<()> {
+        let pn_server = self
+            .remote_pn_servers
+            .lock()
+            .unwrap()
+            .get(&pn_server.id)
+            .map(|(reported, _)| reported)
+            .map(|reported| Self::merge_pn_server_addresses(pn_server.clone(), reported))
+            .unwrap_or_else(|| pn_server.clone());
+        self.update_remote_heartbeat(pn_server).await
+    }
+
     pub fn is_live(&self, pn_server: &PnServerInfo) -> bool {
-        if self.pn_servers.iter().any(|server| server == pn_server) {
+        if self
+            .pn_servers
+            .iter()
+            .any(|server| Self::is_same_pn_server_id(server, &pn_server.id))
+        {
             return true;
         }
-        self.live_remote_pn_servers()
-            .iter()
-            .any(|server| server == pn_server)
+        self.live_remote_pn_server(&pn_server.id).is_some()
     }
 
     fn is_same_pn_node_id(pn_server: &PnServerInfo, node_id: &NodeId) -> bool {
@@ -284,7 +461,9 @@ impl ConfigPnServerSelector {
             .into_iter()
             .map(|approval: ProxyNodeApproval| ProxyNodeState {
                 live: self.is_live(&approval.pn_server),
-                pn_server: approval.pn_server,
+                pn_server: self
+                    .live_remote_pn_server(&approval.pn_server.id)
+                    .unwrap_or(approval.pn_server),
                 status: approval.status,
                 updated_at: approval.updated_at,
                 comment: approval.comment,
@@ -296,13 +475,14 @@ impl ConfigPnServerSelector {
 #[async_trait::async_trait]
 impl PnServerSelector for ConfigPnServerSelector {
     async fn is_valid(&self, pn_server: &PnServerInfo) -> VpnResult<bool> {
-        if self.pn_servers.iter().any(|server| server == pn_server) {
+        if self
+            .pn_servers
+            .iter()
+            .any(|server| Self::is_same_pn_server_id(server, &pn_server.id))
+        {
             return Ok(true);
         }
-        Ok(self
-            .live_remote_pn_servers()
-            .iter()
-            .any(|server| server == pn_server)
+        Ok(self.live_remote_pn_server(&pn_server.id).is_some()
             && self.is_remote_approved(pn_server).await?)
     }
 
@@ -323,7 +503,7 @@ impl PnServerSelector for ConfigPnServerSelector {
                 .then_with(|| left.ip.cmp(&right.ip))
                 .then_with(|| left.port.cmp(&right.port))
         });
-        pn_servers.dedup();
+        pn_servers.dedup_by(|left, right| left.id == right.id);
         let index = network_id as usize % pn_servers.len();
         Ok(Some(pn_servers[index].clone()))
     }
@@ -354,15 +534,8 @@ impl PnServerSelector for ConfigPnServerSelector {
     }
 
     async fn report_heartbeat(&self, pn_server: &PnServerInfo) -> VpnResult<()> {
-        if let Some(store_factory) = &self.store_factory {
-            let mut store = store_factory.get_vpn_store().await?;
-            store.ensure_proxy_node_pending(pn_server).await?;
-        }
-        self.remote_pn_servers
-            .lock()
-            .unwrap()
-            .insert(pn_server.id.clone(), (pn_server.clone(), Instant::now()));
-        Ok(())
+        let pn_server = self.merge_reported_remote_pn_server(pn_server);
+        self.update_remote_heartbeat(pn_server).await
     }
 }
 
@@ -370,6 +543,15 @@ fn get_pn_control_server_config(
     config: &config::Config,
 ) -> Result<Option<PnControlServerConfig>, config::ConfigError> {
     get_control_server_config_at(config, "pn.control_server")
+}
+
+fn get_pn_port_mapping_config(
+    config: &config::Config,
+) -> Result<PnPortMappingConfig, config::ConfigError> {
+    Ok(PnPortMappingConfig {
+        quic: get_optional_port_prefer(config, "pn.port_mapping.quic", "pn.map_ports.quic")?,
+        tcp: get_optional_port_prefer(config, "pn.port_mapping.tcp", "pn.map_ports.tcp")?,
+    })
 }
 
 fn get_control_server_config_at(
@@ -419,6 +601,32 @@ fn get_int_prefer(
         Err(config::ConfigError::NotFound(_)) => config.get_int(legacy),
         Err(err) => Err(err),
     }
+}
+
+fn get_optional_port_prefer(
+    config: &config::Config,
+    preferred: &str,
+    legacy: &str,
+) -> Result<Option<u16>, config::ConfigError> {
+    let value = match config.get_int(preferred) {
+        Ok(value) => Some(value),
+        Err(config::ConfigError::NotFound(_)) => match config.get_int(legacy) {
+            Ok(value) => Some(value),
+            Err(config::ConfigError::NotFound(_)) => None,
+            Err(err) => return Err(err),
+        },
+        Err(err) => return Err(err),
+    };
+    value
+        .map(|value| {
+            if value <= 0 || value > u16::MAX as i64 {
+                return Err(config::ConfigError::Message(format!(
+                    "{preferred} contains invalid port {value}"
+                )));
+            }
+            Ok(value as u16)
+        })
+        .transpose()
 }
 
 fn parse_quic_endpoint(address: &str) -> Result<Endpoint, config::ConfigError> {
@@ -640,11 +848,13 @@ jwt:
             enabled: true,
             control_server: None,
             report_interval_secs: 5,
+            port_mapping: PnPortMappingConfig::default(),
         };
         let disabled_pn = PnServerConfig {
             enabled: false,
             control_server: None,
             report_interval_secs: 5,
+            port_mapping: PnPortMappingConfig::default(),
         };
 
         assert!(should_start_pn_server(&enabled_sn, &enabled_pn));
@@ -661,11 +871,13 @@ jwt:
             enabled: true,
             control_server: None,
             report_interval_secs: 5,
+            port_mapping: PnPortMappingConfig::default(),
         };
         let disabled_pn = PnServerConfig {
             enabled: false,
             control_server: None,
             report_interval_secs: 5,
+            port_mapping: PnPortMappingConfig::default(),
         };
 
         assert!(is_standalone_proxy_node(&disabled_sn, &enabled_pn));
@@ -680,13 +892,16 @@ jwt:
             enabled: true,
             control_server: None,
             report_interval_secs: 5,
+            port_mapping: PnPortMappingConfig::default(),
         };
         let sn_endpoint = parse_quic_endpoint("127.0.0.1:3624").unwrap();
 
         let endpoints = resolve_service_endpoints(sn_endpoint.clone(), &sn, &pn);
 
-        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints.len(), 2);
         assert_eq!(format!("{:?}", endpoints[0]), format!("{:?}", sn_endpoint));
+        assert_eq!(endpoints[1].protocol(), Protocol::Tcp);
+        assert_eq!(endpoints[1].addr(), sn_endpoint.addr());
     }
 
     #[test]
@@ -697,14 +912,58 @@ jwt:
             enabled: true,
             control_server: None,
             report_interval_secs: 5,
+            port_mapping: PnPortMappingConfig::default(),
         };
         let sn_endpoint = parse_quic_endpoint("127.0.0.1:3624").unwrap();
 
         let endpoints = resolve_service_endpoints(sn_endpoint.clone(), &sn, &pn);
-        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints.len(), 2);
 
         let endpoints = resolve_service_endpoints(sn_endpoint, &disabled_sn, &pn);
-        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints.len(), 2);
+    }
+
+    #[test]
+    fn endpoint_to_pn_server_replaces_unspecified_ip_with_route_local_ip() {
+        let endpoint = parse_quic_endpoint("0.0.0.0:4600").unwrap();
+        let route_hint = parse_quic_endpoint("127.0.0.1:3624").unwrap();
+
+        let pn_server = endpoint_to_pn_server("remote-node-id", &endpoint, Some(&route_hint));
+
+        assert_eq!(pn_server.ip, "127.0.0.1".parse::<IpAddr>().unwrap());
+        assert_eq!(pn_server.port, 4600);
+    }
+
+    #[test]
+    fn endpoints_to_pn_server_reports_quic_and_tcp_mapped_ports() {
+        let quic_endpoint = parse_quic_endpoint("127.0.0.1:3624").unwrap();
+        let tcp_endpoint = Endpoint::from((Protocol::Tcp, *quic_endpoint.addr()));
+        let port_mapping = PnPortMappingConfig {
+            quic: Some(43624),
+            tcp: Some(443),
+        };
+
+        let pn_server = endpoints_to_pn_server(
+            "remote-node-id",
+            &quic_endpoint,
+            &[quic_endpoint, tcp_endpoint],
+            None,
+            &port_mapping,
+        );
+
+        assert_eq!(pn_server.ip, "127.0.0.1".parse::<IpAddr>().unwrap());
+        assert_eq!(pn_server.port, 43624);
+        assert_eq!(
+            pn_server.addresses,
+            vec![
+                PnServerAddress::new_with_protocol(
+                    PnServerAddress::PROTOCOL_QUIC,
+                    "127.0.0.1".parse().unwrap(),
+                    43624,
+                ),
+                PnServerAddress::new_tcp("127.0.0.1".parse().unwrap(), 443),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -743,6 +1002,117 @@ jwt:
 
         assert!(!selector.is_valid(&remote_proxy).await.unwrap());
         assert_eq!(selector.select(1).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn remote_proxy_observed_address_survives_reported_heartbeat() {
+        let selector =
+            ConfigPnServerSelector::new_with_remote_ttl(Vec::new(), Duration::from_secs(30));
+        let observed_proxy = PnServerInfo::new(
+            "remote-node-id".to_string(),
+            "127.0.0.1".parse().unwrap(),
+            4600,
+        );
+        let reported_proxy = PnServerInfo::new(
+            observed_proxy.id.clone(),
+            "10.0.0.2".parse().unwrap(),
+            observed_proxy.port,
+        );
+
+        selector
+            .report_observed_heartbeat(&observed_proxy)
+            .await
+            .unwrap();
+        selector.report_heartbeat(&reported_proxy).await.unwrap();
+
+        let selected = selector.select(1).await.unwrap().unwrap();
+        assert_eq!(selected.ip, observed_proxy.ip);
+        assert_eq!(
+            selected.addresses,
+            vec![
+                PnServerAddress::new(observed_proxy.ip, observed_proxy.port),
+                PnServerAddress::new(reported_proxy.ip, reported_proxy.port),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_proxy_observed_address_replaces_reported_heartbeat() {
+        let selector =
+            ConfigPnServerSelector::new_with_remote_ttl(Vec::new(), Duration::from_secs(30));
+        let reported_proxy = PnServerInfo::new(
+            "remote-node-id".to_string(),
+            "10.0.0.2".parse().unwrap(),
+            4600,
+        );
+        let observed_proxy = PnServerInfo::new(
+            reported_proxy.id.clone(),
+            "127.0.0.1".parse().unwrap(),
+            reported_proxy.port,
+        );
+
+        selector.report_heartbeat(&reported_proxy).await.unwrap();
+        selector
+            .report_observed_heartbeat(&observed_proxy)
+            .await
+            .unwrap();
+
+        let selected = selector.select(1).await.unwrap().unwrap();
+        assert_eq!(selected.ip, observed_proxy.ip);
+        assert_eq!(
+            selected.addresses,
+            vec![
+                PnServerAddress::new(observed_proxy.ip, observed_proxy.port),
+                PnServerAddress::new(reported_proxy.ip, reported_proxy.port),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_proxy_observed_address_survives_reported_heartbeat_in_store() {
+        let db_dir = new_temp_dir();
+        let db_path = db_dir.join("vpn.db");
+        let store_factory = Arc::new(
+            SqliteStoreFactory::create(db_path.to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        {
+            let mut store = store_factory.get_vpn_store().await.unwrap();
+            store.init_db().await.unwrap();
+        }
+        let selector = ConfigPnServerSelector::new_with_store_and_remote_ttl(
+            Vec::new(),
+            store_factory.clone(),
+            Duration::from_secs(30),
+        );
+        let observed_proxy = PnServerInfo::new(
+            "remote-node-id".to_string(),
+            "127.0.0.1".parse().unwrap(),
+            4600,
+        );
+        let reported_proxy = PnServerInfo::new(
+            observed_proxy.id.clone(),
+            "10.0.0.2".parse().unwrap(),
+            observed_proxy.port,
+        );
+
+        selector
+            .report_observed_heartbeat(&observed_proxy)
+            .await
+            .unwrap();
+        selector.report_heartbeat(&reported_proxy).await.unwrap();
+
+        let nodes = selector.list_proxy_nodes().await.unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].pn_server.ip, observed_proxy.ip);
+        assert_eq!(
+            nodes[0].pn_server.addresses,
+            vec![
+                PnServerAddress::new(observed_proxy.ip, observed_proxy.port),
+                PnServerAddress::new(reported_proxy.ip, reported_proxy.port),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -865,6 +1235,34 @@ pn:
             })
         );
         assert_eq!(pn_config.report_interval_secs, 9);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn yaml_can_configure_pn_port_mapping() {
+        let dir = new_temp_dir();
+        fs::write(
+            dir.join(DEFAULT_YAML_CONFIG),
+            r#"
+pn:
+  port_mapping:
+    quic: 43624
+    tcp: 443
+"#,
+        )
+        .unwrap();
+
+        let config = build_server_config(None, &dir).unwrap();
+        let pn_config = get_pn_server_config(&config).unwrap();
+
+        assert_eq!(
+            pn_config.port_mapping,
+            PnPortMappingConfig {
+                quic: Some(43624),
+                tcp: Some(443),
+            }
+        );
 
         let _ = fs::remove_dir_all(dir);
     }

@@ -73,20 +73,59 @@ class TrafficStats {
 }
 
 @JsonSerializable()
+class PnServerAddress {
+  String protocol;
+  String ip;
+  int port;
+
+  PnServerAddress({
+    this.protocol = 'quic',
+    required this.ip,
+    required this.port,
+  });
+
+  factory PnServerAddress.fromJson(Map<String, dynamic> json) =>
+      _$PnServerAddressFromJson(json);
+  Map<String, dynamic> toJson() => _$PnServerAddressToJson(this);
+
+  String get display => '${protocol.toUpperCase()} $ip:$port';
+}
+
+@JsonSerializable()
 class PnServerInfo {
   String id;
   String ip;
   int port;
+  List<PnServerAddress> addresses;
 
   PnServerInfo({
     required this.id,
     required this.ip,
     required this.port,
-  });
+    List<PnServerAddress>? addresses,
+  }) : addresses = addresses ?? [];
 
   factory PnServerInfo.fromJson(Map<String, dynamic> json) =>
       _$PnServerInfoFromJson(json);
   Map<String, dynamic> toJson() => _$PnServerInfoToJson(this);
+
+  List<PnServerAddress> get allAddresses {
+    final result = <PnServerAddress>[];
+    void add(PnServerAddress address) {
+      if (!result.any((item) =>
+          item.protocol == address.protocol &&
+          item.ip == address.ip &&
+          item.port == address.port)) {
+        result.add(address);
+      }
+    }
+
+    add(PnServerAddress(protocol: 'quic', ip: ip, port: port));
+    for (final address in addresses) {
+      add(address);
+    }
+    return result;
+  }
 }
 
 @JsonSerializable()

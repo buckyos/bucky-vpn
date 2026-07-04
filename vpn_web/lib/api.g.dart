@@ -47,10 +47,27 @@ Map<String, dynamic> _$TrafficStatsToJson(TrafficStats instance) =>
       'rx_speed': instance.rxSpeed,
     };
 
+PnServerAddress _$PnServerAddressFromJson(Map<String, dynamic> json) =>
+    PnServerAddress(
+      protocol: json['protocol'] as String? ?? 'quic',
+      ip: json['ip'] as String,
+      port: (json['port'] as num).toInt(),
+    );
+
+Map<String, dynamic> _$PnServerAddressToJson(PnServerAddress instance) =>
+    <String, dynamic>{
+      'protocol': instance.protocol,
+      'ip': instance.ip,
+      'port': instance.port,
+    };
+
 PnServerInfo _$PnServerInfoFromJson(Map<String, dynamic> json) => PnServerInfo(
       id: json['id'] as String,
       ip: json['ip'] as String,
       port: (json['port'] as num).toInt(),
+      addresses: (json['addresses'] as List<dynamic>?)
+          ?.map((e) => PnServerAddress.fromJson(e as Map<String, dynamic>))
+          .toList(),
     );
 
 Map<String, dynamic> _$PnServerInfoToJson(PnServerInfo instance) =>
@@ -58,6 +75,7 @@ Map<String, dynamic> _$PnServerInfoToJson(PnServerInfo instance) =>
       'id': instance.id,
       'ip': instance.ip,
       'port': instance.port,
+      'addresses': instance.addresses,
     };
 
 ProxyNode _$ProxyNodeFromJson(Map<String, dynamic> json) => ProxyNode(

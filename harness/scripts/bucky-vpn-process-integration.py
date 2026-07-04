@@ -132,6 +132,7 @@ SCENARIOS = (
 )
 
 BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+BASE36_ALPHABET = "0123456789abcdefghijklmnoqprstuvwxyz"
 
 
 def base58_encode(data: bytes) -> str:
@@ -142,6 +143,35 @@ def base58_encode(data: bytes) -> str:
         encoded = BASE58_ALPHABET[remainder] + encoded
     leading_zeroes = len(data) - len(data.lstrip(b"\0"))
     return "1" * leading_zeroes + (encoded or "")
+
+
+def base58_decode(value: str) -> bytes:
+    number = 0
+    for char in value:
+        try:
+            digit = BASE58_ALPHABET.index(char)
+        except ValueError as exc:
+            raise IntegrationError(f"invalid base58 value: {value}") from exc
+        number = number * 58 + digit
+    decoded = b"" if number == 0 else number.to_bytes((number.bit_length() + 7) // 8, "big")
+    leading_zeroes = len(value) - len(value.lstrip("1"))
+    return b"\0" * leading_zeroes + decoded
+
+
+def base36_encode(data: bytes) -> str:
+    zeroes = len(data) - len(data.lstrip(b"\0"))
+    number = int.from_bytes(data, byteorder="big")
+    encoded = ""
+    while number > 0:
+        number, remainder = divmod(number, 36)
+        encoded = BASE36_ALPHABET[remainder] + encoded
+    return BASE36_ALPHABET[0] * zeroes + encoded
+
+
+def normalize_node_id_for_api(value: str) -> str:
+    if all(char in BASE36_ALPHABET for char in value):
+        return value
+    return base36_encode(base58_decode(value))
 
 
 def sha256_join(parts: list[bytes]) -> bytes:
@@ -1308,7 +1338,10 @@ def read_joined_node_ids_by_name(
                 ),
                 ordered_names,
             )
-            found = {str(name): str(node_id) for name, node_id in rows}
+            found = {
+                str(name): normalize_node_id_for_api(str(node_id))
+                for name, node_id in rows
+            }
             if expected_names.issubset(found.keys()):
                 return found
         except (sqlite3.Error, IntegrationError) as exc:

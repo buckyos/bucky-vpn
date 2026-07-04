@@ -46,8 +46,26 @@ impl PnConnectionValidator for VpnServerPnConnectionValidator {
                 )
             })?;
         if allowed {
+            log::debug!(
+                "pn connection accepted by vpn server pn_node={} source={} target={} kind={:?} purpose={} control={}",
+                self.local_pn_node_id.to_base36(),
+                source_node_id.to_base36(),
+                target_node_id.to_base36(),
+                ctx.kind,
+                ctx.purpose,
+                ctx.is_control
+            );
             Ok(ValidateResult::Accept)
         } else {
+            log::warn!(
+                "pn connection rejected by vpn server pn_node={} source={} target={} kind={:?} purpose={} control={}",
+                self.local_pn_node_id.to_base36(),
+                source_node_id.to_base36(),
+                target_node_id.to_base36(),
+                ctx.kind,
+                ctx.purpose,
+                ctx.is_control
+            );
             Ok(ValidateResult::Reject(format!(
                 "pn connection rejected by vpn server policy source={} target={}",
                 ctx.from, ctx.to
