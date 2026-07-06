@@ -55,6 +55,7 @@ pub struct PnPortMappingConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PnControlServerConfig {
     pub id: String,
+    pub name: Option<String>,
     pub endpoint: Endpoint,
 }
 
@@ -96,6 +97,13 @@ pub fn get_sn_server_config(config: &config::Config) -> SnServerConfig {
     SnServerConfig {
         enabled: config.get_bool("sn.enabled").unwrap_or(true),
     }
+}
+
+pub fn get_server_name_config(config: &config::Config) -> Option<String> {
+    config.get_string("name").ok().and_then(|name| {
+        let name = name.trim().to_owned();
+        if name.is_empty() { None } else { Some(name) }
+    })
 }
 
 pub fn get_sn_http_config(config: &config::Config) -> Result<SnHttpConfig, config::ConfigError> {
@@ -323,11 +331,24 @@ impl ConfigPnServerSelector {
         }
     }
 
-    fn live_remote_pn_servers(&self) -> Vec<PnServerInfo> {
+    fn prune_expired_remote_pn_servers(
+        &self,
+        remote_pn_servers: &mut HashMap<String, (PnServerInfo, Instant)>,
+    ) {
         let now = Instant::now();
+        let remote_ttl = self.remote_ttl;
+        remote_pn_servers.retain(|_, (pn_server, last_seen)| {
+            let live = now.duration_since(*last_seen) <= remote_ttl;
+            if !live {
+                log_proxy_node_offline(pn_server, now.duration_since(*last_seen));
+            }
+            live
+        });
+    }
+
+    fn live_remote_pn_servers(&self) -> Vec<PnServerInfo> {
         let mut remote_pn_servers = self.remote_pn_servers.lock().unwrap();
-        remote_pn_servers
-            .retain(|_, (_, last_seen)| now.duration_since(*last_seen) <= self.remote_ttl);
+        self.prune_expired_remote_pn_servers(&mut remote_pn_servers);
         remote_pn_servers
             .values()
             .map(|(pn_server, _)| pn_server.clone())
@@ -335,10 +356,8 @@ impl ConfigPnServerSelector {
     }
 
     fn live_remote_pn_server(&self, id: &str) -> Option<PnServerInfo> {
-        let now = Instant::now();
         let mut remote_pn_servers = self.remote_pn_servers.lock().unwrap();
-        remote_pn_servers
-            .retain(|_, (_, last_seen)| now.duration_since(*last_seen) <= self.remote_ttl);
+        self.prune_expired_remote_pn_servers(&mut remote_pn_servers);
         remote_pn_servers
             .get(id)
             .map(|(pn_server, _)| pn_server.clone())
@@ -352,6 +371,9 @@ impl ConfigPnServerSelector {
         mut primary: PnServerInfo,
         secondary: &PnServerInfo,
     ) -> PnServerInfo {
+        if secondary.name.is_some() {
+            primary.name = secondary.name.clone();
+        }
         primary.add_address(PnServerAddress::new(secondary.ip, secondary.port));
         for address in &secondary.addresses {
             primary.add_address(address.clone());
@@ -374,10 +396,22 @@ impl ConfigPnServerSelector {
             let mut store = store_factory.get_vpn_store().await?;
             store.ensure_proxy_node_pending(&pn_server).await?;
         }
-        self.remote_pn_servers
-            .lock()
-            .unwrap()
-            .insert(pn_server.id.clone(), (pn_server, Instant::now()));
+        let now = Instant::now();
+        let mut remote_pn_servers = self.remote_pn_servers.lock().unwrap();
+        let was_live = remote_pn_servers
+            .get(&pn_server.id)
+            .map(|(previous, last_seen)| {
+                let live = now.duration_since(*last_seen) <= self.remote_ttl;
+                if !live {
+                    log_proxy_node_offline(previous, now.duration_since(*last_seen));
+                }
+                live
+            })
+            .unwrap_or(false);
+        if !was_live {
+            log_proxy_node_online(&pn_server);
+        }
+        remote_pn_servers.insert(pn_server.id.clone(), (pn_server, now));
         Ok(())
     }
 
@@ -472,6 +506,31 @@ impl ConfigPnServerSelector {
     }
 }
 
+fn format_pn_server_name(pn_server: &PnServerInfo) -> &str {
+    pn_server.name.as_deref().unwrap_or("<none>")
+}
+
+fn log_proxy_node_online(pn_server: &PnServerInfo) {
+    log::info!(
+        "proxy node is online id={} name={} endpoint={}:{}",
+        pn_server.id,
+        format_pn_server_name(pn_server),
+        pn_server.ip,
+        pn_server.port
+    );
+}
+
+fn log_proxy_node_offline(pn_server: &PnServerInfo, offline_after: Duration) {
+    log::info!(
+        "proxy node is offline id={} name={} endpoint={}:{} offline_after_secs={}",
+        pn_server.id,
+        format_pn_server_name(pn_server),
+        pn_server.ip,
+        pn_server.port,
+        offline_after.as_secs()
+    );
+}
+
 #[async_trait::async_trait]
 impl PnServerSelector for ConfigPnServerSelector {
     async fn is_valid(&self, pn_server: &PnServerInfo) -> VpnResult<bool> {
@@ -559,13 +618,16 @@ fn get_control_server_config_at(
     prefix: &str,
 ) -> Result<Option<PnControlServerConfig>, config::ConfigError> {
     let id_key = format!("{prefix}.id");
+    let name_key = format!("{prefix}.name");
     let endpoint_key = format!("{prefix}.endpoint");
     let id = match config.get_string(id_key.as_str()) {
         Ok(id) => id,
         Err(config::ConfigError::NotFound(_)) => {
-            if config.get_string(endpoint_key.as_str()).is_ok() {
+            if config.get_string(endpoint_key.as_str()).is_ok()
+                || config.get_string(name_key.as_str()).is_ok()
+            {
                 return Err(config::ConfigError::Message(format!(
-                    "{prefix}.id is required when {prefix}.endpoint is configured"
+                    "{prefix}.id is required when {prefix}.endpoint or {prefix}.name is configured"
                 )));
             }
             return Ok(None);
@@ -575,8 +637,23 @@ fn get_control_server_config_at(
     let endpoint = config.get_string(endpoint_key.as_str())?;
     Ok(Some(PnControlServerConfig {
         id,
+        name: get_optional_trimmed_string(config, name_key.as_str())?,
         endpoint: parse_quic_endpoint(&endpoint)?,
     }))
+}
+
+fn get_optional_trimmed_string(
+    config: &config::Config,
+    key: &str,
+) -> Result<Option<String>, config::ConfigError> {
+    match config.get_string(key) {
+        Ok(value) => {
+            let value = value.trim().to_owned();
+            Ok(if value.is_empty() { None } else { Some(value) })
+        }
+        Err(config::ConfigError::NotFound(_)) => Ok(None),
+        Err(err) => Err(err),
+    }
 }
 
 fn get_string_prefer(
@@ -741,6 +818,24 @@ pn:
 
         assert!(!sn_config.enabled);
         assert!(!pn_config.enabled);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn yaml_can_configure_server_name() {
+        let dir = new_temp_dir();
+        fs::write(
+            dir.join(DEFAULT_YAML_CONFIG),
+            r#"
+name: " proxy-a "
+"#,
+        )
+        .unwrap();
+
+        let config = build_server_config(None, &dir).unwrap();
+
+        assert_eq!(get_server_name_config(&config).as_deref(), Some("proxy-a"));
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -1017,7 +1112,8 @@ jwt:
             observed_proxy.id.clone(),
             "10.0.0.2".parse().unwrap(),
             observed_proxy.port,
-        );
+        )
+        .with_name(Some("remote-proxy".to_string()));
 
         selector
             .report_observed_heartbeat(&observed_proxy)
@@ -1026,6 +1122,7 @@ jwt:
         selector.report_heartbeat(&reported_proxy).await.unwrap();
 
         let selected = selector.select(1).await.unwrap().unwrap();
+        assert_eq!(selected.name.as_deref(), Some("remote-proxy"));
         assert_eq!(selected.ip, observed_proxy.ip);
         assert_eq!(
             selected.addresses,
@@ -1044,7 +1141,8 @@ jwt:
             "remote-node-id".to_string(),
             "10.0.0.2".parse().unwrap(),
             4600,
-        );
+        )
+        .with_name(Some("remote-proxy".to_string()));
         let observed_proxy = PnServerInfo::new(
             reported_proxy.id.clone(),
             "127.0.0.1".parse().unwrap(),
@@ -1058,6 +1156,7 @@ jwt:
             .unwrap();
 
         let selected = selector.select(1).await.unwrap().unwrap();
+        assert_eq!(selected.name.as_deref(), Some("remote-proxy"));
         assert_eq!(selected.ip, observed_proxy.ip);
         assert_eq!(
             selected.addresses,
@@ -1095,7 +1194,8 @@ jwt:
             observed_proxy.id.clone(),
             "10.0.0.2".parse().unwrap(),
             observed_proxy.port,
-        );
+        )
+        .with_name(Some("remote-proxy".to_string()));
 
         selector
             .report_observed_heartbeat(&observed_proxy)
@@ -1105,6 +1205,7 @@ jwt:
 
         let nodes = selector.list_proxy_nodes().await.unwrap();
         assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].pn_server.name.as_deref(), Some("remote-proxy"));
         assert_eq!(nodes[0].pn_server.ip, observed_proxy.ip);
         assert_eq!(
             nodes[0].pn_server.addresses,
@@ -1231,6 +1332,7 @@ pn:
             pn_config.control_server,
             Some(PnControlServerConfig {
                 id: "server-peer".to_string(),
+                name: None,
                 endpoint: parse_quic_endpoint("127.0.0.1:3624").unwrap(),
             })
         );

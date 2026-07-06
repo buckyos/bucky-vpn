@@ -19,10 +19,11 @@ levels:
       notes:
         - Covers CHG-pn-server-info-contract protocol value behavior without endpoint-string compatibility.
         - Covers CHG-node-id-base36-contract canonical NodeId text helpers.
+        - Covers CHG-pn-server-reported-name-contract optional reported-name normalization and fallback.
     steps:
       - id: vpn-frame-unit
         name: Run vpn-frame crate tests
-        change_ids: ["CHG-pn-server-info-contract", "CHG-node-id-base36-contract"]
+        change_ids: ["CHG-pn-server-info-contract", "CHG-node-id-base36-contract", "CHG-pn-server-reported-name-contract"]
         run: ["python3", "./harness/scripts/test-run.py", "vpn-frame", "unit"]
   dv:
     mode: enabled
@@ -39,7 +40,7 @@ levels:
     steps:
       - id: vpn-frame-dv
         name: Build vpn-frame crate
-        change_ids: ["CHG-pn-server-info-contract", "CHG-node-id-base36-contract"]
+        change_ids: ["CHG-pn-server-info-contract", "CHG-node-id-base36-contract", "CHG-pn-server-reported-name-contract"]
         run: ["python3", "./harness/scripts/test-run.py", "vpn-frame", "dv"]
   integration:
     mode: enabled
@@ -54,9 +55,9 @@ levels:
       env: []
       services: []
       notes:
-        - Covers direct consumers of NodeNetwork.pn_server, ReportPnTrafficStatsReq.pn_server, and NodeId canonical text.
+        - Covers direct consumers of NodeNetwork.pn_server, ReportPnTrafficStatsReq.pn_server, optional PN server name, and NodeId canonical text.
     steps:
       - id: vpn-frame-integration
         name: Run workspace tests
-        change_ids: ["CHG-pn-server-info-contract", "CHG-node-id-base36-contract"]
+        change_ids: ["CHG-pn-server-info-contract", "CHG-node-id-base36-contract", "CHG-pn-server-reported-name-contract"]
         run: ["python3", "./harness/scripts/test-run.py", "vpn-frame", "integration"]

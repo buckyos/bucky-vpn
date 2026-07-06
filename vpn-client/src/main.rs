@@ -8,7 +8,9 @@ mod windows_main;
 
 use crate::api::Api;
 use crate::cli::{Cli, LocalApiConfig, load_env_config, load_file_config, resolve_data_dir};
-use crate::p2p_vpn::{JoinRecord, init_p2p_vpn_client_manager, vpn_client_manager};
+use crate::p2p_vpn::{
+    JoinRecord, P2pVpnClientKey, init_p2p_vpn_client_manager, vpn_client_manager,
+};
 use crate::setting::Setting;
 use p2p_frame::endpoint::{Endpoint, Protocol};
 use p2p_frame::stack::{P2pConfig, create_p2p_env};
@@ -21,6 +23,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const SN_PORT: u16 = 3624;
+
+fn p2p_listen_endpoints(p2p_port: u16) -> Vec<Endpoint> {
+    let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, p2p_port));
+    vec![
+        Endpoint::from((Protocol::Quic, addr)),
+        Endpoint::from((Protocol::Tcp, addr)),
+    ]
+}
 
 async fn run_daemon() {
     let config = load_env_config();
@@ -53,10 +63,8 @@ async fn run_daemon() {
             .unwrap();
     }
 
-    let eps = vec![Endpoint::from((
-        Protocol::Quic,
-        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, p2p_port)),
-    ))];
+    let eps = p2p_listen_endpoints(p2p_port);
+    log::info!("client p2p listen endpoints: {:?}", eps);
     let p2p_config = P2pConfig::new(
         Arc::new(X509IdentityFactory),
         Arc::new(X509IdentityCertFactory),
@@ -65,6 +73,7 @@ async fn run_daemon() {
     .set_quic_connect_timeout(Duration::from_secs(8))
     .set_quic_idle_time(Duration::from_secs(30));
     let p2p_env = create_p2p_env(p2p_config).await.unwrap();
+    log::info!("client p2p env endpoints: {:?}", p2p_env.endpoints());
 
     init_p2p_vpn_client_manager(p2p_env, vpn_config_path.clone(), 34245, "1.0.0".to_string())
         .unwrap();
@@ -79,29 +88,28 @@ async fn run_daemon() {
     if let Some(records) = setting.get::<Vec<JoinRecord>>("joined_networks") {
         for record in records {
             tokio::spawn(async move {
+                let client_key = P2pVpnClientKey::new(
+                    record.server_id,
+                    record.server_ip,
+                    record.server_port,
+                    record.server_name,
+                );
+                let manager_key = client_key.to_manager_key();
                 let mut interval = 5;
                 loop {
-                    let vpn_client = match vpn_client_manager()
-                        .get_client(
-                            format!(
-                                "{}_{}:{}",
-                                record.server_id, record.server_ip, record.server_port
-                            )
-                            .as_str(),
-                        )
-                        .await
-                    {
-                        Ok(v) => v,
-                        Err(_) => {
-                            log::error!("get client failed");
-                            interval *= 2;
-                            if interval > 3600 {
-                                interval = 3600;
+                    let vpn_client =
+                        match vpn_client_manager().get_client(manager_key.as_str()).await {
+                            Ok(v) => v,
+                            Err(_) => {
+                                log::error!("get client failed");
+                                interval *= 2;
+                                if interval > 3600 {
+                                    interval = 3600;
+                                }
+                                tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+                                continue;
                             }
-                            tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
-                            continue;
-                        }
-                    };
+                        };
                     vpn_client.run();
                     break;
                 }
@@ -151,6 +159,12 @@ fn main() {
                         .required(true),
                 )
                 .arg(
+                    clap::Arg::new("server_name")
+                        .long("server_name")
+                        .help("The server name used when connecting to SN")
+                        .required(false),
+                )
+                .arg(
                     clap::Arg::new("network_id")
                         .long("network_id")
                         .value_parser(clap::value_parser!(u64))
@@ -173,6 +187,7 @@ fn main() {
         Some(("join", matches)) => {
             let server = matches.get_one::<String>("server").unwrap().clone();
             let server_id = matches.get_one::<String>("server_id").unwrap().clone();
+            let server_name = matches.get_one::<String>("server_name").map(|v| v.clone());
             let id = matches.get_one::<u64>("network_id").unwrap().clone();
             let name = matches.get_one::<String>("name").map(|v| v.clone());
             let server_port = matches.get_one::<u16>("port").unwrap_or(&SN_PORT).clone();
@@ -181,7 +196,7 @@ fn main() {
                 .build()
                 .unwrap()
                 .block_on(async move {
-                    match Cli::join(server, server_port, server_id, id, name).await {
+                    match Cli::join(server, server_port, server_id, server_name, id, name).await {
                         Ok(_) => {
                             println!("Join success");
                         }
@@ -209,5 +224,22 @@ fn main() {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn p2p_listen_endpoints_register_quic_and_tcp() {
+        let endpoints = p2p_listen_endpoints(3622);
+        let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 3622));
+
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0].protocol(), Protocol::Quic);
+        assert_eq!(endpoints[0].addr(), &addr);
+        assert_eq!(endpoints[1].protocol(), Protocol::Tcp);
+        assert_eq!(endpoints[1].addr(), &addr);
     }
 }

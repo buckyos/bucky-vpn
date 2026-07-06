@@ -35,6 +35,7 @@ fn pn_server_addresses_db_key(pn_server: &PnServerInfo) -> VpnResult<String> {
 
 fn pn_server_from_db(
     id: String,
+    name: String,
     ip: String,
     port: i64,
     addresses: String,
@@ -47,25 +48,35 @@ fn pn_server_from_db(
     } else {
         serde_json::from_str(&addresses).map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?
     };
-    Ok(Some(PnServerInfo::new_with_addresses(
-        id,
-        IpAddr::from_str(&ip).map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?,
-        port as u16,
-        addresses,
-    )))
+    Ok(Some(
+        PnServerInfo::new_with_addresses(
+            id,
+            IpAddr::from_str(&ip).map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?,
+            port as u16,
+            addresses,
+        )
+        .with_name(Some(name)),
+    ))
 }
 
 fn pn_server_db_parts(
     pn_server: Option<&PnServerInfo>,
-) -> VpnResult<(String, String, i64, String)> {
+) -> VpnResult<(String, String, String, i64, String)> {
     match pn_server {
         Some(pn_server) => Ok((
             pn_server.id.clone(),
+            pn_server.name.clone().unwrap_or_default(),
             pn_server.ip.to_string(),
             pn_server.port as i64,
             pn_server_addresses_db_key(pn_server)?,
         )),
-        None => Ok(("".to_string(), "".to_string(), 0, "".to_string())),
+        None => Ok((
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            0,
+            "".to_string(),
+        )),
     }
 }
 
@@ -163,6 +174,7 @@ impl SqliteVpnStore {
             ipv6 TEXT,
             ipv6_mask INTEGER,
             pn_server_id TEXT NOT NULL DEFAULT '',
+            pn_server_name TEXT NOT NULL DEFAULT '',
             pn_server_ip TEXT NOT NULL DEFAULT '',
             pn_server_port INTEGER NOT NULL DEFAULT 0,
             pn_server_addresses TEXT NOT NULL DEFAULT '',
@@ -225,6 +237,7 @@ impl SqliteVpnStore {
 
         let sql = r#"CREATE TABLE IF NOT EXISTS pn_proxy_node (
             pn_server_id TEXT PRIMARY KEY,
+            pn_server_name TEXT NOT NULL DEFAULT '',
             pn_server_ip TEXT NOT NULL,
             pn_server_port INTEGER NOT NULL,
             pn_server_addresses TEXT NOT NULL DEFAULT '',
@@ -256,6 +269,7 @@ impl SqliteVpnStore {
 
         for (column, definition) in [
             ("pn_server_id", "TEXT NOT NULL DEFAULT ''"),
+            ("pn_server_name", "TEXT NOT NULL DEFAULT ''"),
             ("pn_server_ip", "TEXT NOT NULL DEFAULT ''"),
             ("pn_server_port", "INTEGER NOT NULL DEFAULT 0"),
             ("pn_server_addresses", "TEXT NOT NULL DEFAULT ''"),
@@ -280,7 +294,10 @@ impl SqliteVpnStore {
             .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
         let columns: Vec<String> = rows.iter().map(|row| row.get("name")).collect();
 
-        for (column, definition) in [("pn_server_addresses", "TEXT NOT NULL DEFAULT ''")] {
+        for (column, definition) in [
+            ("pn_server_name", "TEXT NOT NULL DEFAULT ''"),
+            ("pn_server_addresses", "TEXT NOT NULL DEFAULT ''"),
+        ] {
             if !columns.iter().any(|existing| existing == column) {
                 let sql = format!(
                     "ALTER TABLE pn_proxy_node ADD COLUMN {} {}",
@@ -422,9 +439,10 @@ impl SqliteVpnStore {
     }
 
     pub async fn ensure_proxy_node_pending(&mut self, pn_server: &PnServerInfo) -> VpnResult<()> {
-        let sql = r#"INSERT INTO pn_proxy_node (pn_server_id, pn_server_ip, pn_server_port, pn_server_addresses, status, updated_at, comment)
-            VALUES (?, ?, ?, ?, ?, ?, '')
+        let sql = r#"INSERT INTO pn_proxy_node (pn_server_id, pn_server_name, pn_server_ip, pn_server_port, pn_server_addresses, status, updated_at, comment)
+            VALUES (?, ?, ?, ?, ?, ?, ?, '')
             ON CONFLICT(pn_server_id) DO UPDATE SET
+                pn_server_name = excluded.pn_server_name,
                 pn_server_ip = excluded.pn_server_ip,
                 pn_server_port = excluded.pn_server_port,
                 pn_server_addresses = excluded.pn_server_addresses,
@@ -433,6 +451,7 @@ impl SqliteVpnStore {
             .execute_sql(
                 sql_query(sql)
                     .bind(&pn_server.id)
+                    .bind(pn_server.name.clone().unwrap_or_default())
                     .bind(pn_server.ip.to_string())
                     .bind(pn_server.port as i64)
                     .bind(pn_server_addresses_db_key(pn_server)?)
@@ -450,9 +469,10 @@ impl SqliteVpnStore {
         status: ProxyNodeApprovalStatus,
         comment: Option<&str>,
     ) -> VpnResult<()> {
-        let sql = r#"INSERT INTO pn_proxy_node (pn_server_id, pn_server_ip, pn_server_port, pn_server_addresses, status, updated_at, comment)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+        let sql = r#"INSERT INTO pn_proxy_node (pn_server_id, pn_server_name, pn_server_ip, pn_server_port, pn_server_addresses, status, updated_at, comment)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(pn_server_id) DO UPDATE SET
+                pn_server_name = excluded.pn_server_name,
                 pn_server_ip = excluded.pn_server_ip,
                 pn_server_port = excluded.pn_server_port,
                 pn_server_addresses = excluded.pn_server_addresses,
@@ -463,6 +483,7 @@ impl SqliteVpnStore {
             .execute_sql(
                 sql_query(sql)
                     .bind(&pn_server.id)
+                    .bind(pn_server.name.clone().unwrap_or_default())
                     .bind(pn_server.ip.to_string())
                     .bind(pn_server.port as i64)
                     .bind(pn_server_addresses_db_key(pn_server)?)
@@ -504,7 +525,7 @@ impl SqliteVpnStore {
     }
 
     pub async fn list_proxy_node_approvals(&mut self) -> VpnResult<Vec<ProxyNodeApproval>> {
-        let sql = r#"SELECT pn_server_id, pn_server_ip, pn_server_port, pn_server_addresses, status, updated_at, comment FROM pn_proxy_node ORDER BY pn_server_id"#;
+        let sql = r#"SELECT pn_server_id, pn_server_name, pn_server_ip, pn_server_port, pn_server_addresses, status, updated_at, comment FROM pn_proxy_node ORDER BY pn_server_id"#;
         let rows = self
             .conn
             .query_all(sql_query(sql))
@@ -514,12 +535,14 @@ impl SqliteVpnStore {
         for row in rows {
             let status: String = row.get("status");
             let pn_server_id: String = row.get("pn_server_id");
+            let pn_server_name: String = row.get("pn_server_name");
             let pn_server_ip: String = row.get("pn_server_ip");
             let pn_server_port: i64 = row.get("pn_server_port");
             let pn_server_addresses: String = row.get("pn_server_addresses");
             approvals.push(ProxyNodeApproval {
                 pn_server: pn_server_from_db(
                     pn_server_id,
+                    pn_server_name,
                     pn_server_ip,
                     pn_server_port,
                     pn_server_addresses,
@@ -872,7 +895,7 @@ impl NetworkStore for SqliteVpnStore {
     }
 
     async fn get_networks(&mut self, group_id: &NetworkGroupId) -> VpnResult<Vec<Network>> {
-        let sql = r#"SELECT id, name, ip, mask, ipv6, ipv6_mask, pn_server_id, pn_server_ip, pn_server_port, pn_server_addresses FROM network WHERE group_id = ?"#;
+        let sql = r#"SELECT id, name, ip, mask, ipv6, ipv6_mask, pn_server_id, pn_server_name, pn_server_ip, pn_server_port, pn_server_addresses FROM network WHERE group_id = ?"#;
         let rows = self
             .conn
             .query_all(sql_query(sql).bind(*group_id as i64))
@@ -887,11 +910,13 @@ impl NetworkStore for SqliteVpnStore {
             let ipv6: String = row.get("ipv6");
             let ipv6_mask: i64 = row.get("ipv6_mask");
             let pn_server_id: String = row.get("pn_server_id");
+            let pn_server_name: String = row.get("pn_server_name");
             let pn_server_ip: String = row.get("pn_server_ip");
             let pn_server_port: i64 = row.get("pn_server_port");
             let pn_server_addresses: String = row.get("pn_server_addresses");
             let pn_server = pn_server_from_db(
                 pn_server_id,
+                pn_server_name,
                 pn_server_ip,
                 pn_server_port,
                 pn_server_addresses,
@@ -925,9 +950,9 @@ impl NetworkStore for SqliteVpnStore {
     }
 
     async fn add_network(&mut self, network: &Network) -> VpnResult<()> {
-        let (pn_server_id, pn_server_ip, pn_server_port, pn_server_addresses) =
+        let (pn_server_id, pn_server_name, pn_server_ip, pn_server_port, pn_server_addresses) =
             pn_server_db_parts(network.pn_server.as_ref())?;
-        let sql = r#"INSERT INTO network (id, group_id, name, ip, mask, ipv6, ipv6_mask, pn_server_id, pn_server_ip, pn_server_port, pn_server_addresses) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#;
+        let sql = r#"INSERT INTO network (id, group_id, name, ip, mask, ipv6, ipv6_mask, pn_server_id, pn_server_name, pn_server_ip, pn_server_port, pn_server_addresses) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#;
         self.conn
             .execute_sql(
                 sql_query(sql)
@@ -949,6 +974,7 @@ impl NetworkStore for SqliteVpnStore {
                     )
                     .bind(network.ipv6_mask as i64)
                     .bind(pn_server_id)
+                    .bind(pn_server_name)
                     .bind(pn_server_ip)
                     .bind(pn_server_port)
                     .bind(pn_server_addresses),
@@ -968,7 +994,7 @@ impl NetworkStore for SqliteVpnStore {
     }
 
     async fn get_network(&mut self, network_id: &NetworkId) -> VpnResult<Option<Network>> {
-        let sql = r#"SELECT id, group_id, name, ip, mask, ipv6, ipv6_mask, pn_server_id, pn_server_ip, pn_server_port, pn_server_addresses FROM network WHERE id = ?"#;
+        let sql = r#"SELECT id, group_id, name, ip, mask, ipv6, ipv6_mask, pn_server_id, pn_server_name, pn_server_ip, pn_server_port, pn_server_addresses FROM network WHERE id = ?"#;
         match self
             .conn
             .query_one(sql_query(sql).bind(*network_id as i64))
@@ -983,11 +1009,13 @@ impl NetworkStore for SqliteVpnStore {
                 let ipv6: String = row.get("ipv6");
                 let ipv6_mask: i64 = row.get("ipv6_mask");
                 let pn_server_id: String = row.get("pn_server_id");
+                let pn_server_name: String = row.get("pn_server_name");
                 let pn_server_ip: String = row.get("pn_server_ip");
                 let pn_server_port: i64 = row.get("pn_server_port");
                 let pn_server_addresses: String = row.get("pn_server_addresses");
                 let pn_server = pn_server_from_db(
                     pn_server_id,
+                    pn_server_name,
                     pn_server_ip,
                     pn_server_port,
                     pn_server_addresses,
@@ -1032,9 +1060,9 @@ impl NetworkStore for SqliteVpnStore {
     }
 
     async fn update_network(&mut self, network: &Network) -> VpnResult<()> {
-        let (pn_server_id, pn_server_ip, pn_server_port, pn_server_addresses) =
+        let (pn_server_id, pn_server_name, pn_server_ip, pn_server_port, pn_server_addresses) =
             pn_server_db_parts(network.pn_server.as_ref())?;
-        let sql = r#"UPDATE network SET name = ?, ip = ?, mask = ?, ipv6 = ?, ipv6_mask = ?, pn_server_id = ?, pn_server_ip = ?, pn_server_port = ?, pn_server_addresses = ? WHERE id = ?"#;
+        let sql = r#"UPDATE network SET name = ?, ip = ?, mask = ?, ipv6 = ?, ipv6_mask = ?, pn_server_id = ?, pn_server_name = ?, pn_server_ip = ?, pn_server_port = ?, pn_server_addresses = ? WHERE id = ?"#;
         self.conn
             .execute_sql(
                 sql_query(sql)
@@ -1054,6 +1082,7 @@ impl NetworkStore for SqliteVpnStore {
                     )
                     .bind(network.ipv6_mask as i64)
                     .bind(pn_server_id)
+                    .bind(pn_server_name)
                     .bind(pn_server_ip)
                     .bind(pn_server_port)
                     .bind(pn_server_addresses)
@@ -1287,6 +1316,7 @@ impl NetworkStore for SqliteVpnStore {
     network.mask,
     network.ipv6_mask,
     network.pn_server_id,
+    network.pn_server_name,
     network.pn_server_ip,
     network.pn_server_port,
     network.pn_server_addresses,
@@ -1310,11 +1340,13 @@ WHERE network_member.node_id = ? AND joined_node.allow_join = TRUE"#;
             let mask: i64 = row.get("mask");
             let ipv6_mask: i64 = row.get("ipv6_mask");
             let pn_server_id: String = row.get("pn_server_id");
+            let pn_server_name: String = row.get("pn_server_name");
             let pn_server_ip: String = row.get("pn_server_ip");
             let pn_server_port: i64 = row.get("pn_server_port");
             let pn_server_addresses: String = row.get("pn_server_addresses");
             let pn_server = pn_server_from_db(
                 pn_server_id,
+                pn_server_name,
                 pn_server_ip,
                 pn_server_port,
                 pn_server_addresses,

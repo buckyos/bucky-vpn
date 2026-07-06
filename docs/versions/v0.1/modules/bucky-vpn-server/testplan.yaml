@@ -22,10 +22,11 @@ levels:
         - 本轮若实现 PN relay 鉴权，应在该层补 source-target 授权相关 Rust 测试
         - 本轮若实现 PN 节点/用户统计，应在该层至少覆盖节点快照映射、当前用户聚合逻辑和跨重启累计恢复
         - 本轮控制节点/代理节点配置应覆盖默认 YAML 选择、旧 TOML fallback、SN/PN 开关缺省开启、移除静态代理地址、纯代理节点控制节点地址解析、内置代理节点默认允许和心跳入口
+        - 本轮代理节点名字应覆盖 YAML name 解析、上报名合并和存储返回路径
     steps:
       - id: bucky-vpn-server-unit
         name: 运行 bucky-vpn-server crate 测试
-        change_ids: ["CHG-pn-config-no-static-addresses", "CHG-external-pn-active-control", "CHG-pure-pn-no-sn-client", "CHG-external-pn-approval-persistence", "CHG-external-pn-observed-address", "CHG-pure-pn-sn-address", "CHG-sn-http-config", "CHG-sn-admin-config", "CHG-sn-jwt-config", "CHG-pn-sn-heartbeat", "CHG-colocated-pn-default-allowed", "CHG-pn-traffic-db-interface", "CHG-local-pn-toggle-preserved", "CHG-server-node-id-base36"]
+        change_ids: ["CHG-pn-config-no-static-addresses", "CHG-external-pn-active-control", "CHG-pure-pn-no-sn-client", "CHG-external-pn-approval-persistence", "CHG-external-pn-observed-address", "CHG-pure-pn-sn-address", "CHG-sn-http-config", "CHG-sn-admin-config", "CHG-sn-jwt-config", "CHG-pn-sn-heartbeat", "CHG-colocated-pn-default-allowed", "CHG-pn-traffic-db-interface", "CHG-local-pn-toggle-preserved", "CHG-server-node-id-base36", "CHG-server-identity-cert-name", "CHG-server-proxy-node-reported-name"]
         run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn-server", "unit"]
   dv:
     mode: enabled
@@ -42,10 +43,11 @@ levels:
         - 新增自有 PN relay 装配后，该入口需要覆盖 `PROXY_SERVICE` 监听与桥接依赖是否仍可编译
         - 新增 PN 统计视图后，该入口需要覆盖 `PnServer` 句柄接线、统计持久化服务和 API 响应结构是否仍可编译
         - 新增控制节点/代理节点配置后，该入口需要覆盖 `sn.enabled=false`、`pn.enabled=false`、纯代理节点连接控制节点和 heartbeat wiring 的装配编译边界
+        - 新增代理节点名字后，该入口需要覆盖 identity 重签依赖、API/store DTO 和 heartbeat wiring 编译边界
     steps:
       - id: bucky-vpn-server-dv
         name: 构建 bucky-vpn-server crate
-        change_ids: ["CHG-pn-config-no-static-addresses", "CHG-external-pn-active-control", "CHG-pure-pn-no-sn-client", "CHG-external-pn-approval-http-api", "CHG-external-pn-observed-address", "CHG-pure-pn-sn-address", "CHG-sn-http-config", "CHG-sn-admin-config", "CHG-sn-jwt-config", "CHG-pn-sn-heartbeat", "CHG-colocated-pn-default-allowed", "CHG-pn-traffic-db-interface", "CHG-local-pn-toggle-preserved", "CHG-server-node-id-base36"]
+        change_ids: ["CHG-pn-config-no-static-addresses", "CHG-external-pn-active-control", "CHG-pure-pn-no-sn-client", "CHG-external-pn-approval-http-api", "CHG-external-pn-observed-address", "CHG-pure-pn-sn-address", "CHG-sn-http-config", "CHG-sn-admin-config", "CHG-sn-jwt-config", "CHG-pn-sn-heartbeat", "CHG-colocated-pn-default-allowed", "CHG-pn-traffic-db-interface", "CHG-local-pn-toggle-preserved", "CHG-server-node-id-base36", "CHG-server-identity-cert-name", "CHG-server-proxy-node-reported-name"]
         run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn-server", "dv"]
   integration:
     mode: enabled
@@ -66,8 +68,9 @@ levels:
         - 若补充 PN relay 集成测试，必须覆盖同组已审批成功与跨组/未审批拒绝两类场景
         - 若补充 PN 统计集成测试，必须覆盖节点级字段、当前用户聚合字段和重启后累计值延续
         - 若补充控制节点/代理节点配置集成测试，必须覆盖无配置文件默认启动、YAML 显式关闭 SN、YAML 显式关闭 PN、纯代理节点连接控制节点和心跳超时恢复语义
+        - 代理节点名字集成覆盖由 workspace 测试拦截跨 crate DTO/protocol 漂移，完整 live certificate smoke 延后
     steps:
       - id: bucky-vpn-server-integration
         name: 运行 workspace 测试
-        change_ids: ["CHG-pn-config-no-static-addresses", "CHG-external-pn-active-control", "CHG-pure-pn-no-sn-client", "CHG-external-pn-approval-persistence", "CHG-external-pn-approval-http-api", "CHG-external-pn-observed-address", "CHG-pure-pn-sn-address", "CHG-sn-http-config", "CHG-sn-admin-config", "CHG-sn-jwt-config", "CHG-pn-sn-heartbeat", "CHG-colocated-pn-default-allowed", "CHG-pn-traffic-db-interface", "CHG-local-pn-toggle-preserved", "CHG-server-node-id-base36"]
+        change_ids: ["CHG-pn-config-no-static-addresses", "CHG-external-pn-active-control", "CHG-pure-pn-no-sn-client", "CHG-external-pn-approval-persistence", "CHG-external-pn-approval-http-api", "CHG-external-pn-observed-address", "CHG-pure-pn-sn-address", "CHG-sn-http-config", "CHG-sn-admin-config", "CHG-sn-jwt-config", "CHG-pn-sn-heartbeat", "CHG-colocated-pn-default-allowed", "CHG-pn-traffic-db-interface", "CHG-local-pn-toggle-preserved", "CHG-server-node-id-base36", "CHG-server-identity-cert-name", "CHG-server-proxy-node-reported-name"]
         run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn-server", "integration"]

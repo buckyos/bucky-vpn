@@ -3,8 +3,8 @@ module: bucky-vpn-server
 version: v0.1
 status: approved
 approved_by: auto-pipeline
-approved_at: 2026-07-02T13:05:00+08:00
-approved_content_sha256: abf08e0a2826c8104b298002d562df3490a3e4c44900db6756f01f4aa822a2ef
+approved_at: 2026-07-06T16:09:15+08:00
+approved_content_sha256: 328dc855b3fe5e38e743d1c3aece5ec2c7d6dd2439c42849049be7c79c547779
 ---
 
 # bucky-vpn-server Testing
@@ -68,6 +68,8 @@ approved_content_sha256: abf08e0a2826c8104b298002d562df3490a3e4c44900db6756f01f4
 | CHG-pn-traffic-db-interface | `Directly Mapped Change Items` | VAL-traffic-db-interface | unit | bucky-vpn-server-unit | no | Existing storage path is covered; full restart persistence remains integration follow-up. |
 | CHG-local-pn-toggle-preserved | `Directly Mapped Change Items` | VAL-local-toggle | unit | bucky-vpn-server-unit | no | not-applicable: config tests cover default and disabled paths |
 | CHG-server-node-id-base36 | `Directly Mapped Change Items` | VAL-server-node-id-base36 | dv | bucky-vpn-server-dv | no | cargo check and workspace compatibility cover API/store/log call sites; old database migration remains out of scope. |
+| CHG-server-identity-cert-name | `Directly Mapped Change Items` | VAL-server-identity-cert-name | unit | bucky-vpn-server-unit | no | Config parsing is unit covered; certificate re-signing with existing key is covered by compile/review of identity load path and dependency wiring. |
+| CHG-server-proxy-node-reported-name | `Directly Mapped Change Items` | VAL-server-proxy-reported-name | unit | bucky-vpn-server-unit | no | Selector merge and SQLite-backed proxy node listing preserve reported names; API/store DTOs compile. |
 
 ## Case-Type Coverage
 | change_id | case_type | required | validation_id | level | status | gap_manual_reason |
@@ -177,6 +179,20 @@ approved_content_sha256: abf08e0a2826c8104b298002d562df3490a3e4c44900db6756f01f4
 | CHG-server-node-id-base36 | compatibility | yes | VAL-server-node-id-base36 | integration | manual | Old base58 SQLite migration is explicitly deferred; non-NodeId base58 password hashes remain unchanged by review. |
 | CHG-server-node-id-base36 | lifecycle | no | VAL-server-node-id-base36 | unit | not-applicable | Encoding selection has no runtime lifecycle by itself. |
 | CHG-server-node-id-base36 | cross-module | yes | VAL-server-node-id-base36-integration | integration | covered | Workspace compatibility covers direct consumers of server API/store contract. |
+| CHG-server-identity-cert-name | normal | yes | VAL-server-identity-cert-name | unit | covered | none |
+| CHG-server-identity-cert-name | boundary | yes | VAL-server-identity-cert-name | unit | covered | none |
+| CHG-server-identity-cert-name | negative | no | VAL-server-identity-cert-name | unit | not-applicable | Blank names normalize to absent rather than producing a startup error. |
+| CHG-server-identity-cert-name | error | yes | VAL-server-identity-cert-name-dv | dv | covered | none |
+| CHG-server-identity-cert-name | compatibility | yes | VAL-server-identity-cert-name-dv | dv | covered | none |
+| CHG-server-identity-cert-name | lifecycle | yes | VAL-server-identity-cert-name-dv | dv | covered | none |
+| CHG-server-identity-cert-name | cross-module | yes | VAL-server-identity-cert-name-integration | integration | covered | none |
+| CHG-server-proxy-node-reported-name | normal | yes | VAL-server-proxy-reported-name | unit | covered | none |
+| CHG-server-proxy-node-reported-name | boundary | yes | VAL-server-proxy-reported-name | unit | covered | none |
+| CHG-server-proxy-node-reported-name | negative | no | VAL-server-proxy-reported-name | unit | not-applicable | Name is optional metadata and does not reject heartbeat/report payloads. |
+| CHG-server-proxy-node-reported-name | error | no | VAL-server-proxy-reported-name | unit | not-applicable | Missing name falls back to existing id behavior. |
+| CHG-server-proxy-node-reported-name | compatibility | yes | VAL-server-proxy-reported-name-integration | integration | covered | none |
+| CHG-server-proxy-node-reported-name | lifecycle | yes | VAL-server-proxy-reported-name | unit | covered | none |
+| CHG-server-proxy-node-reported-name | cross-module | yes | VAL-server-proxy-reported-name-integration | integration | covered | none |
 
 ## Design Element Coverage
 | element_type | design_source | derived_cases | level | status | gap_manual_reason |
@@ -193,6 +209,8 @@ approved_content_sha256: abf08e0a2826c8104b298002d562df3490a3e4c44900db6756f01f4
 | parameter-domain | `Interfaces and Dependencies` server NodeId text | base36 NodeId request/response/key/log values; malformed values; non-NodeId base58 exclusion | dv | covered | none |
 | parameter-domain | `Interfaces and Dependencies` proxy-control `TunnelPurpose` listener | dedicated proxy-control purpose vs SN command purpose; independent proxy-control command service vs `SnService` | unit | covered | `proxy_control_purpose_is_dedicated` and `proxy_control_cmd_service_is_independent_from_sn_service` cover the domain split. |
 | failure-path | `Key Call Flows` pure proxy connection | wrong SN purpose or missing remote endpoint must not enter proxy-control command handling | dv | manual | Dedicated purpose is unit covered; runtime accept error and missing endpoint require TTP fixture. |
+| parameter-domain | `Interfaces and Dependencies` server identity name | configured `name`, blank/absent values, and existing identity with mismatched certificate name | dv | covered | Config parsing is unit covered; re-sign path compiles and reloads through p2p-frame identity factory. |
+| state-transition | `Data and State` proxy-node reported name | heartbeat/report without name -> with name -> selected/listed proxy carries latest non-empty reported name | unit | covered | Selector merge and SQLite-backed list path assertions cover preservation. |
 
 ## Validation Rationale
 The lowest reliable layer for config and selector behavior is unit tests in `server_config.rs`. Heartbeat reuses the control command path and now carries the proxy endpoint used by selector liveness. Full multi-process proxy registration smoke and restart persistence tests require a broader integration harness and remain recorded as gaps for acceptance visibility.
@@ -213,6 +231,9 @@ The lowest reliable layer for config and selector behavior is unit tests in `ser
 | `resolve_service_endpoints` | proxy enabled with no static list | no static proxy endpoint injection | `vpn-server/src/server_config.rs` | covered | not-applicable: updated test |
 | `ConfigPnServerSelector::report_heartbeat` | remote proxy heartbeat | remote proxy endpoint becomes selectable before TTL | `vpn-server/src/server_config.rs` | covered | not-applicable: selector unit test |
 | `ConfigPnServerSelector::is_valid/select` | remote proxy TTL expired | remote proxy endpoint is removed from selection | `vpn-server/src/server_config.rs` | covered | not-applicable: selector unit test |
+| `get_server_name_config` | YAML `name` with surrounding whitespace | returns normalized server identity/proxy reported name | `vpn-server/src/server_config.rs` | covered | none |
+| `ConfigPnServerSelector` reported name merge | reported and observed heartbeat order | selected proxy keeps the reported name while using the observed address | `vpn-server/src/server_config.rs` | covered | none |
+| `ConfigPnServerSelector` store-backed reported name merge | observed then reported heartbeat | listed proxy node keeps the reported name in SQLite-backed path | `vpn-server/src/server_config.rs` | covered | none |
 | `proxy_control_purpose` | dedicated purpose value | proxy-control purpose differs from SN command purpose | `vpn-server/src/vpn_control_client.rs` | covered | not-applicable: `proxy_control_purpose_is_dedicated` |
 | `ProxyControlCmdService` | independent command service | proxy-control command service is constructible without `SnService` and has a distinct service type | `vpn-server/src/vpn_control_client.rs` | covered | not-applicable: `proxy_control_cmd_service_is_independent_from_sn_service` |
 | `SqliteVpnStore` proxy approval methods | pending/approved/rejected states | approval state schema and store API compile | none | manual | Direct SQLite fixture test not added in this stage. |
@@ -250,5 +271,5 @@ The lowest reliable layer for config and selector behavior is unit tests in `ser
 
 ## Approval Record
 - approver: auto-pipeline
-- approval_date: 2026-07-02T13:05:00+08:00
-- user_statement: "确认，自动处理后续步骤；jwt也应该是sn节点下的配置"
+- approval_date: 2026-07-06T16:09:15+08:00
+- user_statement: "确认，自动处理后续步骤"

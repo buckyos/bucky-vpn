@@ -1,4 +1,4 @@
-use crate::p2p_vpn::{JoinRecord, vpn_client_manager};
+use crate::p2p_vpn::{JoinRecord, P2pVpnClientKey, vpn_client_manager};
 use crate::setting::Setting;
 use serde::{Deserialize, Serialize};
 use sfo_http::http_server::{HttpMethod, HttpServer, Request, Response};
@@ -14,6 +14,7 @@ pub struct Join {
     pub server: String,
     pub server_port: u16,
     pub server_id: String,
+    pub server_name: Option<String>,
     pub group_id: NetworkGroupId,
     pub name: Option<String>,
 }
@@ -48,24 +49,24 @@ impl Api {
                         .body_json::<Join>()
                         .await
                         .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
+                    let client_key = P2pVpnClientKey::new(
+                        join.server_id,
+                        join.server,
+                        join.server_port,
+                        join.server_name,
+                    );
+                    let manager_key = client_key.to_manager_key();
                     let vpn_client = vpn_client_manager()
-                        .get_client(
-                            format!(
-                                "{}_{}:{}",
-                                join.server_id.as_str(),
-                                join.server.as_str(),
-                                join.server_port
-                            )
-                            .as_str(),
-                        )
+                        .get_client(manager_key.as_str())
                         .await?;
                     vpn_client.join(join.group_id, join.name.clone()).await?;
                     let mut joined_networks: Vec<JoinRecord> =
                         setting.get("joined_networks").unwrap_or(vec![]);
                     let record = JoinRecord {
-                        server_ip: join.server,
-                        server_port: join.server_port,
-                        server_id: join.server_id,
+                        server_ip: client_key.server.clone(),
+                        server_port: client_key.server_port,
+                        server_id: client_key.server_id.clone(),
+                        server_name: client_key.server_name.clone(),
                         network_id: join.group_id,
                     };
                     if !joined_networks.contains(&record) {

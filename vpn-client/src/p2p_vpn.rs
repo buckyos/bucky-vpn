@@ -15,7 +15,7 @@ use p2p_frame::x509::X509IdentityFactory;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::Error;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -225,7 +225,7 @@ impl P2pVpnTunnelFactory {
                     local_ep: None,
                     remote_ep: endpoint,
                     remote_id: remote_id.clone(),
-                    remote_name: Some(remote_id.to_string()),
+                    remote_name: Some(pn_server.remote_name().to_owned()),
                 })
                 .await
             {
@@ -264,11 +264,16 @@ fn pn_server_addresses(pn_server: &PnServerInfo) -> Vec<PnServerAddress> {
     let mut addresses = Vec::new();
     let primary = PnServerAddress::new(pn_server.ip, pn_server.port);
     for address in &pn_server.addresses {
-        if address != &primary {
+        if address != &primary && is_quic_pn_server_address(address) {
             add_pn_server_address(&mut addresses, address.clone());
         }
     }
     add_pn_server_address(&mut addresses, primary);
+    for address in &pn_server.addresses {
+        if !is_quic_pn_server_address(address) {
+            add_pn_server_address(&mut addresses, address.clone());
+        }
+    }
     addresses
 }
 
@@ -276,6 +281,13 @@ fn add_pn_server_address(addresses: &mut Vec<PnServerAddress>, address: PnServer
     if !addresses.contains(&address) {
         addresses.push(address);
     }
+}
+
+fn is_quic_pn_server_address(address: &PnServerAddress) -> bool {
+    matches!(
+        address.protocol.as_str(),
+        PnServerAddress::PROTOCOL_QUIC | "qic"
+    )
 }
 
 fn pn_server_address_endpoint(address: &PnServerAddress) -> VpnResult<Endpoint> {
@@ -295,6 +307,14 @@ fn pn_server_address_endpoint(address: &PnServerAddress) -> VpnResult<Endpoint> 
         SocketAddr::new(address.ip, address.port),
     )))
 }
+
+fn sn_endpoints(sn_addr: SocketAddr) -> Vec<Endpoint> {
+    vec![
+        Endpoint::from((Protocol::Quic, sn_addr)),
+        Endpoint::from((Protocol::Tcp, sn_addr)),
+    ]
+}
+
 #[async_trait::async_trait]
 impl VpnTunnelFactory<P2pVpnTunnelRecv, P2pVpnTunnelSend> for P2pVpnTunnelFactory {
     async fn on_vpn_info_received(&self, vpn_infos: &[NodeVpnInfo]) -> VpnResult<()> {
@@ -411,6 +431,105 @@ pub struct P2pVpnClientFactory {
     client_version: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub struct P2pVpnClientKey {
+    pub server_id: String,
+    pub server: String,
+    pub server_port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_name: Option<String>,
+}
+
+impl P2pVpnClientKey {
+    pub fn new(
+        server_id: String,
+        server: String,
+        server_port: u16,
+        server_name: Option<String>,
+    ) -> Self {
+        Self {
+            server_id,
+            server,
+            server_port,
+            server_name: normalize_server_name(server_name),
+        }
+    }
+
+    pub fn to_manager_key(&self) -> String {
+        serde_json::to_string(self)
+            .unwrap_or_else(|_| format!("{}_{}:{}", self.server_id, self.server, self.server_port))
+    }
+
+    fn from_manager_key(key: &str) -> VpnResult<Self> {
+        if key.trim_start().starts_with('{') {
+            return serde_json::from_str(key).map_err(into_vpn_err!(
+                VpnErrorCode::InvalidParam,
+                "parse client key failed"
+            ));
+        }
+        Self::from_legacy_key(key)
+    }
+
+    fn from_legacy_key(key: &str) -> VpnResult<Self> {
+        let (server_id, server_addr) = key
+            .split_once('_')
+            .ok_or_else(|| vpn_err!(VpnErrorCode::Failed, "key {} is invalid", key))?;
+        if let Ok(addr) = server_addr.parse::<SocketAddr>() {
+            return Ok(Self::new(
+                server_id.to_string(),
+                addr.ip().to_string(),
+                addr.port(),
+                None,
+            ));
+        }
+        let (server, port) = server_addr
+            .rsplit_once(':')
+            .ok_or_else(|| vpn_err!(VpnErrorCode::Failed, "key {} is invalid", key))?;
+        let server_port = port.parse::<u16>().map_err(into_vpn_err!(
+            VpnErrorCode::InvalidParam,
+            "parse server port failed"
+        ))?;
+        Ok(Self::new(
+            server_id.to_string(),
+            server.to_string(),
+            server_port,
+            None,
+        ))
+    }
+
+    fn server_addr(&self) -> String {
+        match self.server.parse::<IpAddr>() {
+            Ok(ip) => SocketAddr::new(ip, self.server_port).to_string(),
+            Err(_) => format!("{}:{}", self.server, self.server_port),
+        }
+    }
+}
+
+fn normalize_server_name(server_name: Option<String>) -> Option<String> {
+    server_name.and_then(|name| {
+        let name = name.trim();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name.to_string())
+        }
+    })
+}
+
+fn effective_server_name(server: &str, server_id: &str, server_name: Option<&str>) -> String {
+    if let Some(name) = server_name.and_then(|name| {
+        let name = name.trim();
+        if name.is_empty() { None } else { Some(name) }
+    }) {
+        return name.to_string();
+    }
+    if server.parse::<IpAddr>().is_ok() {
+        server_id.to_string()
+    } else {
+        server.to_string()
+    }
+}
+
 impl P2pVpnClientFactory {
     pub fn new(
         p2p_env: P2pEnvRef,
@@ -441,18 +560,15 @@ impl
     > for P2pVpnClientFactory
 {
     async fn create_client(&self, key: &str) -> VpnResult<P2pVpnClientRef> {
-        let list: Vec<_> = key.split('_').collect();
-        if list.len() != 2 {
-            return Err(vpn_err!(VpnErrorCode::Failed, "key {} is invalid", key));
-        }
-        let sn_id = list[0];
-        let server = list[1];
+        let client_key = P2pVpnClientKey::from_manager_key(key)?;
+        let sn_id = client_key.server_id.as_str();
+        let server = client_key.server_addr();
         //判断ip是不是域名，如果是域名，需要解析ip
         let ip = if let Ok(addr) = server.parse::<SocketAddr>() {
             addr
         } else {
             // 解析域名
-            tokio::net::lookup_host(server)
+            tokio::net::lookup_host(server.as_str())
                 .await
                 .map_err(into_vpn_err!(
                     VpnErrorCode::Failed,
@@ -511,15 +627,22 @@ impl
         let local_id = local_identity.get_id();
         log::info!("create client id:{}", local_id.to_string());
 
-        let sn_ep = Endpoint::from((Protocol::Quic, SocketAddr::new(ip.ip(), sn_port)));
+        let sn_addr = SocketAddr::new(ip.ip(), sn_port);
 
         let conn_timeout = Duration::from_secs(5);
         let proxy_route_resolver = Arc::new(P2pVpnPnProxyRouteResolver::new());
+        let sn_eps = sn_endpoints(sn_addr);
+        log::info!("create client sn endpoints: {:?}", sn_eps);
+        let sn_name = effective_server_name(
+            client_key.server.as_str(),
+            client_key.server_id.as_str(),
+            client_key.server_name.as_deref(),
+        );
         let stack_config = P2pStackConfig::new(self.p2p_env.clone(), local_identity)
             .set_conn_timeout(conn_timeout)
             .set_support_proxy(true)
             .set_proxy_route_resolver(proxy_route_resolver.clone())
-            .add_sn(P2pSn::new(sn_id.clone(), sn_id.to_string(), vec![sn_ep]));
+            .add_sn(P2pSn::new(sn_id.clone(), sn_name, sn_eps));
         let stack = create_p2p_stack(stack_config)
             .await
             .map_err(into_vpn_err!(VpnErrorCode::Failed, "create stack failed"))?;
@@ -590,6 +713,8 @@ pub struct JoinRecord {
     pub server_ip: String,
     pub server_port: u16,
     pub server_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_name: Option<String>,
     #[serde(
         serialize_with = "serialize_u64_as_string",
         deserialize_with = "deserialize_u64_from_string"
@@ -682,6 +807,79 @@ mod tests {
         assert_eq!(tcp_endpoint.addr().port(), 443);
         assert_eq!(quic_endpoint.protocol(), Protocol::Quic);
         assert_eq!(quic_endpoint.addr().port(), 3624);
+    }
+
+    #[test]
+    fn sn_endpoints_register_quic_before_tcp() {
+        let sn_addr = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 3624);
+
+        let endpoints = sn_endpoints(sn_addr);
+
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0].protocol(), Protocol::Quic);
+        assert_eq!(endpoints[0].addr(), &sn_addr);
+        assert_eq!(endpoints[1].protocol(), Protocol::Tcp);
+        assert_eq!(endpoints[1].addr(), &sn_addr);
+    }
+
+    #[test]
+    fn effective_server_name_uses_explicit_value_first() {
+        assert_eq!(
+            effective_server_name("10.0.0.1", "server-cert-id", Some("sn.example.com")),
+            "sn.example.com"
+        );
+    }
+
+    #[test]
+    fn effective_server_name_uses_domain_when_not_explicit() {
+        assert_eq!(
+            effective_server_name("sn.example.com", "server-cert-id", None),
+            "sn.example.com"
+        );
+    }
+
+    #[test]
+    fn effective_server_name_uses_server_id_for_ip_when_not_explicit() {
+        assert_eq!(
+            effective_server_name("10.0.0.1", "server-cert-id", None),
+            "server-cert-id"
+        );
+    }
+
+    #[test]
+    fn effective_server_name_treats_blank_as_absent() {
+        assert_eq!(
+            effective_server_name("sn.example.com", "server-cert-id", Some("  ")),
+            "sn.example.com"
+        );
+    }
+
+    #[test]
+    fn client_key_round_trips_with_server_name() {
+        let key = P2pVpnClientKey::new(
+            "server-cert-id".to_string(),
+            "sn.example.com".to_string(),
+            3624,
+            Some(" sn-name.example.com ".to_string()),
+        );
+
+        let parsed = P2pVpnClientKey::from_manager_key(key.to_manager_key().as_str()).unwrap();
+
+        assert_eq!(parsed.server_id, "server-cert-id");
+        assert_eq!(parsed.server, "sn.example.com");
+        assert_eq!(parsed.server_port, 3624);
+        assert_eq!(parsed.server_name.as_deref(), Some("sn-name.example.com"));
+    }
+
+    #[test]
+    fn client_key_parses_legacy_manager_key() {
+        let parsed =
+            P2pVpnClientKey::from_manager_key("server-cert-id_sn.example.com:3624").unwrap();
+
+        assert_eq!(parsed.server_id, "server-cert-id");
+        assert_eq!(parsed.server, "sn.example.com");
+        assert_eq!(parsed.server_port, 3624);
+        assert_eq!(parsed.server_name, None);
     }
 
     #[tokio::test]

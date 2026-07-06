@@ -3,8 +3,8 @@ module: bucky-vpn-server
 version: v0.1
 status: approved
 approved_by: auto-pipeline
-approved_at: 2026-07-02T13:05:00+08:00
-approved_content_sha256: 3f7bb1ce1ac12ad9fb78b6cd2018ad9892be992db8f6e42af38ecdc188a94ef0
+approved_at: 2026-07-06T16:09:15+08:00
+approved_content_sha256: d477d95d5d018e9fae06ab5974360b4ae30a99aefb2af5226e1d80fa0c69f5d7
 ---
 
 # bucky-vpn-server Design
@@ -22,6 +22,8 @@ approved_content_sha256: 3f7bb1ce1ac12ad9fb78b6cd2018ad9892be992db8f6e42af38ecdc
 - 将外部代理节点批准状态持久化到 SQLite，并与心跳 liveness 分开建模。
 - 在 HTTP 控制面导出外部代理节点列表、批准和拒绝接口。
 - 在外部代理节点列表 API 中导出控制节点观察到的真实连接来源地址，区别于代理节点本地配置地址。
+- 增加服务端顶层 `name` 配置，用于生成或重签本地 X509 identity 证书名称；配置名称变化时保留现有私钥。
+- 代理节点如果配置了 `name`，向控制节点注册、心跳和统计报告时必须上报该名称；控制节点返回给客户端和 HTTP API 的代理节点信息中必须保留该名称。
 - 将服务端 HTTP API、SQLite key、选择比较和日志中的 `NodeId` 字符串操作统一为 base36 输出。
 - 保持控制节点内置代理节点默认允许，并继续由 `pn.enabled` 控制本地内置代理节点启动。
 - 复用现有 SQLite-backed 存储接口持久化代理流量统计。
@@ -32,11 +34,13 @@ approved_content_sha256: 3f7bb1ce1ac12ad9fb78b6cd2018ad9892be992db8f6e42af38ecdc
 - 不引入账单、限额、清零或报表系统。
 - 不用静态 YAML 地址列表实现外部代理节点 federation。
 - 不修改外部 `p2p-frame` 内部协议，除非后续 implementation 证明现有公开接口不足并回流 design。
+- 不把代理节点 `name` 作为身份、批准状态主键、liveness key 或安全授权输入。
 
 ## Overall Approach
 `bucky-vpn-server` 继续作为装配型 crate。`main.rs` 是进程 assembly root，读取配置、初始化 identity/SQLite/HTTP、创建 SN service、按配置启动控制节点内置代理节点，并把共享运行时和控制面 API 组装起来。
 
 配置合同分两类：
+- 服务端身份配置：顶层 `name` 表示本进程 identity 证书名称和代理节点上报名称。缺省时保持现有生成语义；非空值传给 X509 identity 生成/重签逻辑。若 `identity` 文件已存在但证书名和配置 `name` 不一致，implementation 必须保留现有私钥重新签发带新名称的证书并覆盖 identity 文件；P2P id 由公钥派生，因此私钥不变时 id 不变。
 - 控制节点配置域：`sn.enabled`、`sn.http`、`sn.admin`、`sn.jwt` 和 `sn.control_server`。`sn.enabled` 默认 `true`；`sn.http` 默认沿用旧顶层 `http` 的监听默认值；`sn.admin` 默认沿用旧顶层 `admin` 的 bootstrap 语义；`sn.jwt` 默认沿用旧顶层 `jwt` 的会话签名语义；`sn.control_server` 只在纯代理节点连接远端控制节点时需要。
 - 代理节点本地配置域：`pn.enabled` 和 `pn.report_interval_secs`。`pn.enabled` 默认 `true`，继续控制本地内置代理节点；`pn` 不再承载控制节点 bootstrap 地址。
 - 纯代理节点 bootstrap：`sn.control_server` 配置提供控制节点身份和 endpoint，不能复用 `pn.server_addresses`，也不能继续放在 `pn.control_server`。该地址只用于纯代理节点主动连接控制节点。
@@ -47,6 +51,8 @@ approved_content_sha256: 3f7bb1ce1ac12ad9fb78b6cd2018ad9892be992db8f6e42af38ecdc
 - 外部代理节点：独立进程，必须主动连接/注册到控制节点。控制节点基于身份、注册信息和运行时策略接受或拒绝。被接受后必须保持心跳；心跳超时后不得被用于新的代理节点选择，直到重连或恢复条件满足。
 
 外部代理节点的批准状态由 SQLite 拥有，建议表名为 `pn_proxy_node`，主键使用 `pn_server` 字符串，字段至少包含 `status`、`updated_at` 和可选 `comment`。状态枚举为 `pending`、`approved`、`rejected`。外部代理节点首次心跳时，如果不存在持久记录，控制节点创建 `pending` 记录并刷新运行时 liveness；只有 `approved + live` 的外部代理节点能参与新的选择。`rejected` 节点继续记录心跳但不得进入选择集。内置代理节点不写入该批准表，仍由本地配置 `pn.enabled` 默认允许。
+
+代理节点上报值使用共享 `PnServerInfo`。`id/ip/port/addresses` 继续描述身份和可连接地址；`name` 是可选元数据，来源于本地 `name` 配置或 identity 当前证书名。控制节点接收心跳时合并 observed address 与 reported info 必须保留 reported `name`，并在 selector、`GET /pn_proxy_nodes`、`NodeNetwork.pn_server` 和 `ReportPnTrafficStatsReq.pn_server` 传播该字段。SQLite 可以随 `pn_proxy_node` 和 `network` PN server 字段持久化 `pn_server_name`；如果实现只在运行时保留名称，必须保证 API 和客户端网络信息不丢失当前 live proxy 的 reported name。
 
 非 SN-client 控制通道仍然必须使用纯代理节点本地 identity 作为发起方身份，并使用 `sn.control_server.id` 作为控制节点身份校验目标。控制节点只在 proxy-control 专用 `TunnelPurpose` 上接收该通道，入站连接必须校验 remote identity 对应的是代理节点：本地内置代理节点可由同进程装配直接信任，外部代理节点必须先进入 pending/approved/rejected 代理节点状态机；非代理节点、普通客户端节点或不能解析为代理节点身份的连接必须在接入阶段 fail closed，不能被转交给 SN service 或完整 VPN/SN command server。连接成功只代表 command transport 可用；是否可被选择仍由控制节点的批准状态和 heartbeat liveness 决定。连接失败或重连中时，纯代理节点本地 PN listener 可以继续存在，但所有需要控制节点确认的 incoming tunnel / PN connection validation 必须 fail closed。
 
@@ -73,17 +79,20 @@ HTTP 控制面新增管理员接口：
 | 真实连接来源地址 | 在列表 API 响应层补充运行时观测地址，不持久化为批准状态或身份字段。 | `VpnServer::get_peer_ip_list` peer WAN 地址查询能力 | 不新增跨 crate 协议或 SQLite 字段；当前需求只要求展示控制节点观测到的地址。 |
 | NodeId 文本格式 | 使用 base36 作为 HTTP/API、SQLite key、selector 比较和日志输出的 canonical 格式。 | `vpn-frame` 的 `NodeId` base36 helper | 不新增编码库；仅替换 NodeId 专属字符串操作。 |
 | 内置代理节点 | 与控制节点同进程时默认允许。 | `pn.enabled`、现有本地 PN server 装配 | 不新增注册流程，避免破坏无配置默认行为。 |
+| identity 证书名称 | 顶层 `name` 配置复用 p2p-frame X509 名称语义，名称变化时重签同一私钥。 | `config` crate、`p2p-frame::x509` identity 编码。 | 不新增独立密钥文件或证书管理器；只需要让现有 identity lifecycle 支持名称漂移。 |
+| 代理节点上报名 | 将 `name` 放入共享 `PnServerInfo` 并跟随现有心跳/API/网络信息路径传递。 | `PnServerInfo`、`ConfigPnServerSelector`、HTTP JSON model。 | 不新增单独 display-name registry，避免和 identity/approval key 分叉。 |
 | 流量持久化 | 复用现有 SQLite-backed 统计存储接口。 | `pn_traffic_service.rs`、`sqlite_store_factory.rs` | 不新增第二套 store，避免累计统计分叉。 |
 
 ## Current Structure
 - `main.rs` 当前负责配置、数据目录、identity、SN service、PN server、`VpnServer`、账户服务和 HTTP API 的启动编排。
-- `server_config.rs` 当前选择 `config.yaml`/`config.toml`，读取 `sn.enabled`、顶层 `http`、顶层 `admin`、顶层 `jwt`、`pn.enabled`、`pn.server_addresses`、`pn.control_server` 和 `pn.report_interval_secs`。
+- `server_config.rs` 当前选择 `config.yaml`/`config.toml`，读取 `sn.enabled`、顶层 `http`、顶层 `admin`、顶层 `jwt`、`pn.enabled`、`pn.server_addresses`、`pn.control_server` 和 `pn.report_interval_secs`；尚未读取顶层 `name`，`PnServerInfo` 构造路径也未附带代理节点上报名。
 - `vpn_control_client.rs` 当前为 SN disabled + PN enabled 场景提供连接控制 server 的客户端能力，但实现借用 SN client stack，会触发控制节点 SN `ReportSn` 日志。
 - `pn_connection_validator.rs` 当前基于本地 `VpnServer` 做代理连接校验。
 - `pn_traffic_service.rs` 当前合并运行时快照和 SQLite 累计统计。
 - `sqlite_store_factory.rs` 当前拥有服务端 SQLite schema 和 store 实现。
 - `api.rs` 当前集中注册 HTTP 控制面接口，已有接口通过 Authorization Bearer session 解析认证用户。
 - `sqlite_store_factory.rs` 当前在 node/joined-node/network-member/traffic 相关表中以 `NodeId` 字符串作为 key。
+- `main.rs` 当前读取或生成 `identity` 后只更新 endpoints；生成 identity 时未传入配置 name，已有 identity 的名称变化不会重签。
 
 ## Invariants to Preserve
 - 无配置文件时，控制节点默认启动 SN service 和内置代理节点。
@@ -99,12 +108,15 @@ HTTP 控制面新增管理员接口：
 - `tx/rx bytes` 是 SQLite-backed 跨重启累计值；`tx/rx speed` 是当前进程运行时值。
 - 旧 `config.toml` 仅作为兼容入口，不作为新增配置推荐格式。
 - `NodeId` 原始字节和协议身份不变；本变更只改变服务端拥有的 `NodeId` 文本输出和新写入 key。
+- 服务端 `name` 配置变化不得改变现有私钥派生的 P2P id。
+- 代理节点 reported `name` 不得影响批准状态主键、selector liveness key、source-target 授权或 NodeId/P2pId 比较。
 
 ## Submodules
 | submodule | type | responsibility | depends_on |
 | --- | --- | --- | --- |
-| `process-assembly` | assembly | 启动编排，组装配置、identity、SN service、代理节点、统计服务和 HTTP API。 | `server-config`, `control-node-control`, `relay-authorization`, `traffic-statistics`, `sqlite-persistence`, `http-api` |
-| `server-config` | technical | 解析 YAML/环境变量配置，移除静态外部代理地址合同，提供 `sn` 域控制节点地址、HTTP 管理面、管理员 bootstrap、JWT 会话签名和本地 PN 开关。 | none |
+| `process-assembly` | assembly | 启动编排，组装配置、identity、SN service、代理节点、统计服务和 HTTP API。 | `server-config`, `identity-lifecycle`, `control-node-control`, `relay-authorization`, `traffic-statistics`, `sqlite-persistence`, `http-api` |
+| `server-config` | technical | 解析 YAML/环境变量配置，移除静态外部代理地址合同，提供 `name`、`sn` 域控制节点地址、HTTP 管理面、管理员 bootstrap、JWT 会话签名和本地 PN 开关。 | none |
+| `identity-lifecycle` | technical | 根据顶层 `name` 创建或重签本地 identity 证书，同时保留已有私钥和 P2P id。 | `server-config` |
 | `control-node-control` | business | 管理内置代理节点默认允许、外部代理节点批准状态、心跳 liveness 和选择状态。 | `server-config`, `sqlite-persistence` |
 | `relay-authorization` | business | 基于 joined-node/group 真相校验代理转发 source-target 对。 | `sqlite-persistence` |
 | `traffic-statistics` | business | 合并 runtime snapshot 与 SQLite 累计统计，并复用数据库存储接口。 | `sqlite-persistence` |
@@ -125,11 +137,13 @@ HTTP 控制面新增管理员接口：
 | 代理授权与代理可用性 | business split | `relay-authorization` 校验 source-target；`control-node-control` 管理代理节点 liveness。 | SQLite joined-node/group 真相。 | 两者独立，避免可用代理绕过 source-target 授权。 |
 | 统计写入与统计展示 | business/technical split | `traffic-statistics` 定义合并语义。 | `sqlite-persistence` 拥有累计存储。 | 所有代理流量统计通过同一 SQLite-backed 接口写入。 |
 | NodeId 字符串边界 | technical/business split | HTTP/API 和 selector 使用稳定节点身份。 | `sqlite-persistence` key 与日志格式。 | base36 是服务端新写入和输出格式；旧 base58 数据只在显式读取兼容处容忍。 |
+| identity 名称与代理节点上报名 | technical/business split | 代理节点需要对控制节点和客户端暴露可连接远程名称。 | `server-config` 解析名称，`identity-lifecycle` 维护证书名称，`control-node-control` 传播 reported name。 | 顶层 `name` 同时作为证书名称和 proxy reported name；`name` 只做连接/display 元数据，不进入身份 key。 |
 
 ## Dependency Graph
 | source | depends_on | reason | cycle_check |
 | --- | --- | --- | --- |
-| `process-assembly` | `server-config`, `control-node-control`, `relay-authorization`, `traffic-statistics`, `sqlite-persistence`, `http-api` | 进程启动组合这些子模块。 | no cycle: assembly root only |
+| `process-assembly` | `server-config`, `identity-lifecycle`, `control-node-control`, `relay-authorization`, `traffic-statistics`, `sqlite-persistence`, `http-api` | 进程启动组合这些子模块。 | no cycle: assembly root only |
+| `identity-lifecycle` | `server-config` | 需要读取配置 name 决定生成或重签证书名称。 | no cycle |
 | `control-node-control` | `server-config`, `sqlite-persistence` | 需要配置和可选持久状态判断代理节点可用性。 | no cycle |
 | `relay-authorization` | `sqlite-persistence` | 需要 joined-node/group 真相。 | no cycle |
 | `traffic-statistics` | `sqlite-persistence` | 需要累计统计存储接口。 | no cycle |
@@ -141,8 +155,9 @@ HTTP 控制面新增管理员接口：
 | flow | caller | callee_submodule_path | purpose | failure_handling |
 | --- | --- | --- | --- | --- |
 | 控制节点启动 | `process-assembly` | `server-config` -> `control-node-control` -> `traffic-statistics` | 读取配置并启动控制节点、内置代理节点和统计服务。 | 配置解析失败沿用启动失败；`pn.enabled=false` 使用零值统计 provider 保持 API 可用。 |
-| 纯代理节点连接 | 外部代理节点进程 | `server-config` -> `control-node-control` | 使用 `sn.control_server` 建立非 SN-client 控制命令通道，通过 proxy-control 专用 `TunnelPurpose` 注册/上报。 | 连接失败进入重试/未注册状态；purpose 未监听、误用 SN purpose、remote identity 不是代理节点或校验请求失败均 fail closed；不得启动 SN client 或触发控制节点 `ReportSn` 日志。 |
-| 心跳维护 | 外部代理节点进程 | `control-node-control` -> `sqlite-persistence` | 维持 liveness；首次出现时创建 pending 批准记录。 | 写入 pending 失败时该代理不进入选择；心跳超时将代理节点标记不可用于新选择；重连成功后仍需 approved 状态。 |
+| identity 初始化 | `process-assembly` | `server-config` -> `identity-lifecycle` | 使用配置 `name` 生成新证书，或在已有 identity 私钥不变时重签新名称证书。 | identity 读取、解码、重签或写回失败沿用启动失败；无法通过公开 API 保留私钥重签时必须回流 design 或记录阻塞，不能生成新私钥。 |
+| 纯代理节点连接 | 外部代理节点进程 | `server-config` -> `control-node-control` | 使用 `sn.control_server` 建立非 SN-client 控制命令通道，通过 proxy-control 专用 `TunnelPurpose` 注册/上报，并带上 reported `name`。 | 连接失败进入重试/未注册状态；purpose 未监听、误用 SN purpose、remote identity 不是代理节点或校验请求失败均 fail closed；不得启动 SN client 或触发控制节点 `ReportSn` 日志。 |
+| 心跳维护 | 外部代理节点进程 | `control-node-control` -> `sqlite-persistence` | 维持 liveness；首次出现时创建 pending 批准记录；保留 reported `name`。 | 写入 pending 失败时该代理不进入选择；心跳超时将代理节点标记不可用于新选择；重连成功后仍需 approved 状态；缺失 name 时保持 absent 并允许客户端 fallback。 |
 | 代理节点审批 | 已认证管理员 HTTP 请求 | `http-api` -> `control-node-control` -> `sqlite-persistence` | 查询、批准或拒绝外部代理节点。 | 未认证请求拒绝；不存在的 `pn_server` 可创建目标状态以支持预批准；重复批准/拒绝幂等。 |
 | 代理转发授权 | 代理连接入口 | `relay-authorization` -> `sqlite-persistence` | 校验 source-target 是否同组且已审批。 | 授权失败在 open 阶段拒绝，不进入 bridge。 |
 | 统计持久化 | `traffic-statistics` | `sqlite-persistence` | 写入节点/用户累计流量并服务 API 查询。 | 写库失败不得更新进程内 flush 基线；下次 flush 重试，避免丢量。 |
@@ -183,6 +198,8 @@ HTTP 控制面新增管理员接口：
 | CHG-pn-traffic-db-interface | PROP-pn-traffic-db-interface | `traffic-statistics` 通过 `sqlite-persistence` 统一写入累计统计。 | `vpn-server/src/pn_traffic_service.rs`, `vpn-server/src/sqlite_store_factory.rs` |
 | CHG-local-pn-toggle-preserved | PROP-local-pn-toggle-preserved | `server-config` 和 `process-assembly` 保持 `pn.enabled` 的本地内置代理节点开关语义。 | `vpn-server/src/server_config.rs`, `vpn-server/src/main.rs` |
 | CHG-server-node-id-base36 | PROP-server-node-id-base36 | `http-api`、`sqlite-persistence`、`server-config` 和 `traffic-statistics` 将 NodeId 请求解析、响应输出、新 SQLite key、选择比较和日志统一到 base36；非 NodeId 的 base58 编码保持不变。 | `vpn-server/src/api.rs`, `vpn-server/src/sqlite_store_factory.rs`, `vpn-server/src/server_config.rs`, `vpn-server/src/pn_traffic_service.rs` |
+| CHG-server-identity-cert-name | PROP-server-identity-cert-name | `server-config` 读取顶层 `name`，`process-assembly` 在 identity 初始化时将名称用于新证书；已有 identity 名称变化时保留私钥重签并写回；`Cargo.toml` 可增加重签所需的最小 X509 helper 依赖。 | `vpn-server/config/config.example.yaml`, `vpn-server/src/server_config.rs`, `vpn-server/src/main.rs`, `vpn-server/Cargo.toml` |
+| CHG-server-proxy-node-reported-name | PROP-server-proxy-node-reported-name | 代理节点把配置/identity 名称放入上报的 `PnServerInfo.name`；控制节点在 selector、SQLite/API projection 和返回客户端的 PN server info 中保留该名称，且不把 name 作为 identity key。 | `vpn-server/config/config.example.yaml`, `vpn-server/src/server_config.rs`, `vpn-server/src/main.rs`, `vpn-server/src/vpn_control_client.rs`, `vpn-server/src/api.rs`, `vpn-server/src/sqlite_store_factory.rs` |
 
 ## Implementation Order
 | step | goal | prerequisite | output | can_parallel |
@@ -194,8 +211,9 @@ HTTP 控制面新增管理员接口：
 | 5 | 实现 selector 对 approved + live 的组合选择，首次心跳创建 pending。 | step 4 | 外部代理节点可用性模型 | no |
 | 6 | 增加 HTTP 代理节点列表、批准和拒绝接口，并在列表响应中附加 observed address。 | step 4 | 管理员审批控制面和真实连接地址展示合同 | no |
 | 7 | 确认代理流量统计统一走 SQLite-backed 接口。 | step 3 | 统计持久化边界对齐 | yes |
-| 8 | 编译和最小范围验证。 | steps 1-7 | 实现证据 | no |
-| 9 | 替换服务端 NodeId 文本操作为 base36。 | approved base36 admission | API/SQLite/selector/log 的 NodeId 字符串输出统一为 base36 | no |
+| 8 | 增加顶层 `name` 配置、identity 名称生成/重签和代理节点上报名透传。 | approved name admission | 证书名可配置且改名不换私钥；proxy reported name 透传到 API 和客户端网络信息。 | no |
+| 9 | 编译和最小范围验证。 | steps 1-8 | 实现证据 | no |
+| 10 | 替换服务端 NodeId 文本操作为 base36。 | approved base36 admission | API/SQLite/selector/log 的 NodeId 字符串输出统一为 base36 | no |
 
 ## Key Decisions
 | decision | chosen | alternatives_considered | rejection_reason |
@@ -214,11 +232,15 @@ HTTP 控制面新增管理员接口：
 | 心跳语义 | 心跳 liveness 控制外部代理节点是否可被新选择。 | 只在注册时验证一次。 | 一次性验证无法发现代理节点死亡或网络分区。 |
 | 统计存储 | 复用现有 SQLite-backed 统计接口。 | 为代理节点心跳/统计新增平行 store。 | 平行 store 会造成 API 视图和持久化累计值分叉。 |
 | NodeId 持久化文本 | 新写入 base36，不自动迁移旧 base58 rows。 | 启动时扫描并迁移所有旧 key。 | 全量迁移会扩大数据库写入风险；本需求只要求操作输出改为 base36。 |
+| identity 改名方式 | 保留私钥重签证书并写回 identity。 | 删除 identity 后重新生成；忽略配置 name。 | 重新生成会改变 P2P id，违反用户要求；忽略配置无法让客户端用新证书名连接。 |
+| 代理节点 name 存储 | 随 `PnServerInfo` 传播，可持久化为 PN server metadata。 | 单独维护 name 表；用 name 替换 `pn_server_id`。 | 单独表增加双真相源；替换 id 会破坏审批和 liveness 身份语义。 |
 
 ## Data and State
 | data_or_state | owner_submodule | access_for_others | state_transitions |
 | --- | --- | --- | --- |
 | 本地服务开关 `sn.enabled`/`pn.enabled` | `server-config` | `process-assembly` 只读配置结果。 | missing -> default true；invalid -> startup error；explicit false -> 对应本地服务不启动。 |
+| 服务端名称 `name` | `server-config` | `identity-lifecycle` 和代理节点上报路径读取。 | missing/blank -> existing identity name or p2p id fallback；non-empty -> new identity cert name；existing identity different -> same private key re-signed with new name。 |
+| 本地 identity 私钥和证书 | `identity-lifecycle` | `process-assembly` 获取 `P2pIdentityRef`，代理节点上报读取名称。 | missing -> generate key+cert with optional name；exists + matching name -> reuse；exists + changed name -> preserve key and rewrite cert；read/sign/write failure -> startup failure。 |
 | 纯代理节点控制节点地址 `sn.control_server` | `server-config` | `control-node-control` 读取解析后的地址用于连接。 | missing on pure proxy mode -> startup/config error；valid -> connect；invalid -> startup/config error；legacy `pn.control_server` present -> compatible read with migration warning/follow-up. |
 | HTTP 管理面监听 `sn.http` | `server-config` | `process-assembly` 读取解析后的监听地址启动 HTTP server。 | missing -> default `0.0.0.0:3445`；legacy top-level `http` present -> compatible read；invalid -> startup error。 |
 | 管理员 bootstrap `sn.admin` | `server-config` | `process-assembly` 读取解析后的账号名和密码初始化控制节点账号。 | missing -> existing default/admin behavior；legacy top-level `admin` present -> compatible read；invalid or empty values -> startup/config error if validation is added. |
@@ -226,6 +248,7 @@ HTTP 控制面新增管理员接口：
 | 非 SN-client 控制连接状态 | `control-node-control` | validators/reporters 通过 `VpnControlClient` command sender 发请求。 | disconnected -> validation fail closed and heartbeat unavailable；connected -> command calls allowed；send failure -> mark unavailable/retry without selecting proxy。 |
 | proxy-control purpose 监听状态 | `control-node-control` | `process-assembly` 注册监听，`VpnControlClient` 使用同一 purpose 发起连接。 | not registered -> proxy control connection fails；registered + proxy identity -> command server handles registration/heartbeat；registered + non-proxy identity -> fail closed before command dispatch；wrong SN purpose -> no proxy-control listener match。 |
 | 外部代理节点批准状态 | `sqlite-persistence` | `control-node-control` 和 `http-api` 通过 store/selector 接口读取和写入。 | absent -> pending on heartbeat；pending -> approved/rejected by HTTP；approved/rejected -> pending only by explicit future reset not in current scope；write failure -> no selection change。 |
+| 代理节点 reported name | `control-node-control` owning runtime projection, optional `sqlite-persistence` metadata | `http-api` 和 `vpn-frame` network info 读取。 | absent -> client uses id fallback；heartbeat/report with name -> selector stores/returns name；later heartbeat with new name -> latest live name replaces previous metadata without changing approval status。 |
 | 心跳 liveness | `control-node-control` | 选择逻辑读取 live/unavailable 状态，并与批准状态组合。 | no heartbeat -> unavailable；heartbeat -> live until ttl；ttl expired -> unavailable；heartbeat restored -> live, but selectable only if approved。 |
 | 真实连接来源地址 `observed_addr` | `http-api` as runtime projection | `vpn_web` 和 API clients 通过 `GET /pn_proxy_nodes` 只读展示。 | no observed peer IP -> absent/null；peer IP observed -> returned for display；network/NAT change -> next list response reflects current observation；query failure -> absent/null without changing approval state。 |
 | joined-node/group 授权真相 | `sqlite-persistence` | `relay-authorization` 和 `http-api` 通过 store 接口读取。 | absent -> denied；pending -> denied；allow_join true -> eligible；delete/revoke -> denied。 |
@@ -234,7 +257,9 @@ HTTP 控制面新增管理员接口：
 
 ## Testability
 - `server-config` 可以通过纯解析单元测试验证缺省值、removed field、`sn.control_server`、`sn.http`、`sn.admin`、`sn.jwt`、旧字段兼容和错误地址。
+- `server-config` / `identity-lifecycle` 可以通过纯解析和 identity helper 测试验证顶层 `name` 默认、环境变量覆盖、初次生成传名、已有 identity 名称变化重签且 P2P id 不变。
 - `control-node-control` 需要可替换 TTL/selector store seam，以测试 pending 创建、approved + live 选择、rejected 不选择、heartbeat timeout 和恢复。
+- `control-node-control` 可以通过 selector/store fake 验证 reported `name` 在 heartbeat merge、list API projection 和 selected `PnServerInfo` 中保留，且 approval key 仍按 `id`。
 - `http-api` 可以通过请求 handler 或 DV 覆盖未认证、列表、批准、拒绝和幂等更新。
 - `http-api` 的 `observed_addr` 可以通过 fake/available peer WAN 查询路径验证：有观测地址时返回地址，缺失或查询失败时不改变批准状态并返回缺失值。
 - `relay-authorization` 可通过 SQLite fixture 验证同组/跨组/未审批 source-target。
@@ -249,6 +274,8 @@ HTTP 控制面新增管理员接口：
 | --- | --- | --- | --- |
 | YAML `sn.enabled` | CHG-local-pn-toggle-preserved | backward-compatible | 默认 `true`，继续控制本地 SN service。 |
 | YAML `pn.enabled` | CHG-local-pn-toggle-preserved, CHG-colocated-pn-default-allowed | backward-compatible | 默认 `true`，继续控制内置代理节点。 |
+| YAML top-level `name` | CHG-server-identity-cert-name, CHG-server-proxy-node-reported-name | backward-compatible | 缺省保持旧行为；非空值用于 identity 证书名称和代理节点上报名称，可由 `VPN_NAME` 覆盖。 |
+| local identity file | CHG-server-identity-cert-name | migration-required | 已有 identity 名称不同于配置 name 时必须保留私钥重签新证书并写回；不能生成新私钥。 |
 | removed YAML `pn.server_addresses` | CHG-pn-config-no-static-addresses | migration-required | 旧字段不再是支持合同；implementation 必须选择 reject 或 warning ignore，并记录迁移。 |
 | pure proxy control-node address config `sn.control_server` | CHG-pure-pn-sn-address | migration-required | 推荐字段为 `sn.control_server.id` / `sn.control_server.endpoint`；旧 `pn.control_server` 可兼容读取一个迁移窗口，但不得出现在推荐模板。 |
 | HTTP management listener config `sn.http` | CHG-sn-http-config | migration-required | 推荐字段为 `sn.http.ip` / `sn.http.port`；旧顶层 `http` 可兼容读取一个迁移窗口，但不得出现在推荐模板。 |
@@ -259,6 +286,7 @@ HTTP 控制面新增管理员接口：
 | external proxy registration/heartbeat control | CHG-external-pn-active-control, CHG-pn-sn-heartbeat | new | 消费者是外部代理节点和控制节点选择逻辑。 |
 | SQLite `pn_proxy_node` approval state | CHG-external-pn-approval-persistence | new | 消费者是 `control-node-control` 和 `http-api`；迁移通过 `CREATE TABLE IF NOT EXISTS`。 |
 | HTTP `GET /pn_proxy_nodes` | CHG-external-pn-approval-http-api, CHG-external-pn-observed-address | new | 消费者是管理员/API clients 和 `vpn_web`；返回 `pn_server`、`observed_addr`、`status`、`live`、`updated_at`、`comment`。 |
+| `PnServerInfo.name` in report/API/network info | CHG-server-proxy-node-reported-name, CHG-pn-server-reported-name-contract | backward-compatible | 缺失为 absent；存在时控制节点必须在 proxy-node list 和返回给客户端的 PN info 中保留。 |
 | HTTP `POST /approve_pn_proxy_node` / `POST /reject_pn_proxy_node` | CHG-external-pn-approval-http-api | new | 消费者是管理员/API clients；请求体包含 `pn_server` 和可选 `comment`。 |
 | SQLite-backed traffic stat storage | CHG-pn-traffic-db-interface | backward-compatible | 复用现有累计统计接口，不新增平行 store。 |
 | 服务端 NodeId HTTP/SQLite/log 文本 | CHG-server-node-id-base36 | migration-required | 新输出和新写入使用 base36；旧 base58 存量数据不自动迁移，非 NodeId base58 保持不变。 |
@@ -287,8 +315,10 @@ HTTP 控制面新增管理员接口：
 - 如果实现继续复用 `sn_cmd_purpose()`，代理控制面会和 SN 命令面共享接入口，控制节点无法在 purpose 层区分并只接受代理节点；回滚应恢复为独立 proxy-control purpose。
 - 如果 proxy-control purpose 接受普通客户端或未知身份连接，控制面可能被非代理节点驱动注册、校验或上报；回滚优先关闭该 listener 或在接入前增加代理身份校验。
 - 如果 implementation 只停止 `ReportSn` 日志但仍创建 `SNClientService`，需求未满足；验收必须检查启动路径而不只看日志级别。
+- 如果 identity 改名错误地生成新私钥，会改变节点身份；回滚优先停止启动并保留旧 identity 文件。
+- 如果 proxy reported name 被误用为 approval key，已有批准状态会失效；回滚优先移除 name 参与 key/selector 比较，只保留响应展示。
 
 ## Approval Record
 - approver: auto-pipeline
-- approval_date: 2026-07-02T13:05:00+08:00
-- user_statement: "确认，自动处理后续步骤；jwt也应该是sn节点下的配置"
+- approval_date: 2026-07-06T16:09:15+08:00
+- user_statement: "确认，自动处理后续步骤"

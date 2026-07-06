@@ -8,8 +8,8 @@ tokio = { version = "1", features = ["full"] }
 async-std = {version = "1.13.1", features = ["tokio1"]}
 async-trait = "0.1.85"
 bucky-raw-codec = {version = "0.1", features = ["derive"]}
-p2p-frame = {git = "https://github.com/buckyos/bucky-p2p.git", features = ["x509"]}
-#p2p-frame = { path = "../../p2p/p2p-frame", features = ["x509"] }
+#p2p-frame = {git = "https://github.com/buckyos/bucky-p2p.git", features = ["x509"]}
+p2p-frame = { path = "../../p2p/p2p-frame", features = ["x509"] }
 sfo-account = { version = "0.1", features = ["login"]}
 vpn-frame = { path = "../vpn-frame"}
 sfo-sql = { version = "0.3.3", features = ["sqlite"]}
@@ -24,3 +24,4 @@ serde_json = "1.0.140"
 base58 = "0.2.0"
 dirs = "6.0.0"
 if-addrs = "0.13.4"
+rcgen = { version = "0.14", features = ["aws_lc_rs"] }

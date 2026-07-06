@@ -5,7 +5,11 @@
 #   bucky-vpn-server --config config.yaml
 #
 # VPN_ 前缀的环境变量可以覆盖配置项，例如：
-# VPN_SN_ADMIN_NAME、VPN_SN_ADMIN_PASSWORD、VPN_SN_JWT_KEY、VPN_DATA_DIR。
+# VPN_NAME、VPN_SN_ADMIN_NAME、VPN_SN_ADMIN_PASSWORD、VPN_SN_JWT_KEY、VPN_DATA_DIR。
+
+# 本机 P2P identity 证书名，也是作为 PN 代理节点上报给控制节点的名字。
+# 修改该值后，服务端会保留已有私钥并重签生成带新名字的证书。
+name: "bucky-vpn-server"
 
 # SN 服务和内置 PN 代理节点使用的 P2P 监听地址。
 # 服务端会在同一 IP/端口上同时监听 QUIC 和 TCP。
@@ -46,6 +50,7 @@ pn:
   # 然后取消下面注释并填入控制节点的身份 ID 和 endpoint。
   # control_server:
   #   id: "control-server-node-id"
+  #   name: "control-server-name"
   #   endpoint: "203.0.113.10:3624"
 
 # identity、SQLite 数据库和日志使用的数据目录。

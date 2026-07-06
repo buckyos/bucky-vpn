@@ -6,9 +6,9 @@ use crate::pn_traffic_service::{
 };
 use crate::server_config::{
     ConfigPnServerSelector, build_server_config, endpoints_to_pn_server, get_pn_server_config,
-    get_sn_admin_config, get_sn_http_config, get_sn_jwt_config, get_sn_server_config,
-    is_standalone_proxy_node, resolve_service_endpoints, select_default_config_file,
-    should_start_pn_server,
+    get_server_name_config, get_sn_admin_config, get_sn_http_config, get_sn_jwt_config,
+    get_sn_server_config, is_standalone_proxy_node, resolve_service_endpoints,
+    select_default_config_file, should_start_pn_server,
 };
 use crate::sqlite_store_factory::{P2pSnCmdServer, SqliteStoreFactory};
 use crate::user_store::{SqliteUserStore, User};
@@ -18,14 +18,16 @@ use crate::vpn_control_client::{
     register_proxy_control_cmd_listener, reject_all_incoming_tunnel_validator,
 };
 use base58::ToBase58;
+use bucky_raw_codec::{RawConvertTo, RawDecode, RawEncode, RawFrom};
 use p2p_frame::endpoint::{Endpoint, Protocol};
-use p2p_frame::p2p_identity::{P2pIdentity, P2pIdentityFactory, P2pIdentityRef};
+use p2p_frame::p2p_identity::{P2pIdentity, P2pIdentityFactory, P2pIdentityRef, P2pSn};
 use p2p_frame::pn::PnServer;
 use p2p_frame::sn::service::{SnServiceConfig, create_sn_service};
 use p2p_frame::stack::{P2pConfig, create_p2p_env};
 use p2p_frame::ttp::{TtpServer, TtpServerRef};
 use p2p_frame::x509;
 use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
+use rcgen::KeyPair;
 use sfo_account::{AccountServer, AccountStore, DefaultAccountManager, hash_data};
 use sfo_http::http_server::HttpServerConfig;
 use sfo_http::openapi::OpenApiServer;
@@ -50,6 +52,63 @@ mod vpn_control_client;
 #[derive(utoipa::OpenApi)]
 #[openapi(paths(), components())]
 struct ApiDoc;
+
+#[derive(Debug, Clone, RawEncode, RawDecode)]
+struct EncodedX509IdentityCertData {
+    raw_cert: Vec<u8>,
+    sn_list: Vec<P2pSn>,
+    endpoints: Vec<Endpoint>,
+}
+
+#[derive(Debug, Clone, RawEncode, RawDecode)]
+struct EncodedX509IdentityData {
+    key: Vec<u8>,
+    cert: EncodedX509IdentityCertData,
+}
+
+async fn load_or_create_identity(identity_file: &PathBuf, name: Option<String>) -> P2pIdentityRef {
+    if identity_file.exists() {
+        let data = tokio::fs::read(identity_file.as_path()).await.unwrap();
+        let identity = X509IdentityFactory.create(&data).unwrap();
+        if let Some(name) = name {
+            if identity.get_name() != name {
+                let data = resign_encoded_identity_with_name(data.as_slice(), &name).unwrap();
+                tokio::fs::write(identity_file.as_path(), data.as_slice())
+                    .await
+                    .unwrap();
+                return X509IdentityFactory.create(&data).unwrap();
+            }
+        }
+        identity
+    } else {
+        let local_identity = x509::generate_rsa_x509_identity(name).unwrap();
+        let data = local_identity.get_encoded_identity().unwrap();
+        tokio::fs::write(identity_file.as_path(), data)
+            .await
+            .unwrap();
+        Arc::new(local_identity)
+    }
+}
+
+fn resign_encoded_identity_with_name(data: &[u8], name: &str) -> Result<Vec<u8>, String> {
+    let mut identity_data = EncodedX509IdentityData::clone_from_slice(data)
+        .map_err(|err| format!("decode identity failed: {err:?}"))?;
+    let key_pair = KeyPair::try_from(identity_data.key.clone())
+        .map_err(|err| format!("parse identity private key failed: {err:?}"))?;
+    let renamed_identity =
+        x509::generate_x509_identity_with_key_pair(Some(name.to_owned()), key_pair)
+            .map_err(|err| format!("regenerate identity certificate failed: {err:?}"))?;
+    let renamed_identity_data = renamed_identity
+        .get_encoded_identity()
+        .map_err(|err| format!("encode regenerated identity failed: {err:?}"))?;
+    let renamed_identity_data =
+        EncodedX509IdentityData::clone_from_slice(renamed_identity_data.as_slice())
+            .map_err(|err| format!("decode regenerated identity failed: {err:?}"))?;
+    identity_data.cert.raw_cert = renamed_identity_data.cert.raw_cert;
+    identity_data
+        .to_vec()
+        .map_err(|err| format!("encode identity failed: {err:?}"))
+}
 
 async fn start_proxy_ttp_server(
     local_identity: P2pIdentityRef,
@@ -99,6 +158,7 @@ async fn main() {
     let explicit_config_file = matches.get_one::<String>("config").map(String::as_str);
     let config_file = explicit_config_file.unwrap_or(default_config.as_str());
     let config = build_server_config(explicit_config_file, data_folder.as_path()).unwrap();
+    let server_name = get_server_name_config(&config);
     let sn_server_config = get_sn_server_config(&config);
     let pn_config = get_pn_server_config(&config).unwrap();
     let sn_http_config = if sn_server_config.enabled {
@@ -154,17 +214,7 @@ async fn main() {
     let standalone_proxy_node = is_standalone_proxy_node(&sn_server_config, &pn_config);
 
     let identity_file = data_dir.join("identity");
-    let identity = if identity_file.exists() {
-        let data = tokio::fs::read(identity_file.as_path()).await.unwrap();
-        X509IdentityFactory.create(&data).unwrap()
-    } else {
-        let local_identity = x509::generate_rsa_x509_identity(None).unwrap();
-        let data = local_identity.get_encoded_identity().unwrap();
-        tokio::fs::write(identity_file.as_path(), data)
-            .await
-            .unwrap();
-        Arc::new(local_identity)
-    };
+    let identity = load_or_create_identity(&identity_file, server_name.clone()).await;
     let local_identity = identity.update_endpoints(eps.clone());
     let control_identity = local_identity.clone();
     let local_id = local_identity.get_id();
@@ -179,7 +229,8 @@ async fn main() {
         &eps,
         pn_route_hint,
         &pn_config.port_mapping,
-    );
+    )
+    .with_name(server_name.clone());
     let pn_servers = if start_pn_server {
         vec![local_pn_server.clone()]
     } else {

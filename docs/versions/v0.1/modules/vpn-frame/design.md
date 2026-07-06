@@ -2,9 +2,9 @@
 module: vpn-frame
 version: v0.1
 status: approved
-approved_by: user-request
-approved_at: 2026-07-01T17:44:43+08:00
-approved_content_sha256: c69205adcc92a754468d7b5508af182c3deaab117d5a2b255177d284f40b2cfb
+approved_by: auto-pipeline
+approved_at: 2026-07-06T16:09:15+08:00
+approved_content_sha256: 124716ee5d344be93082f6e524e1f51e94159df10d1ca87e74ea9fc8668b6de5
 ---
 
 # vpn-frame Design
@@ -14,20 +14,22 @@ The design implements `CHG-pn-server-info-contract` for the shared PN server pro
 
 This design also implements `CHG-node-id-base36-contract`: external `NodeId` string values exposed by shared runtime contracts, logs, and direct cross-crate consumers use base36 as the canonical representation. Raw `NodeId` bytes and protocol codecs remain unchanged. Existing base58 helpers may remain as legacy compatibility helpers, but new NodeId-facing operations must not choose base58 as their output format.
 
+This design also implements `CHG-pn-server-reported-name-contract`: `PnServerInfo` carries an optional reported proxy-node `name`. The field is metadata used by control-node responses and client PN connection naming; it is not a node identity, approval key, selector key, or endpoint replacement.
+
 ## Overall Approach
-Add or keep `PnServerInfo` in `vpn_protocol.rs` with `id: String`, `ip: IpAddr`, and `port: u16`, but remove endpoint-string parsing and endpoint-string identity helpers. Change `NodeNetwork.pn_server`, `ReportPnTrafficStatsReq.pn_server`, `PnServerSelector`, store-facing `Network.pn_server`, selector state, and SQLite PN server fields to carry `PnServerInfo`. The server constructs `PnServerInfo` from the local or configured P2P node id plus the selected endpoint address. The client derives a P2P `Endpoint` from `ip` and `port` only when calling the P2P connection API.
+Add or keep `PnServerInfo` in `vpn_protocol.rs` with `id: String`, `ip: IpAddr`, `port: u16`, optional `name: Option<String>`, and address metadata, but remove endpoint-string parsing and endpoint-string identity helpers. Change `NodeNetwork.pn_server`, `ReportPnTrafficStatsReq.pn_server`, `PnServerSelector`, store-facing `Network.pn_server`, selector state, and SQLite PN server fields to carry `PnServerInfo`. The server constructs `PnServerInfo` from the local or configured P2P node id plus the selected endpoint address and, when configured/reported, the proxy node name. The client derives a P2P `Endpoint` from `ip` and `port` only when calling the P2P connection API, and may use `name` only as the remote connection name.
 
 ## Simplicity Check
 | topic | decision | reason |
 |-------|----------|--------|
-| new abstraction | Use one shared `PnServerInfo` value | The same id/ip/port tuple is needed by protocol, selector, heartbeat, and persistence. |
+| new abstraction | Use one shared `PnServerInfo` value | The same id/ip/port/name tuple is needed by protocol, selector, heartbeat, and persistence. |
 | persistence migration | not included | The requirement rejects old endpoint-string compatibility. |
 | dependency change | not included | `std::net` and existing `p2p-frame` usage are sufficient. |
 
 ## Current Structure
 | path | current_responsibility | change |
 |------|------------------------|--------|
-| `vpn-frame/src/vpn_protocol.rs` | Shared command and data structs | Define `PnServerInfo` without endpoint-string compatibility helpers; use it in `NodeNetwork` and `ReportPnTrafficStatsReq`. |
+| `vpn-frame/src/vpn_protocol.rs` | Shared command and data structs | Define `PnServerInfo` without endpoint-string compatibility helpers; use it in `NodeNetwork` and `ReportPnTrafficStatsReq`; add optional reported name metadata. |
 | `vpn-frame/src/server/network_store.rs` | Server storage-facing network model | Change `Network.pn_server` to `Option<PnServerInfo>`. |
 | `vpn-frame/src/server/node_store.rs` | Shared `NodeId` domain type and string helpers | Keep raw bytes unchanged and make base36 the canonical external string helper for new consumers. |
 | `vpn-frame/src/server/network_manager.rs` | Network update orchestration | Pass structured PN server values into the store and log NodeId values as base36. |
@@ -35,8 +37,8 @@ Add or keep `PnServerInfo` in `vpn_protocol.rs` with `id: String`, `ip: IpAddr`,
 | `vpn-frame/src/client/vpn_server_client.rs` | Sends traffic stats to the VPN server | Send structured `PnServerInfo` in report commands. |
 | `vpn-frame/src/client/tunnel_manager.rs` | Keeps per-network route PN values | Store structured `PnServerInfo` without endpoint identity conversion. |
 | `vpn-frame/src/client/vpn_client.rs` | Receives VPN info and reports PN traffic | Pass structured PN server values through client reporting paths. |
-| `vpn-client/src/p2p_vpn.rs` | Connects to PN transport endpoints | Derive the final P2P endpoint from `PnServerInfo.ip` and `port`; do not use `id` as endpoint text. |
-| `vpn-server/src/server_config.rs` | Builds PN selector candidates and proxy-node state | Construct `PnServerInfo` from P2P node ids and endpoint addresses; selector stores structured values. |
+| `vpn-client/src/p2p_vpn.rs` | Connects to PN transport endpoints | Derive the final P2P endpoint from `PnServerInfo.ip` and `port`; use `name` as the PN remote connection name when present, otherwise fall back to `id`. |
+| `vpn-server/src/server_config.rs` | Builds PN selector candidates and proxy-node state | Construct `PnServerInfo` from P2P node ids, endpoint addresses, and reported names; selector stores structured values. |
 | `vpn-server/src/main.rs` | Wires local identity, PN endpoints, and optional control server | Use the local P2P id for local PN server info and configured control-server id for remote report targets. |
 | `vpn-server/src/vpn_control_client.rs` | Reports PN traffic to a control server | Carry structured PN server values in traffic reports. |
 | `vpn-server/src/sqlite_store_factory.rs` | Persists networks and proxy-node approvals | Store PN server id/ip/port in separate fields; do not parse old endpoint strings. |
@@ -50,6 +52,7 @@ Add or keep `PnServerInfo` in `vpn_protocol.rs` with `id: String`, `ip: IpAddr`,
 | Existing P2P connection APIs receive endpoints | Endpoint derivation happens only at the client P2P boundary from ip/port. |
 | Raw codec and serde derive support remain available | `PnServerInfo` derives the same protocol traits needed by command structs. |
 | NodeId byte identity remains unchanged | Only text rendering/parsing policy changes; hash bytes, raw codec, and stored binary semantics are preserved. |
+| PN server identity semantics remain unchanged | `PnServerInfo.name` is optional metadata and must not replace `id` for approval, liveness, selector, or persistence keys. |
 
 ## Submodules
 | submodule | type | responsibility | depends_on |
@@ -67,6 +70,7 @@ Add or keep `PnServerInfo` in `vpn_protocol.rs` with `id: String`, `ip: IpAddr`,
 | boundary | classification | business_responsibility | shared_logic_or_technical_area | decision |
 |----------|----------------|-------------------------|--------------------------------|----------|
 | `vpn_protocol.rs` PN server value | shared | Expose selected PN server identity and address to consumers | protocol serialization | Add/use `PnServerInfo` with no endpoint-string identity helpers. |
+| `vpn_protocol.rs` PN server reported name | shared | Carry operator/configured proxy-node name across report and response payloads | optional protocol metadata | Add optional `name` to `PnServerInfo`; missing/blank name preserves old behavior. |
 | server selector state | business | Choose and validate PN server candidates | selector availability and approval | Use `PnServerInfo` and compare identity by structured fields. |
 | SQLite PN server storage | technical | Persist selected PN server and proxy-node approval | data schema | Store id/ip/port columns; do not read old endpoint columns. |
 | client P2P connect call | business | Connect to selected PN relay | existing endpoint parser/API | Derive an endpoint from `ip` and `port` at the P2P boundary only. |
@@ -88,7 +92,7 @@ Add or keep `PnServerInfo` in `vpn_protocol.rs` with `id: String`, `ip: IpAddr`,
 | flow | caller | callee_submodule_path | purpose | failure_handling |
 |------|--------|-----------------------|---------|------------------|
 | VPN info response | `server-runtime` | `protocol` | Select a structured PN server and send it in `NodeNetwork`. | If no valid PN server is available, persist and send `None`. |
-| Client PN connect | `client-runtime` / `bucky-vpn` | `protocol` | Derive a P2P endpoint from `PnServerInfo.ip` and `port` for the existing P2P API. | Existing connect errors still return `VpnResult` failures at the P2P boundary. |
+| Client PN connect | `client-runtime` / `bucky-vpn` | `protocol` | Derive a P2P endpoint from `PnServerInfo.ip` and `port`, and pass `PnServerInfo.name` as the remote name when present. | Existing connect errors still return `VpnResult` failures at the P2P boundary; missing name falls back to id. |
 | Network persistence | `bucky-vpn-server` | `persistence` | Store selected PN server id/ip/port in the network row. | Database errors propagate as existing `VpnResult` I/O errors. |
 | Proxy-node heartbeat | `bucky-vpn-server` | `persistence` | Store pending/approved remote PN server id/ip/port rows. | Approval query returns false when no row exists; database errors propagate. |
 
@@ -96,11 +100,13 @@ Add or keep `PnServerInfo` in `vpn_protocol.rs` with `id: String`, `ip: IpAddr`,
 | submodule | source_proposal | decision | design_packet | reason |
 |-----------|-----------------|----------|---------------|--------|
 | protocol | PROP-pn-server-info | existing submodule in module-level packet | docs/versions/v0.1/modules/vpn-frame/design.md | This is a focused shared contract change across direct consumers, not a new independent feature packet. |
+| protocol | PROP-pn-server-reported-name | existing submodule in module-level packet | docs/versions/v0.1/modules/vpn-frame/design.md | This extends the existing PN server protocol value with optional metadata instead of creating a new independent feature packet. |
 
 ## Trigger Matrix
 | trigger_category | applies | evidence | design_coverage | required_checks | deferred_checks_and_reason |
 |------------------|---------|----------|-----------------|-----------------|----------------------------|
 | contract/protocol | yes | `NodeNetwork.pn_server` and `ReportPnTrafficStatsReq.pn_server` serialized types change. | `PnServerInfo` derives raw codec and serde traits. | schema-check; admission-check; vpn-frame tests | none |
+| contract/protocol | yes | `PnServerInfo.name` is carried from proxy-node reports to control-node responses and client PN connection setup. | Optional field with serde default/backward-compatible absence; identity remains `id`. | schema-check; admission-check; vpn-frame tests | none |
 | data/schema | yes | Persistent PN server fields change from endpoint string to structured id/ip/port. | SQLite schema and store bindings use separate fields. | testing-coverage-check; vpn-frame unit/DV/integration | owner: vpn-frame maintainers; risk: existing endpoint-string rows are unsupported by requirement; acceptance impact: acceptance must verify no legacy endpoint compatibility claim remains |
 | security/privacy/permission | no | No authorization rule or membership visibility change. | not-applicable: no permission branch is changed | none | none |
 | runtime/integration | yes | Client and server binaries consume the field and report heartbeats. | Scope includes direct client/server consumer paths. | vpn-frame integration harness level | none |
@@ -114,6 +120,7 @@ Add or keep `PnServerInfo` in `vpn_protocol.rs` with `id: String`, `ip: IpAddr`,
 |-----------|-------------|-----------------|-------------|
 | CHG-pn-server-info-contract | PROP-pn-server-info | Add/use `PnServerInfo`, change protocol, selector, heartbeat, client connection, HTTP API, and SQLite PN server storage so PN server id is the `vpn-server` P2P node id and no endpoint-string storage compatibility remains. | `vpn-frame/src/vpn_protocol.rs`, `vpn-frame/src/server/network_store.rs`, `vpn-frame/src/server/network_manager.rs`, `vpn-frame/src/server/vpn_server.rs`, `vpn-frame/src/client/vpn_server_client.rs`, `vpn-frame/src/client/tunnel_manager.rs`, `vpn-frame/src/client/vpn_client.rs`, `vpn-client/src/p2p_vpn.rs`, `vpn-server/src/server_config.rs`, `vpn-server/src/main.rs`, `vpn-server/src/vpn_control_client.rs`, `vpn-server/src/sqlite_store_factory.rs`, `vpn-server/src/api.rs` |
 | CHG-node-id-base36-contract | PROP-node-id-base36-contract | Define base36 as the canonical external `NodeId` string representation while preserving raw bytes and protocol codecs; legacy base58 parsing is compatibility-only and must not be used for new NodeId output. | `vpn-frame/src/server/node_store.rs`, `vpn-frame/src/server/network_manager.rs`, `vpn-frame/src/server/vpn_server.rs` |
+| CHG-pn-server-reported-name-contract | PROP-pn-server-reported-name | Add optional reported proxy-node name to `PnServerInfo` and carry it through network info, traffic report, selector state, API JSON, and client PN connect remote-name fallback rules. | `vpn-frame/src/vpn_protocol.rs`, `vpn-frame/src/server/vpn_server.rs`, `vpn-frame/src/client/tunnel_manager.rs`, `vpn-client/src/p2p_vpn.rs`, `vpn-server/src/server_config.rs`, `vpn-server/src/vpn_control_client.rs`, `vpn-server/src/api.rs`, `vpn-server/src/sqlite_store_factory.rs` |
 
 ## Implementation Order
 | phase | goal | prerequisite | output | dependency | parallel |
@@ -132,6 +139,7 @@ Add or keep `PnServerInfo` in `vpn_protocol.rs` with `id: String`, `ip: IpAddr`,
 | Persistence format | id/ip/port fields | single endpoint string column | Endpoint storage preserves the rejected legacy shape. |
 | Old endpoint-string data | unsupported | parse and migrate old strings | The requirement explicitly rejects old-data compatibility. |
 | NodeId text format | base36 canonical output with optional explicit legacy parser | keep base58 output; silently accept every format everywhere | The user explicitly requested all NodeId operations move to base36; broad silent parsing would blur the new contract. |
+| PN server name semantics | Optional metadata on `PnServerInfo` | Use name as primary selector key; add a separate name registry | The requested name is for certificate/connection naming and display, while `id` remains the stable node identity. |
 
 ## Data and State
 | data_or_state | owner_submodule | access_for_others | state_transitions |
@@ -139,6 +147,7 @@ Add or keep `PnServerInfo` in `vpn_protocol.rs` with `id: String`, `ip: IpAddr`,
 | selected PN server info | persistence | Exposed through `Network.pn_server` and `NodeNetwork.pn_server` | none -> selected structured tuple -> reassigned when selector invalidates old value -> none if no valid selector exists |
 | proxy-node approval info | persistence | Exposed through server config/API state as structured PN server info plus approval metadata | missing -> pending on heartbeat -> approved/rejected by operator -> pending/approved/rejected updated on later writes |
 | protocol PN server info | protocol | Read by client-runtime and external consumers through command payloads | absent -> present when selector returns structured data; present -> absent if selector returns none |
+| reported PN server name | protocol | Read by server selector, API projection, and client connection setup through `PnServerInfo` | absent -> fallback to id; configured/reported non-empty name -> propagated unchanged; blank values normalize to absent in owners that parse config |
 | NodeId external text | shared NodeId type and direct runtime consumers | Read by server/client/API/UI modules as identity strings | raw bytes -> base36 display/store/request string; old base58 text is a legacy read concern only at module-owned migration boundaries |
 
 ## Testability
@@ -148,6 +157,7 @@ Add or keep `PnServerInfo` in `vpn_protocol.rs` with `id: String`, `ip: IpAddr`,
 | SQLite structured storage | Unit or DV-level checks can cover schema bindings for network/proxy-node PN server id/ip/port. |
 | Server response and heartbeat conversion | DV/build checks catch producer type mismatches; integration catches stale `Option<String>` usage. |
 | Client connection derivation | Workspace integration catches compile-time contract drift in `bucky-vpn` and `bucky-vpn-server`. |
+| PN server reported name propagation | Unit/DV checks can assert reported `name` survives selector/API/network-info paths and client remote-name fallback. |
 | NodeId base36 contract | Unit/build checks cover base36 encode/decode helpers and direct consumer compilation after base58 call sites are removed. |
 
 ## Interfaces and Dependencies
@@ -156,6 +166,7 @@ Add or keep `PnServerInfo` in `vpn_protocol.rs` with `id: String`, `ip: IpAddr`,
 | `NodeNetwork.pn_server: Option<PnServerInfo>` | `bucky-vpn`, `bucky-vpn-server`, `CHG-pn-server-info-contract` | breaking | Affected callers that expected `Option<String>` must pass structured values. |
 | `ReportPnTrafficStatsReq.pn_server: Option<PnServerInfo>` | `bucky-vpn-server`, `CHG-pn-server-info-contract` | breaking | Heartbeats report the structured PN server tuple. |
 | `PnServerSelector` structured methods | `bucky-vpn-server`, `CHG-pn-server-info-contract` | breaking | Selector validates, selects, and reports `PnServerInfo`. |
+| `PnServerInfo.name: Option<String>` | `bucky-vpn-server`, `bucky-vpn`, `CHG-pn-server-reported-name-contract` | backward-compatible | Missing name is accepted and treated as absent; non-empty name is used for display/control responses and PN remote-name setup only. |
 | SQLite `network` PN server fields | `bucky-vpn-server`, `CHG-pn-server-info-contract` | migration-required | New rows use id/ip/port fields; old endpoint-string rows are unsupported. |
 | SQLite `pn_proxy_node` PN server fields | `bucky-vpn-server`, `CHG-pn-server-info-contract` | migration-required | Approval rows are keyed by PN server id and store ip/port separately. |
 | HTTP API PN server JSON | `bucky-vpn-server`, `CHG-pn-server-info-contract` | breaking | Proxy-node approval/list and network list responses use id/ip/port JSON objects. |
@@ -175,8 +186,9 @@ Add or keep `PnServerInfo` in `vpn_protocol.rs` with `id: String`, `ip: IpAddr`,
 | Existing database incompatibility | Requirement explicitly accepts no old endpoint compatibility; document this in testing/acceptance. | Restore endpoint-string storage only with a new approved requirement. |
 | Endpoint derivation confusion | Keep derivation confined to client P2P connect code and never store it as PN server id. | Restore direct endpoint storage only with a new approved requirement. |
 | Old base58 NodeId text in local data | Treat as an explicit migration/compatibility concern in the owning store or UI module. | Re-enable base58 output only with a new approved requirement. |
+| Name treated as identity by mistake | Preserve id-based keys and document name as metadata in selector/store/API/client boundaries. | Drop the optional name field with a new approved requirement if it proves incompatible with downstream p2p-frame naming. |
 
 ## Approval Record
-- approver: user-request
-- approval_date: 2026-07-01T17:44:43+08:00
+- approver: auto-pipeline
+- approval_date: 2026-07-06T16:09:15+08:00
 - user_statement: "确认，自动处理后续步骤"

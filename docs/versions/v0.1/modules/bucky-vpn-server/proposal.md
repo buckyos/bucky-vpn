@@ -2,9 +2,9 @@
 module: bucky-vpn-server
 version: v0.1
 status: approved
-approved_by: auto-pipeline
-approved_at: 2026-07-02T13:05:00+08:00
-approved_content_sha256: 70ce3ddc11b854b3db9e5ce9f874e04d37e0580f26b2272bf9046c2fcd6883f0
+approved_by: user-request
+approved_at: 2026-07-06T16:09:15+08:00
+approved_content_sha256: d70aaafca3aa5ec1e1015d525679690a4e8bd90c9c42bd7c5fa7664d70b3ef93
 ---
 
 # bucky-vpn-server Proposal
@@ -29,6 +29,12 @@ approved_content_sha256: 70ce3ddc11b854b3db9e5ce9f874e04d37e0580f26b2272bf9046c2
 控制节点地址属于 SN/control-node 配置域，而不属于本机 PN 代理角色配置域。纯代理节点应通过 `sn` 节点下的控制节点配置找到控制面；`pn` 节点只表达本机是否启用代理角色以及代理角色自身的心跳/上报配置。
 
 HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会话 JWT 签名配置也属于 SN/control-node 配置域。HTTP 管理面用于控制节点账号登录、网络管理和代理节点审批；管理员账号用于登录该管理面；JWT 签名密钥用于该管理面的登录会话。三者都不属于 PN 代理角色自身能力，因此应从顶层 `http` / `admin` / `jwt` 迁移到 `sn.http` / `sn.admin` / `sn.jwt` 或 design 选定的等价 SN 子节点。
+
+服务端配置还需要提供用于生成本机 P2P identity 证书的名字字段。该字段描述本服务端身份名称，和监听 `ip`/`port` 一样属于本机 identity/listener 启动输入，不属于 HTTP 登录 JWT。推荐配置模板应在现有监听地址附近增加 `name` 字段或 design 选定的等价字段，使 operator 能配置新生成证书的 subject/name。
+
+如果 operator 修改了证书名字，服务端不得因此轮换私钥或改变节点身份密钥。启动时应在保留已有私钥的前提下生成带新名字的证书；只有 identity 文件缺失或私钥不可读取时，才允许走新 identity 生成路径。具体 identity 文件格式、旧证书名字检测和重签失败行为由 design 固化。
+
+如果代理节点配置了名字，代理节点向控制节点注册、心跳或上报代理信息时也必须带上该名字。控制节点在保存外部代理节点运行时状态、HTTP 管理面列表和返回给客户端的代理节点信息时，应保留该上报名字；客户端后续连接该代理节点时应使用控制节点返回的名字。该名字是连接/display 元数据，不得替代 `pn_server` 稳定身份、批准状态主键或 source-target 授权 key。
 
 代理节点连接到控制节点后，代理节点与控制节点之间必须保持心跳。心跳是运行时 liveness 信号，控制节点据此判断该代理节点是否仍可参与选择。
 
@@ -70,6 +76,10 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 - 要求 HTTP 管理面监听配置归入 `sn` 配置域，不再作为推荐顶层配置。
 - 要求管理员账号 bootstrap 配置归入 `sn` 配置域，不能作为 PN 代理角色配置，也不再作为推荐顶层配置。
 - 要求 HTTP 登录会话 JWT 签名配置归入 `sn` 配置域，不能作为 PN 代理角色配置，也不再作为推荐顶层配置。
+- 要求服务端启动配置提供本机 P2P identity 证书名字字段，推荐模板在监听 `ip`/`port` 附近展示该字段或 design 选定的等价位置。
+- 要求修改证书名字时保留已有私钥，只重新生成带新名字的证书。
+- 要求代理节点向控制节点上报配置的名字，控制节点在代理节点信息中保留并返回该名字。
+- 要求返回给客户端的代理节点信息带上控制节点收到的代理节点名字，供客户端连接代理节点时使用。
 - 要求纯代理节点控制面通信不启动 `p2p-frame` SN client，不向控制节点执行 SN `ReportSn` 上报。
 - 要求代理节点与控制节点保持心跳，使 liveness 影响外部代理节点可用性。
 - 要求与控制节点同进程的内置代理节点默认被允许。
@@ -81,7 +91,7 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 - 记录 design、implementation、testing 和 acceptance 的下游回流事项。
 
 ### Out of scope
-- 客户端二进制行为和 Flutter Web 行为。
+- 客户端二进制行为和 Flutter Web 行为；客户端如何把返回的代理节点名字传给底层 P2P 连接由 `bucky-vpn` packet 负责。
 - 平台打包脚本。
 - 账单、额度清零、报表或结算系统。
 - 替换账号模型、JWT/session 模型或 SQLite 本地持久化真相。
@@ -94,6 +104,7 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 - `bucky-vpn-server` 拥有进程装配、本地持久化、控制节点策略和 HTTP 控制面集成职责。
 - `vpn-frame` 拥有共享 VPN 领域类型和 server/client runtime 合同。
 - `p2p-frame` 拥有 identity、SN service、PN server、TTP 和协议原语。
+- `bucky-vpn` 拥有客户端连接代理节点时如何使用返回名字的实现职责。
 - 外部代理节点接受与否是控制节点决策；不能信任客户端自行决定哪个外部 relay 有效。
 - 代理转发 source-target 授权仍属于服务端职责，必须继续使用本地持久化 joined-node 和 group 真相。
 
@@ -130,6 +141,9 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 - HTTP 管理面监听配置必须放在 `sn` 配置域下，推荐配置模板不得继续把 `http` 作为顶层节点。
 - 管理员账号 bootstrap 配置必须放在 `sn` 配置域下，推荐配置模板不得继续把 `admin` 作为顶层节点。
 - HTTP 登录会话 JWT 签名配置必须放在 `sn` 配置域下，推荐配置模板不得继续把 `jwt` 作为顶层节点。
+- 推荐配置模板必须提供本机 P2P identity 证书名字字段，且该字段不得与 HTTP 登录 JWT key 或管理员账号 name 混用。
+- 当证书名字变化且已有 identity 私钥可读取时，服务端必须保留旧私钥并重签生成带新名字的证书，不得隐式轮换私钥。
+- 旧 identity 文件不可解析或无法提取私钥时，不得静默覆盖；design 必须选择 fail closed 或明确的新 identity 初始化路径。
 - 纯代理节点不得把控制节点配置为 `P2pSn` 后启动 `SNClientService`，也不得依赖 SN `ReportSn` 完成控制面在线。
 - 纯代理节点的控制命令、注册、校验、心跳和流量上报必须通过独立控制通道或已存在的非 SN-client 通道完成。
 - 如果替代控制通道尚未设计清楚，implementation 不得只删除 `wait_online()` 或 `ReportSn` 调用后留下无心跳、无校验或无流量上报的半连接状态。
@@ -166,6 +180,10 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 | HTTP 配置是否应保持顶层 `http`？ | 不应作为推荐结构。HTTP 管理 API 是控制节点管理面入口，和 SN/control-node 角色绑定。 | 顶层 `http` 在多角色配置中语义过宽，纯 PN 节点看到该字段时容易误以为本地也要启动管理面。 | 将 HTTP 管理面监听配置归入 `sn` 节点，design 定义旧顶层字段兼容或拒绝策略。 |
 | 管理员账号是否应保持顶层 `admin`？ | 不应作为推荐结构。管理员账号服务于控制节点管理面和代理节点审批，和 SN/control-node 角色绑定更强。 | 顶层 `admin` 在多角色配置中语义过宽，纯 PN 节点看到该字段时也容易误以为需要本地管理员账号。 | 将管理员 bootstrap 配置归入 `sn` 节点，design 定义旧顶层字段兼容或拒绝策略。 |
 | JWT 配置是否应保持顶层 `jwt`？ | 不应作为推荐结构。JWT key 服务于控制节点 HTTP 管理面的登录会话签名，和 SN/control-node 角色绑定更强。 | 顶层 `jwt` 在多角色配置中语义过宽，纯 PN 节点看到该字段时容易误以为本地也需要管理会话签名配置。 | 将 JWT 签名配置归入 `sn` 节点，design 定义旧顶层字段兼容或拒绝策略。 |
+| 证书名字配置应放在哪里？ | 用户指向 `config.example.yaml` 中监听 `ip`/`port` 附近要求增加 `name` 字段。该名字描述本机 P2P identity 证书，而不是 HTTP 登录 JWT 或管理员账号。 | 将证书名字作为本机 identity/listener 启动配置；proposal 推荐在顶层 `ip`/`port` 附近增加 `name`，最终字段名和环境变量由 design 固化。 | Design 必须定义 YAML 字段、默认名字、环境变量兼容、旧配置行为和示例模板位置。 |
+| 修改证书名字是否应轮换私钥？ | 不应。operator 改名字通常只想改变证书展示/subject；轮换私钥会改变节点身份材料，可能破坏控制节点、代理节点或已批准节点关系。 | 修改名字时必须复用已有私钥重签证书；仅当私钥缺失或不可解析时才走新 identity 生成路径或明确失败。 | Design 必须确认现有 `p2p-frame` X509 identity API 是否支持从旧私钥重签，并定义无法重签时的错误处理。 |
+| 代理节点名字是否应该随上报进入控制面？ | 应该。用户要求代理节点设置名字后，上报控制节点时带上名字，控制节点再把该名字返回给客户端。 | 需要扩展代理上报/心跳 payload、运行时状态和返回给客户端的 `PnServerInfo`；若名字被当成 id，会破坏批准和选择稳定性。 | 将名字作为可变元数据随代理上报进入控制面，并通过代理节点信息返回；稳定身份仍使用 `pn_server` id。 |
+| 未设置代理节点名字时如何处理？ | 旧部署和未命名代理节点必须继续可用。 | 强制名字会破坏旧配置；完全缺省则客户端可能只能回退到 id。 | Design 必须定义缺省/fallback：未上报名字时返回空/缺省字段，并由客户端按其 approved design 回退。 |
 | 纯代理节点是否应继续通过 SN client 连接控制节点？ | 不应。当前实现把控制节点作为 `P2pSn` 后会启动 SN client 在线上报，导致控制节点打印 `report sn from ...`，这与“代理节点和控制面节点已有通信通道”的目标不一致。 | 直接禁用 SN client 有风险：现有命令发送、远端 tunnel 校验、PN 连接校验和流量/心跳上报都借用了该 stack 的 cmd client。 | 需求改为“不得启动 SN client”，但 design 必须先定义等价的非 SN-client 控制通道，不能只移除上报循环。 |
 | 代理节点与控制节点之间是否必须有心跳？ | 必须。主动注册只能证明初始可达性；心跳用于保持运行时 liveness 最新。 | 没有心跳时，控制节点选择可能继续把客户端路由到已经死亡或网络分区的代理节点。 | 要求代理节点与控制节点保持心跳，并让 liveness 影响代理节点选择。 |
 | 控制节点进程内置的代理节点是否需要显式外部接受？ | 不需要。它已经属于受信服务端装配，并受本地 `pn.enabled` 控制。 | 把它当成外部代理节点会增加不必要的注册复杂度，并可能破坏无配置默认行为。 | 控制节点内置代理节点在启用时默认允许。 |
@@ -187,6 +205,10 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 | runtime/integration | yes | 纯代理节点不得启动 SN client，控制面连接必须走替代控制通道，且控制节点不应出现纯代理节点触发的 SN `ReportSn` 日志。 | Design 必须覆盖替代控制通道、命令收发、在线判断、重连、校验、心跳和流量上报，不得依赖 `SNClientService` active SN 状态。 | owner: design/implementation/testing stages; risk: 当前实现借用 SN cmd client，直接删除会中断控制面交互。 |
 | ui/datamodel/workflow | yes | HTTP 控制面需要导出外部代理节点列表、批准和拒绝工作流；列表需要提供真实连接地址给管理 UI。 | Design 必须定义 HTTP API 数据模型和工作流，并明确 `vpn_web` 应显示 observed/remote address 而不是本地配置地址。 | owner: design stage; risk: API 字段未落地时 UI 只能显示旧地址或空值。 |
 | build/dependency/config/deployment | yes | YAML 配置合同移除 `pn.server_addresses` 作为外部代理节点输入，同时纯代理节点仍需在 `sn` 配置域配置控制节点地址，HTTP 管理面监听配置、管理员 bootstrap 配置和 JWT 签名配置也迁入 `sn` 配置域。 | Proposal 和 design 必须记录配置迁移行为、纯代理节点控制节点地址字段、HTTP/admin/JWT 字段归属以及旧 `pn.control_server`/顶层 `http`/顶层 `admin`/顶层 `jwt` 的兼容策略。 | owner: design stage; risk: 部署验证依赖 approved compatibility behavior。 |
+| build/dependency/config/deployment | yes | YAML 配置模板需要增加本机 identity 证书名字字段，并且重签行为会影响 identity 文件写入。 | Design 必须定义字段位置、默认值、环境变量、identity 文件兼容和重签失败行为；implementation admission 后才能更新 `config.example.yaml`、配置解析和 identity 生成流程。 | owner: design/implementation/testing; risk: 直接改代码可能轮换私钥或破坏已有节点身份。 |
+| security/privacy/permission | yes | 私钥保留是节点身份连续性的安全边界；改名不应隐式生成新私钥。 | Design 必须规定改名时复用私钥重签，且不能静默删除或覆盖不可解析的旧私钥。 | owner: design/implementation; risk: 误轮换私钥会导致既有控制关系失效。 |
+| contract/protocol | yes | 代理节点上报、心跳或返回给客户端的 `PnServerInfo` 需要携带代理节点名字。 | Design 必须定义名字字段在 `vpn-frame` shared protocol、代理控制命令、HTTP/API 响应和客户端消费路径中的映射。 | owner: vpn-frame/bucky-vpn-server/bucky-vpn design; risk: 任一模块缺失会导致客户端仍按 id 连接。 |
+| runtime/integration | yes | 控制节点必须把上报名字保存到运行时代理状态，并在选择/返回代理信息时保留该名字。 | Implementation 后 testing 必须覆盖有名字、无名字、名字变化和不会替代审批 key 的路径。 | owner: implementation/testing; risk: 名字变化可能错误影响批准状态或 liveness。 |
 | harness/process | yes | 需求/范围变更必须先落在 proposal，再进入下游阶段。 | 运行 proposal doc structure 和 proposal stage scope 检查。 | owner: downstream stages; acceptance impact: proposal/design 更新并批准前 admission 继续延后。 |
 
 ## High-Level Outcomes
@@ -200,6 +222,10 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 - HTTP 管理面监听配置归入 `sn` 域，表达其属于控制节点管理面。
 - 管理员账号 bootstrap 配置归入 `sn` 域，表达其属于控制节点管理面。
 - HTTP 登录会话 JWT 签名配置归入 `sn` 域，表达其属于控制节点管理面。
+- 服务端启动配置提供本机 P2P identity 证书名字字段。
+- 修改证书名字时保留已有私钥，并生成带新名字的证书。
+- 代理节点向控制节点上报配置的名字。
+- 控制节点返回给客户端的代理节点信息包含上报的代理节点名字。
 - 纯代理节点不启动 SN client，不向控制节点 SN service 发送 `ReportSn`，控制面不再因纯代理节点接入打印 SN client 上报日志。
 - 已接受代理节点与控制节点保持心跳，心跳丢失后不再参与新的选择。
 - 当本地代理节点启用时，与控制节点同进程的内置代理节点默认允许。
@@ -223,6 +249,8 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 | PROP-sn-http-config | CHG-sn-http-config | HTTP 管理面监听配置归入 `sn` 配置域，表达其属于控制节点管理面。 | Design 命名 YAML 字段、环境变量兼容策略、旧顶层 `http` 迁移行为，以及 implementation 更新配置模板和解析。 |
 | PROP-sn-admin-config | CHG-sn-admin-config | 管理员账号 bootstrap 配置归入 `sn` 配置域，表达其属于控制节点管理面。 | Design 命名 YAML 字段、环境变量兼容策略、旧顶层 `admin` 迁移行为，以及 implementation 更新配置模板和解析。 |
 | PROP-sn-jwt-config | CHG-sn-jwt-config | HTTP 登录会话 JWT 签名配置归入 `sn` 配置域，表达其属于控制节点管理面。 | Design 命名 YAML 字段、环境变量兼容策略、旧顶层 `jwt` 迁移行为，以及 implementation 更新配置模板和解析。 |
+| PROP-server-identity-cert-name | CHG-server-identity-cert-name | 服务端启动配置提供本机 P2P identity 证书名字字段；名字变化时保持已有私钥并重签生成带新名字的证书。 | Design 命名 YAML 字段、默认值、环境变量、旧 identity 兼容、重签失败行为和 `p2p-frame` X509 API 使用方式；implementation 更新配置模板、解析和 identity 生成/更新流程。 |
+| PROP-server-proxy-node-reported-name | CHG-server-proxy-node-reported-name | 代理节点向控制节点上报配置名字；控制节点在运行时状态和返回给客户端的代理节点信息中保留该名字，但不把名字作为身份或审批 key。 | Design 映射代理注册/心跳 payload、`PnServerInfo.name`、HTTP/API 响应、selector state 和无名字 fallback；implementation admission 后客户端可收到上报名字。 |
 | PROP-pure-pn-no-sn-client | CHG-pure-pn-no-sn-client | 纯代理节点控制面通信不启动 `p2p-frame` SN client，不向控制节点 SN service 发送 `ReportSn`。 | Design 命名非 SN-client 控制通道、命令收发接口、在线/重连/失败语义；implementation 后控制节点不再出现纯代理节点触发的 `report sn from ...` 日志。 |
 | PROP-pn-sn-heartbeat | CHG-pn-sn-heartbeat | 代理节点与控制节点在连接/注册后保持心跳，heartbeat liveness 控制代理节点可用性。 | Design 命名心跳间隔、超时、状态迁移、重连行为和选择影响。 |
 | PROP-colocated-pn-default-allowed | CHG-colocated-pn-default-allowed | 与控制节点同进程的内置代理节点在本地代理启用时默认允许。 | Design 区分同进程内置代理节点权限和外部代理节点接受流程，并保持无配置默认行为。 |
@@ -240,6 +268,10 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 - `proposal.md` 记录 HTTP 管理面监听配置归入 `sn` 配置域。
 - `proposal.md` 记录管理员账号 bootstrap 配置归入 `sn` 配置域。
 - `proposal.md` 记录 HTTP 登录会话 JWT 签名配置归入 `sn` 配置域。
+- `proposal.md` 记录服务端启动配置提供本机 P2P identity 证书名字字段。
+- `proposal.md` 记录修改证书名字时必须保留已有私钥并重签生成新名字证书。
+- `proposal.md` 记录代理节点设置名字后，上报控制节点时必须带上该名字。
+- `proposal.md` 记录控制节点返回给客户端的代理节点信息必须包含上报的代理节点名字。
 - `proposal.md` 记录纯代理节点不得启动 SN client，控制面通信必须走非 SN-client 控制通道。
 - `proposal.md` 记录代理节点与控制节点必须保持心跳，且 liveness 影响代理节点可用性。
 - `proposal.md` 记录控制节点内置代理节点在本地代理启用时默认允许代理角色。
@@ -269,6 +301,12 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 - 如果 HTTP 管理面监听配置继续作为顶层推荐配置，多角色部署中纯代理节点配置可能携带无意义 HTTP 管理面字段，控制节点配置边界也不清晰。
 - 如果管理员账号继续作为顶层推荐配置，多角色部署中纯代理节点配置可能携带无意义账号字段，控制节点配置边界也不清晰。
 - 如果 JWT 签名配置继续作为顶层推荐配置，多角色部署中纯代理节点配置可能携带无意义管理会话签名字段，控制节点配置边界也不清晰。
+- 如果证书名字配置缺失，operator 只能接受默认生成证书名字，部署环境中多个服务端 identity 难以区分。
+- 如果修改证书名字时重新生成私钥，节点身份材料会变化，可能导致已批准节点、控制节点关系或历史配置引用失效。
+- 如果旧 identity 文件不可解析时静默覆盖，可能造成不可恢复的身份丢失；应 fail closed 或明确进入新 identity 初始化路径。
+- 如果代理节点上报名字没有进入控制面返回值，客户端无法按 operator 配置的名字连接代理节点。
+- 如果控制节点把名字当作审批 key 或 selector key，名字变化或重复名字会破坏已批准代理节点状态。
+- 如果无名字代理节点没有 fallback 语义，旧配置或旧代理节点可能在升级后不可连接。
 - 如果纯代理节点控制节点地址支持多种格式但缺少严格验证，启动可能延迟失败或注册到错误控制面。
 - 如果只移除 SN client 而没有替代控制通道，纯代理节点会失去命令发送、远端 tunnel 校验、PN 连接校验、心跳或流量上报能力。
 - 如果替代控制通道仍间接创建 `SNClientService` 或执行 `ReportSn`，控制节点仍会打印 SN 上报日志，需求未真正满足。
@@ -279,18 +317,19 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 | stage | required_follow_up | reason |
 | --- | --- | --- |
 | Design | 更新 `design.md`：移除 `pn.server_addresses`，加入外部代理节点主动连接/注册模型，定义 `sn` 域纯代理节点控制节点地址字段、`sn` 域 HTTP 管理面字段、`sn` 域管理员账号字段、`sn` 域 JWT 签名字段、非 SN-client 控制通道、控制节点接受策略、SQLite 批准状态 schema、HTTP 批准接口、真实连接来源地址字段、心跳行为、内置代理节点默认允许、统计存储接口复用、状态 owner、选择行为和兼容处理。 | 当前 design 若没有覆盖 `sn.http`/`sn.admin`/`sn.jwt` 或等价 SN 子节点，不能准入新的配置结构。 |
+| Design | 为 `CHG-server-identity-cert-name` 定义证书名字配置字段、默认值、环境变量、推荐模板位置、旧 identity 文件兼容、保留私钥重签流程、不可重签时的错误处理和 `p2p-frame` X509 API 使用方式。 | 当前 design 没有覆盖证书名字、identity subject/name 更新或保留私钥重签证书，不能准入生产代码变更。 |
+| Design | 为 `CHG-server-proxy-node-reported-name` 定义代理节点名字字段如何从配置进入注册/心跳上报、控制节点运行时状态、HTTP 管理列表、返回给客户端的 `PnServerInfo.name`，以及未设置名字和名字变化的 fallback。 | 当前 design 没有覆盖代理节点上报名字或客户端代理节点信息中的名字字段，不能准入生产代码变更。 |
 | Design | 为 `CHG-pure-pn-no-sn-client` 定义替代控制通道：命令发送接口、连接建立、在线判断、重连、失败处理、远端 tunnel 校验、PN 连接校验、心跳和流量上报全部不得依赖 `SNClientService`/`ReportSn`。 | 当前实现借用 `stack.sn_client().get_cmd_client()`，直接 implementation 会丢失控制面功能或继续触发 SN 上报。 |
 | Design | 为 `CHG-server-node-id-base36` 定义服务端 NodeId base36 canonical 写入/解析、旧 base58 读取兼容或迁移策略，以及与 `vpn-frame`、`bucky-vpn`、`vpn_web` 的跨模块接口边界。 | 当前服务端代码和 design 多处默认 base58，无法直接 implementation。 |
 | Implementation | 在 approved design 和 admission 后，更新 `vpn-server/src/server_config.rs`、`vpn-server/src/main.rs`、`vpn-server/src/api.rs`、`vpn-server/src/sqlite_store_factory.rs`、代理节点 selection/control/heartbeat code，以及代理 traffic persistence wiring 以匹配 approved design。 | 当前 `/pn_proxy_nodes` 只返回 `pn_server`、`status`、`live`、`updated_at` 和 `comment`，没有真实连接来源地址字段。 |
+| Implementation | 在 approved design 和 admission 后，更新 `vpn-server/config/config.example.yaml`、`vpn-server/src/server_config.rs` 和 `vpn-server/src/main.rs`，使配置可设置证书名字，并在名字变化时复用旧私钥重签证书。 | 当前 identity 生成只在 identity 文件不存在时调用默认名字生成路径，没有名字配置或重签流程。 |
+| Implementation | 在 approved design 和 admission 后，更新代理控制 client/server、selector state、API DTO 和 `NodeNetwork.pn_server` 构造路径，使上报名字进入返回给客户端的代理节点信息。 | 当前代理节点信息只表达 id/ip/port/observed address 等字段，没有上报名字贯穿路径。 |
 | Testing | 在 post-implementation testing 阶段新增或更新测试，覆盖配置解析、deprecated/removed 字段行为、`sn` 域纯代理节点控制节点地址验证、`sn` 域 HTTP 管理面监听解析、`sn` 域管理员账号解析、`sn` 域 JWT 签名解析、内置代理节点默认允许、批准状态持久化、HTTP 批准/拒绝接口权限与错误语义、统计持久化接口使用、外部代理节点接受、heartbeat timeout/recovery、选择和失败路径。 | 该行为变更影响配置、schema、HTTP 控制面、权限、liveness、统计持久化和 runtime integration。 |
+| Testing | 为 `CHG-server-identity-cert-name` 设计配置解析和 identity 更新验证：默认名字、新名字配置、已有 identity 同名不重写、已有私钥改名重签、旧 identity 不可解析时失败或显式初始化路径。 | 证书名字变更涉及 identity 持久化，缺少测试会难以及时发现私钥轮换或静默覆盖。 |
+| Testing | 为 `CHG-server-proxy-node-reported-name` 设计验证：有名字上报并返回给客户端、无名字 fallback、名字变化不改变审批 key、HTTP 管理列表显示名字、客户端消费依赖由 `bucky-vpn` 测试覆盖。 | 名字贯穿代理上报和客户端连接路径，缺少测试会导致控制面或客户端继续按 id/name fallback 连接。 |
 | Acceptance | 重新审计 proposal、design、implementation 和 testing 的一致性后再接受该变更。 | 当前 approved 下游 artifacts 在本 proposal 更新后已经 stale。 |
 
 ## Approval Record
-- approver: auto-pipeline
-- approval_date: 2026-07-02T13:05:00+08:00
-- user_statement: "确认，自动处理后续步骤；jwt也应该是sn节点下的配置"
-- approved_scope_notes:
-  - "调整下 vpn-server/config/config.example.yaml 配置结构，跟sn绑定的配置应该放到sn节点下面"
-  - "admin也应该跟sn相关的"
-  - "还有http配置信息也是跟sn相关的"
-  - "jwt也应该是sn节点下的配置"
+- approver: user-request
+- approval_date: 2026-07-06T16:09:15+08:00
+- user_statement: "确认，自动处理后续步骤"

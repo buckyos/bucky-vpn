@@ -111,6 +111,7 @@ impl Cli {
         server: String,
         server_port: u16,
         server_id: String,
+        server_name: Option<String>,
         group_id: NetworkGroupId,
         name: Option<String>,
     ) -> VpnResult<()> {
@@ -123,6 +124,7 @@ impl Cli {
                     server,
                     server_port,
                     server_id,
+                    server_name,
                     group_id,
                     name,
                 },

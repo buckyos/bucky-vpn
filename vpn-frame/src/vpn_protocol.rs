@@ -133,6 +133,8 @@ impl PnServerAddress {
 #[derive(Debug, RawEncode, RawDecode, Serialize, Deserialize, Clone, Eq, PartialEq, Hash)]
 pub struct PnServerInfo {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub ip: IpAddr,
     pub port: u16,
     #[serde(default)]
@@ -151,6 +153,7 @@ impl PnServerInfo {
     ) -> Self {
         let mut info = Self {
             id,
+            name: None,
             ip: primary.ip,
             port: primary.port,
             addresses: Vec::new(),
@@ -175,6 +178,18 @@ impl PnServerInfo {
         if !self.addresses.contains(&address) {
             self.addresses.push(address);
         }
+    }
+
+    pub fn with_name(mut self, name: Option<String>) -> Self {
+        self.name = name.and_then(|name| {
+            let name = name.trim().to_owned();
+            if name.is_empty() { None } else { Some(name) }
+        });
+        self
+    }
+
+    pub fn remote_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.id)
     }
 }
 
@@ -292,5 +307,28 @@ mod tests {
         assert_eq!(pn_server.id, "server-node-id");
         assert_eq!(pn_server.ip, "::1".parse::<IpAddr>().unwrap());
         assert_eq!(pn_server.port, 3624);
+    }
+
+    #[test]
+    fn pn_server_info_normalizes_optional_remote_name() {
+        let named = PnServerInfo::new(
+            "server-node-id".to_string(),
+            IpAddr::from([127, 0, 0, 1]),
+            3624,
+        )
+        .with_name(Some(" proxy-a ".to_string()));
+
+        assert_eq!(named.name.as_deref(), Some("proxy-a"));
+        assert_eq!(named.remote_name(), "proxy-a");
+
+        let unnamed = PnServerInfo::new(
+            "server-node-id".to_string(),
+            IpAddr::from([127, 0, 0, 1]),
+            3624,
+        )
+        .with_name(Some("  ".to_string()));
+
+        assert_eq!(unnamed.name, None);
+        assert_eq!(unnamed.remote_name(), "server-node-id");
     }
 }

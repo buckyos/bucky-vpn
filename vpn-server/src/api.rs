@@ -124,6 +124,8 @@ impl From<PnServerAddress> for JsonPnServerAddress {
 #[derive(Serialize, Deserialize, utoipa::ToSchema)]
 pub struct JsonPnServerInfo {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub ip: String,
     pub port: u16,
     #[serde(default)]
@@ -144,6 +146,7 @@ impl JsonPnServerInfo {
         Ok(PnServerInfo::new_with_addresses(
             self.id, ip, self.port, addresses,
         ))
+        .map(|info| info.with_name(self.name))
     }
 }
 
@@ -151,6 +154,7 @@ impl From<PnServerInfo> for JsonPnServerInfo {
     fn from(value: PnServerInfo) -> Self {
         Self {
             id: value.id,
+            name: value.name,
             ip: value.ip.to_string(),
             port: value.port,
             addresses: value.addresses.into_iter().map(Into::into).collect(),

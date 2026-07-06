@@ -18,10 +18,11 @@ levels:
       services: []
       notes:
         - 当前仓库的 crate 级测试覆盖可能较少
+        - 本轮 PN proxy 上报名通过共享 `PnServerInfo::remote_name` 单元覆盖和客户端连接目标编译覆盖
     steps:
       - id: bucky-vpn-unit
         name: 运行 bucky-vpn crate 测试
-        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36"]
+        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36", "CHG-client-sn-quic-tcp-priority", "CHG-client-join-server-name-for-sn", "CHG-client-pn-proxy-reported-name"]
         run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn", "unit"]
   dv:
     mode: enabled
@@ -37,7 +38,7 @@ levels:
     steps:
       - id: bucky-vpn-dv
         name: 构建 bucky-vpn crate
-        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36"]
+        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36", "CHG-client-sn-quic-tcp-priority", "CHG-client-join-server-name-for-sn", "CHG-client-pn-proxy-reported-name"]
         run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn", "dv"]
   integration:
     mode: enabled
@@ -62,8 +63,9 @@ levels:
         - 脚本会批准远端 PN proxy nodes、批准 joined nodes、分配网络成员虚拟 IP，并在同一 client 实例内重启 daemon 验证 joined_networks 恢复、成员注册和 TUN runtime readiness
         - 脚本会在 TUN ready 后阻断非 PN control server 路径，并对每个共享网络的 client 虚拟 IP 做双向 ping
         - ping 流量产生后，脚本会轮询 control API，确认 `/get_network_member` 和 `/get_user_traffic_stats` 返回非零流量统计
+        - PN proxy 上报名的完整 live 证书验证依赖 p2p-frame 行为，本入口主要拦截跨 crate 协议/DTO 漂移
     steps:
       - id: bucky-vpn-integration
         name: 运行 PN proxy 多拓扑、1 CPU control/proxy 和流量上报进程集成测试
-        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36"]
+        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36", "CHG-client-pn-proxy-reported-name"]
         run: ["python3", "./harness/scripts/bucky-vpn-process-integration.py", "--use-base-image", "--parallel-instances", "2"]

@@ -68,14 +68,21 @@ pub fn proxy_control_purpose() -> p2p_frame::error::P2pResult<TunnelPurpose> {
 pub struct ControlCmdTunnelFactory {
     ttp_client: TtpClientRef,
     control_id: P2pId,
+    control_name: Option<String>,
     control_endpoint: Endpoint,
 }
 
 impl ControlCmdTunnelFactory {
-    fn new(ttp_client: TtpClientRef, control_id: P2pId, control_endpoint: Endpoint) -> Self {
+    fn new(
+        ttp_client: TtpClientRef,
+        control_id: P2pId,
+        control_name: Option<String>,
+        control_endpoint: Endpoint,
+    ) -> Self {
         Self {
             ttp_client,
             control_id,
+            control_name,
             control_endpoint,
         }
     }
@@ -92,7 +99,10 @@ impl ControlCmdTunnelFactory {
             local_ep: local_ep.copied(),
             remote_ep: self.control_endpoint,
             remote_id: self.control_id.clone(),
-            remote_name: Some(self.control_id.to_string()),
+            remote_name: self
+                .control_name
+                .clone()
+                .or_else(|| Some(self.control_id.to_string())),
         };
         self.ttp_client
             .connect_server(target.clone())
@@ -169,8 +179,12 @@ pub async fn create_vpn_control_client(
         .await
         .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
     let ttp_client = TtpClient::new(local_identity, p2p_env.net_manager().clone());
-    let factory =
-        ControlCmdTunnelFactory::new(ttp_client, control_id, control_server.endpoint.clone());
+    let factory = ControlCmdTunnelFactory::new(
+        ttp_client,
+        control_id,
+        control_server.name.clone(),
+        control_server.endpoint.clone(),
+    );
     Ok(VpnServerClient::new(
         ControlCmdClient::new(factory, 1),
         conn_timeout,
