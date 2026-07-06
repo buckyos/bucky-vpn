@@ -14,8 +14,8 @@ InternalName = "BuckyVPN"
 tokio = { version = "1.43.0", features = ["full"]}
 async-std = { version = "1.13.1", features = ["tokio1"]}
 async-trait = "0.1.85"
-#p2p-frame = {git = "https://github.com/buckyos/bucky-p2p.git", features = ["x509"]}
-p2p-frame = { path = "../../p2p/p2p-frame", features = ["x509"]}
+p2p-frame = {git = "https://github.com/buckyos/bucky-p2p.git", features = ["x509"]}
+#p2p-frame = { path = "../../p2p/p2p-frame", features = ["x509"]}
 vpn-frame = { path = "../vpn-frame"}
 sfo-log = "0.1.7"
 clap = "4.5.31"
