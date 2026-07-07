@@ -25,3 +25,4 @@ base58 = "0.2.0"
 dirs = "6.0.0"
 if-addrs = "0.13.4"
 rcgen = { version = "0.14", features = ["aws_lc_rs"] }
+sfo-reuseport = "0.3.4"

@@ -13,7 +13,7 @@ use crate::p2p_vpn::{
 };
 use crate::setting::Setting;
 use p2p_frame::endpoint::{Endpoint, Protocol};
-use p2p_frame::stack::{P2pConfig, create_p2p_env};
+use p2p_frame::stack::{P2pConfig, create_p2p_env, ServerRuntime, ServerRuntimeConfig};
 use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
 use sfo_http::http_server::HttpServerConfig;
 use sfo_http::tide_server::TideHttpServer;
@@ -65,10 +65,12 @@ async fn run_daemon() {
 
     let eps = p2p_listen_endpoints(p2p_port);
     log::info!("client p2p listen endpoints: {:?}", eps);
+    let server_runtime = ServerRuntime::start(ServerRuntimeConfig::default()).unwrap();
     let p2p_config = P2pConfig::new(
         Arc::new(X509IdentityFactory),
         Arc::new(X509IdentityCertFactory),
         eps,
+        server_runtime.clone()
     )
     .set_quic_connect_timeout(Duration::from_secs(8))
     .set_quic_idle_time(Duration::from_secs(30));

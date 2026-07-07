@@ -38,6 +38,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use sfo_reuseport::{ServerRuntime, ServerRuntimeConfig};
 use vpn_frame::server::{NodeId, VpnServer, VpnStoreFactory};
 
 mod api;
@@ -118,12 +119,14 @@ async fn start_proxy_ttp_runtime(
     local_identity: P2pIdentityRef,
     endpoints: Vec<Endpoint>,
     incoming_tunnel_validator: p2p_frame::networks::IncomingTunnelValidatorRef,
+    server_runtime: ServerRuntime,
 ) -> p2p_frame::error::P2pResult<ProxyTtpRuntime> {
     let p2p_env = create_p2p_env(
         P2pConfig::new(
             Arc::new(X509IdentityFactory),
             Arc::new(X509IdentityCertFactory),
             endpoints,
+            server_runtime
         )
         .set_incoming_tunnel_validator(incoming_tunnel_validator),
     )
@@ -246,12 +249,14 @@ async fn main() {
         Vec::new()
     };
     let mut remote_control_client = None;
+    let server_runtime = ServerRuntime::start(ServerRuntimeConfig::default()).unwrap();
     let sn_service_config = SnServiceConfig::new(
         local_identity,
         Arc::new(X509IdentityFactory),
         Arc::new(X509IdentityCertFactory),
+        server_runtime.clone()
     );
-    let sn_service = create_sn_service(sn_service_config).await;
+    let sn_service = create_sn_service(sn_service_config).await.unwrap();
     let pn_ttp_server = if sn_server_config.enabled {
         sn_service.start().await.unwrap();
         Some(sn_service.ttp_server())
@@ -261,6 +266,7 @@ async fn main() {
             control_identity.clone(),
             eps.clone(),
             incoming_tunnel_validator.clone(),
+            server_runtime.clone()
         )
         .await
         .unwrap();
