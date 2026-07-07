@@ -2,9 +2,9 @@
 module: bucky-vpn-server
 version: v0.1
 status: approved
-approved_by: user-request
-approved_at: 2026-07-06T16:09:15+08:00
-approved_content_sha256: d70aaafca3aa5ec1e1015d525679690a4e8bd90c9c42bd7c5fa7664d70b3ef93
+approved_by: auto-pipeline
+approved_at: 2026-07-07T00:41:31+08:00
+approved_content_sha256: 2c1f270b9acb4137d4386e18a95e6b6f15c7c1fbd15ea56749a4b1c5b2edd605
 ---
 
 # bucky-vpn-server Proposal
@@ -46,6 +46,12 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 
 外部代理节点列表中的地址展示必须区分“代理节点本地配置/上报地址”和“代理节点实际通过连接进入控制节点时观察到的真实远端地址”。管理员界面需要看到真实连接来源地址，不能把代理节点配置的本地监听地址误当作其控制面连接来源地址。
 
+当代理节点配置了 `port_mapping` 时，控制节点不应把代理节点本地上报 IP 或控制/SN bootstrap IP 当作最终可代理地址。代理节点仍应上报本地监听 `Endpoint` 端口，并把 `port_mapping` 作为独立元数据上报；控制节点使用代理节点连接进入控制面时观测到的远端 IP，并结合上报 `Endpoint` 的协议和对应 `port_mapping` 外网端口，合成新的可代理节点地址。该合成地址用于代理节点选择和返回给客户端的 `PnServerInfo`，但不作为代理节点地址持久化真相写入控制节点 SQLite。
+
+控制/SN 连接 IP 和代理节点地址都不是需要持久化的配置真相。SQLite 只持久化外部代理节点审批状态、身份 key、统计等控制面真相；代理节点地址应由当前 live 控制连接观测值和代理节点上报的 `Endpoint` 列表/端口映射在运行时产生。控制节点重启后，已批准但尚未重新上线的代理节点不能仅凭旧地址参与选择或下发给客户端。
+
+代理节点上报给控制节点的可监听地址应使用 `Endpoint` 类型或 design 选定的等价共享 Endpoint 合同，而不是拆散的 ip/port 字段。控制节点下发给客户端的代理节点地址也应保持 `Endpoint` 形状，使协议、地址族和端口作为一个传输端点整体流转。
+
 当控制节点进程同时支持内置代理节点角色时，内置代理节点默认被允许。它不需要走外部代理节点的接受流程，因为它是在受信服务端进程内装配的。它的流量统计可以直接使用现有 database-backed 持久化接口。
 
 最终目标是形成更小、更偏控制面的代理节点配置：
@@ -71,6 +77,10 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 - 要求外部代理节点批准状态持久化到本地 SQLite。
 - 要求 HTTP 控制面提供外部代理节点列表、批准和拒绝接口。
 - 要求 HTTP 控制面的外部代理节点列表提供控制节点观察到的真实连接来源地址，供 UI 展示。
+- 要求配置了 `port_mapping` 的代理节点上线到控制节点后，代理节点上报本地监听 `Endpoint` 端口和独立 `port_mapping` 元数据，控制节点用观测到的连接 IP、`Endpoint` 协议和对应映射外网端口合成可代理地址。
+- 要求合成后的可代理地址进入代理节点选择和客户端下发的 `PnServerInfo`，但不作为代理节点地址持久化到控制节点 SQLite。
+- 要求控制/SN 连接 IP 和代理节点地址不作为单独的 SQLite 地址真相持久化。
+- 要求代理节点上报地址和控制节点下发给客户端的代理节点地址使用 `Endpoint` 形状。
 - 要求纯代理节点具备要连接的控制节点地址配置。
 - 要求纯代理节点的控制节点地址配置归入 `sn` 配置域，不能放在 `pn` 下。
 - 要求 HTTP 管理面监听配置归入 `sn` 配置域，不再作为推荐顶层配置。
@@ -116,6 +126,8 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 | 批准状态与 liveness 的关系 | 用户补充“需要批准才能真正使用”，说明批准是长期策略状态，心跳只是短期在线状态。 | 批准状态必须 SQLite 持久化；心跳不持久化为可用性真相。 | Design 必须定义表结构、状态枚举、重启恢复、心跳与批准状态组合后的选择规则。 |
 | HTTP 批准接口形状 | 用户要求导出 HTTP 批准接口，但尚未指定 URL、方法、请求体和权限细节。 | Proposal 要求控制面能力，不锁死具体 API 路径。 | Design 必须命名 API 路径、请求/响应模型、管理员权限要求和错误语义。 |
 | 真实连接地址来源 | 用户要求显示代理节点通过连接进入的真实地址，而不是代理节点本地配置地址。 | Proposal 要求控制节点在运行时状态中记录并通过列表 API 暴露 observed/remote address。 | Design 必须定义从哪个连接/心跳上下文提取地址、TTL/失效行为、字段名和前端兼容策略。 |
+| `port_mapping` 与 observed IP 的组合语义 | 用户要求设置了 `port_mapping` 的代理节点上线到控制面节点时，控制节点根据 `port_mapping` 端口和获取到的连接地址组成新的可代理节点地址；用户进一步澄清代理节点只上报 `port_mapping`，不替换本地监听端口。 | 控制节点应把 observed connection IP、代理节点上报的本地监听 `Endpoint` 协议和单独上报的 `port_mapping` 外网端口组合成 selectable/returned PN address；SN/control IP 和代理节点地址不作为数据库真相。 | Design 必须定义 observed IP 来源、协议端点选择、`PnServerInfo` 中 Endpoint 列表形状、`port_mapping` 上报字段、live-only 地址生命周期和重启后重新上线前不可选择语义。 |
+| 代理节点地址类型 | 用户要求代理节点上报的地址和下发给客户端的地址使用 `Endpoint` 类型。 | 端点类型能同时携带协议、IP 和端口，避免 ip/port 拆散后丢失协议或错误组合。 | Design 必须同步 `vpn-frame` Endpoint 合同，并定义 server/client 序列化、raw codec 和兼容边界。 |
 | NodeId base36 迁移 | 用户要求所有 NodeId 操作改成 base36，但当前 SQLite/API 多处使用 base58。 | Proposal 要求新写入、新响应、新请求解析以 base36 为 canonical；旧 base58 数据是否兼容读取由 design 明确。 | Design 必须列出数据库 key、HTTP API、日志、PN 匹配和前端/客户端调用的迁移策略。 |
 | 纯代理节点的控制节点地址字段 | 纯代理节点需要一个或多个控制节点 bootstrap/control 地址。用户进一步要求“跟 SN 绑定的配置应该放到 SN 节点下面”，因此该字段不应继续位于 `pn` 下。 | 控制节点地址属于 `sn` 配置域；推荐结构由 design 固化为 `sn.control_server` 或等价 SN 子节点。 | Design 必须选择字段名、地址格式、必填/可选行为和从旧 `pn.control_server` 的迁移策略。 |
 | HTTP 管理面配置归属 | 当前模板使用顶层 `http`，但 HTTP 管理 API 是控制节点管理面入口，不是 PN 代理角色能力。用户补充“http配置信息也是跟sn相关的”。 | HTTP 管理面监听配置属于 `sn`/control-node 配置域；推荐结构由 design 固化为 `sn.http` 或等价 SN 子节点。 | Design 必须选择最终 YAML 字段、环境变量兼容策略、默认监听行为和旧顶层 `http` 的迁移策略。 |
@@ -153,6 +165,11 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 - HTTP 批准接口必须走现有控制面认证/授权边界，不得提供匿名批准能力。
 - 外部代理节点列表必须能表达控制节点观察到的真实连接来源地址；不得只返回代理节点本地配置地址供管理 UI 展示。
 - 真实连接来源地址是运行时观察值，不得替代代理节点身份、批准状态或 selection 使用的 `pn_server` 标识。
+- 配置了 `port_mapping` 的代理节点上线后，代理节点必须保留本地监听 Endpoint 端口并单独上报 `port_mapping`；控制节点必须用控制连接观测到的远端 IP、上报 Endpoint 协议和对应映射外网端口合成客户端可连接的代理节点地址。
+- 合成后的代理节点地址必须进入 selector 选择结果和 `NodeNetwork.pn_server` 返回值，但不得作为代理节点地址持久化真相写入 SQLite。
+- 控制/SN 连接 IP 和代理节点地址不得作为独立 SQLite 地址真相持久化；控制节点重启后必须等待代理节点重新上线并重新合成地址。
+- 如果已有 schema 中存在 network/proxy-node PN address 字段，design 必须定义停止依赖、清理或兼容读取策略，不能仅因代理节点 id 相同就继续下发旧地址。
+- 代理节点上报地址和控制节点下发地址必须使用 `Endpoint` 形状，不能在共享协议中只暴露拆散的 ip/port 地址。
 - 服务端新写入 SQLite 的 joined-node、network-member、node、traffic-stat NodeId key 必须使用 base36。
 - 服务端 HTTP API 中表示 NodeId 的字段必须以 base36 作为 canonical 输入/输出。
 - 服务端可以在 approved design 指定的兼容窗口内读取旧 base58 NodeId，但不得继续把 base58 作为新写入格式。
@@ -172,6 +189,8 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 | 批准状态是否应只保存在内存中？ | 不应。批准是管理员策略决定，不是瞬时在线信号；只存在内存会导致控制节点重启后丢失批准结果。 | 需要新增 SQLite schema 和迁移逻辑；持久批准若与 liveness 混淆，也可能误选离线代理。 | 批准状态持久化到 SQLite，但选择仍要求当前心跳有效。 |
 | 是否应通过 HTTP 暴露批准能力？ | 应暴露。没有控制面接口时，批准状态虽然可以持久化，但管理员无法完成审批工作流。 | 新接口扩大控制面权限面，必须复用现有认证并定义拒绝/未找到/重复批准语义。 | 增加 HTTP 代理节点审批接口，具体路径和模型由 design 固化。 |
 | 外部代理节点列表应展示哪个地址？ | 应展示控制节点通过连接观察到的真实远端地址。`pn_server.ip:port` 可能只是代理节点本地配置/上报地址，在 NAT 或多网卡场景下会误导管理员。 | 需要在运行时状态或持久状态旁边增加 observed address，且该字段在离线或旧记录中可能缺失。 | `GET /pn_proxy_nodes` 需要暴露 observed/remote address；本地配置地址仍可作为身份/请求体数据保留，但 UI 展示地址应使用真实连接地址。 |
+| `port_mapping` 是否只改端口、不改 IP？ | 对配置解析而言 `port_mapping` 只表达端口映射；但生成可代理地址时，仅替换端口还不够，NAT/LB/容器场景下本地 IP 往往不可达。代理节点本地上报不应把监听端口替换成映射端口，否则会丢失本机真实监听事实。 | 需要把 observed connection IP、上报 Endpoint 协议和单独上报的映射外网端口组合，才能形成客户端可用地址。风险是 observed IP 是运行时值，不能替代身份和审批 key。 | 代理节点上报本地监听 Endpoint + `port_mapping` 元数据；控制节点合成 selectable/returned PN 地址时使用 observed IP + mapped external port；SN/control observed IP 和代理节点地址不落库为长期真相。 |
+| 代理节点地址是否应继续用 `ip`/`port` 字段下发？ | 不应。拆散字段无法完整表达协议，且当前 QUIC/TCP 多端点和端口映射需要端点整体语义。 | 改成 Endpoint 会影响 `vpn-frame` shared protocol、server API projection 和客户端连接代码，需要跨模块设计。 | 上报和下发代理节点地址使用 Endpoint 类型或 design 选定的等价共享 Endpoint 合同。 |
 | NodeId 是否应继续用 base58？ | 不应继续作为 canonical。底层 P2P id 已使用 base36，继续混用 base58 会导致代理节点 id、成员 id 和前端显示/请求之间出现双格式。 | 直接硬切会影响旧 SQLite 行和旧前端/客户端请求。 | 新合同改为 base36；兼容旧 base58 的读路径或迁移由 design 决定。 |
 | 本任务是否应直接改代码？ | 不应。该请求收窄受支持配置行为并改变范围/需求。 | 在 approved proposal/design 更新前编辑代码会绕过 Harness admission，并削弱实现可追踪性。 | 本任务只进入 proposal，并记录 design/implementation 下游回流。 |
 | 内置代理节点是否仍应可配置？ | 应保留。用户移除的是外部静态地址，不是启用或关闭本地内置代理转发的能力。 | 如果移除 `pn.enabled`，部署方会失去关闭本地 relay 行为的简单开关。 | 保留 `pn.enabled`；只移除静态外部地址配置。 |
@@ -199,6 +218,7 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 | --- | --- | --- | --- | --- |
 | contract/protocol | yes | 外部代理节点行为从静态配置地址改为 server-controlled 主动连接/注册。 | Implementation 前 design 必须定义外部代理节点接受合同。 | owner: design stage; risk: 具体流程未命名前无法推导协议测试。 |
 | data/schema | yes | 外部代理节点批准状态必须 SQLite 持久化，代理流量统计复用 database-backed 存储接口，列表 API 还需要表达 observed/remote address。 | Design 必须定义外部代理节点批准表或等价 schema、迁移行为、状态枚举、重启恢复语义、统计存储接口复用方式，以及 observed address 字段是否持久化或仅运行时返回。 | owner: design stage; acceptance impact: schema validation 延后到 design/implementation。 |
+| data/schema | yes | 配置了 `port_mapping` 的代理节点需要上报本地监听 Endpoint + `port_mapping` 元数据，由控制节点用 observed IP + mapped external port 合成可代理地址；SN/control observed IP 和代理节点地址不作为 SQLite 真相。 | Design 必须定义停止持久化代理节点地址、旧 address 字段清理/兼容策略、只依赖 live 地址参与选择和下发。 | owner: design stage; risk: 旧 network/proxy-node 缓存可能继续下发过期地址。 |
 | data/schema | yes | NodeId SQLite key 列需要从 base58 canonical 改成 base36 canonical。 | Design 必须定义旧 base58 行的读取/迁移策略，以及新写入列的编码 helper。 | owner: design/testing; risk: 旧数据库成员、流量和 joined-node 记录可能不可见。 |
 | security/privacy/permission | yes | 控制节点策略决定外部代理节点是否可用，HTTP 批准接口会改变可用代理集合。 | Design 必须定义外部代理节点接受的认证/授权方式，以及 HTTP 批准接口的管理员权限要求。 | owner: implementation/testing stages after design; risk: 授权测试需要 approved policy 和接口。 |
 | runtime/integration | yes | 代理节点选择将基于内置允许代理节点、已连接/接受的外部代理节点和心跳 liveness，而不是配置地址列表。 | Design 必须覆盖启动、内置默认允许、注册、心跳、选择、断连、超时、重连和失败行为。 | owner: implementation/testing stages after design; acceptance impact: integration evidence 延后到实现存在后。 |
@@ -208,6 +228,7 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 | build/dependency/config/deployment | yes | YAML 配置模板需要增加本机 identity 证书名字字段，并且重签行为会影响 identity 文件写入。 | Design 必须定义字段位置、默认值、环境变量、identity 文件兼容和重签失败行为；implementation admission 后才能更新 `config.example.yaml`、配置解析和 identity 生成流程。 | owner: design/implementation/testing; risk: 直接改代码可能轮换私钥或破坏已有节点身份。 |
 | security/privacy/permission | yes | 私钥保留是节点身份连续性的安全边界；改名不应隐式生成新私钥。 | Design 必须规定改名时复用私钥重签，且不能静默删除或覆盖不可解析的旧私钥。 | owner: design/implementation; risk: 误轮换私钥会导致既有控制关系失效。 |
 | contract/protocol | yes | 代理节点上报、心跳或返回给客户端的 `PnServerInfo` 需要携带代理节点名字。 | Design 必须定义名字字段在 `vpn-frame` shared protocol、代理控制命令、HTTP/API 响应和客户端消费路径中的映射。 | owner: vpn-frame/bucky-vpn-server/bucky-vpn design; risk: 任一模块缺失会导致客户端仍按 id 连接。 |
+| contract/protocol | yes | 代理节点上报地址和控制节点下发地址需要使用 Endpoint 类型，而不是拆散的 ip/port 字段。 | Design 必须同步 `vpn-frame` shared protocol、server 构造/HTTP projection 和 client 连接消费。 | owner: vpn-frame/bucky-vpn-server/bucky-vpn design; risk: shared protocol 不同步会导致序列化或连接行为不一致。 |
 | runtime/integration | yes | 控制节点必须把上报名字保存到运行时代理状态，并在选择/返回代理信息时保留该名字。 | Implementation 后 testing 必须覆盖有名字、无名字、名字变化和不会替代审批 key 的路径。 | owner: implementation/testing; risk: 名字变化可能错误影响批准状态或 liveness。 |
 | harness/process | yes | 需求/范围变更必须先落在 proposal，再进入下游阶段。 | 运行 proposal doc structure 和 proposal stage scope 检查。 | owner: downstream stages; acceptance impact: proposal/design 更新并批准前 admission 继续延后。 |
 
@@ -217,6 +238,9 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 - 外部代理节点批准状态持久化到 SQLite，控制节点重启后保留管理员批准/拒绝决定。
 - HTTP 控制面提供外部代理节点查询、批准和拒绝能力，并复用现有认证边界。
 - HTTP 控制面的外部代理节点查询返回控制节点观察到的真实连接来源地址。
+- 配置 `port_mapping` 的代理节点上线后，代理节点保留本地监听 Endpoint 端口并单独上报 `port_mapping`，控制节点根据连接观测 IP、Endpoint 协议和映射外网端口合成可下发、可选择的代理节点地址。
+- SN/control 连接 IP 和代理节点地址不作为 SQLite 地址真相；选择和下发依赖当前 live 合成地址。
+- 代理节点上报地址和控制节点下发给客户端的地址使用 Endpoint 形状。
 - 服务端 HTTP NodeId 字段和 SQLite NodeId key 新写入使用 base36。
 - 纯代理节点拥有明确的 `sn` 域控制节点地址配置，用于 bootstrap/control-plane 连接。
 - HTTP 管理面监听配置归入 `sn` 域，表达其属于控制节点管理面。
@@ -244,6 +268,8 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 | PROP-external-pn-approval-persistence | CHG-external-pn-approval-persistence | 外部代理节点批准状态持久化到 SQLite，并与 heartbeat liveness 分开参与选择。 | Design 命名持久化 schema、状态枚举、迁移、重启恢复和选择组合规则。 |
 | PROP-external-pn-approval-http-api | CHG-external-pn-approval-http-api | HTTP 控制面导出外部代理节点列表、批准和拒绝接口。 | Design 命名 API 路径、请求/响应模型、权限要求和错误语义。 |
 | PROP-external-pn-observed-address | CHG-external-pn-observed-address | 外部代理节点列表返回控制节点观察到的真实连接来源地址，区别于代理节点本地配置地址。 | Design 命名字段、来源、生命周期和缺失值语义；implementation 在 `/pn_proxy_nodes` 响应中提供该地址。 |
+| PROP-pn-port-mapping-observed-address | CHG-pn-port-mapping-observed-address | 配置了 `port_mapping` 的代理节点上线时，代理节点上报本地监听 Endpoint 和独立 `port_mapping` 元数据；控制节点用观测到的连接 IP、Endpoint 协议和映射外网端口合成可代理地址；SN/control IP 和代理节点地址不持久化为地址真相。 | Design 命名 observed IP 来源、Endpoint 本地监听端口、`port_mapping` 上报字段、`PnServerInfo` Endpoint 列表形状、live-only 地址生命周期和旧地址字段停止依赖策略；implementation 后客户端下发地址使用合成结果。 |
+| PROP-pn-server-endpoint-address-contract | CHG-pn-server-endpoint-address-contract | 代理节点上报地址和控制节点下发给客户端的代理节点地址使用 Endpoint 类型或等价共享 Endpoint 合同。 | Design 同步 `vpn-frame` shared protocol、server 上报/选择/API projection 和 client 连接消费；implementation 后协议地址不再只以拆散 ip/port 表达。 |
 | PROP-server-node-id-base36 | CHG-server-node-id-base36 | 服务端 HTTP API、SQLite NodeId key 和节点识别日志使用 base36 作为 `NodeId` canonical string。 | Design 映射 `sqlite_store_factory.rs`、`api.rs`、`main.rs`、相关日志和旧 base58 兼容策略；implementation 新写入/响应不再使用 base58。 |
 | PROP-pure-pn-sn-address | CHG-pure-pn-sn-address | 纯代理节点启动配置在 `sn` 配置域包含连接 control/bootstrap server 所需的控制节点地址。 | Design 命名 YAML 字段、地址格式、验证行为、旧 `pn.control_server` 迁移策略以及纯代理节点如何使用它。 |
 | PROP-sn-http-config | CHG-sn-http-config | HTTP 管理面监听配置归入 `sn` 配置域，表达其属于控制节点管理面。 | Design 命名 YAML 字段、环境变量兼容策略、旧顶层 `http` 迁移行为，以及 implementation 更新配置模板和解析。 |
@@ -263,6 +289,9 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 - `proposal.md` 记录外部代理节点批准状态必须持久化到 SQLite。
 - `proposal.md` 记录 HTTP 控制面必须导出代理节点列表、批准和拒绝接口。
 - `proposal.md` 记录代理节点列表必须暴露真实连接来源地址用于管理 UI 展示。
+- `proposal.md` 记录配置了 `port_mapping` 的代理节点必须上报本地监听 Endpoint + `port_mapping` 元数据，并由控制节点用 observed IP + mapped external port 合成客户端可连接地址。
+- `proposal.md` 记录 SN/control 连接 IP 和代理节点地址不作为 SQLite 地址真相，旧 address 字段需要停止依赖或清理策略。
+- `proposal.md` 记录代理节点上报地址和控制节点下发给客户端的代理节点地址使用 Endpoint 形状。
 - `proposal.md` 记录服务端 NodeId 字符串 canonical 改为 base36。
 - `proposal.md` 记录纯代理节点配置需要 `sn` 域控制节点地址。
 - `proposal.md` 记录 HTTP 管理面监听配置归入 `sn` 配置域。
@@ -290,6 +319,10 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 - 如果 HTTP 批准接口缺少幂等和错误语义，管理员重复操作或代理节点重连时可能得到不可预测状态。
 - 如果 UI 继续显示 `pn_server.ip:port`，管理员在 NAT、多网卡或容器部署中会看到代理节点本地配置地址而不是真实连接来源地址。
 - 如果 observed address 被误用作代理节点身份或审批 key，NAT 地址变化可能破坏已有批准记录。
+- 如果 `port_mapping` 只替换端口但继续使用代理节点本地 IP，客户端仍可能收到内网、容器或不可路由地址。
+- 如果控制节点把 observed IP 或代理节点地址作为 SQLite 真相持久化，NAT 地址变化、重连或控制节点重启可能产生 stale 地址。
+- 如果 network PN server 只按 id 判断有效，修改 `port_mapping`、Endpoint 或 observed IP 变化后可能继续下发旧地址。
+- 如果共享协议继续用拆散 ip/port 字段表达代理节点地址，QUIC/TCP 多端点和 Endpoint 协议信息可能丢失或被错误重组。
 - 如果 NodeId base36 切换没有迁移或兼容旧 base58 数据，已有 joined-node、network-member 和流量统计记录可能在升级后不可见。
 - 如果心跳超时过于激进，短暂网络抖动可能把健康代理节点从选择中移除。
 - 如果心跳超时过于宽松，死亡代理节点可能继续被选择并导致客户端连接失败。
@@ -317,19 +350,24 @@ HTTP 管理面监听配置、管理员账号 bootstrap 配置和 HTTP 登录会�
 | stage | required_follow_up | reason |
 | --- | --- | --- |
 | Design | 更新 `design.md`：移除 `pn.server_addresses`，加入外部代理节点主动连接/注册模型，定义 `sn` 域纯代理节点控制节点地址字段、`sn` 域 HTTP 管理面字段、`sn` 域管理员账号字段、`sn` 域 JWT 签名字段、非 SN-client 控制通道、控制节点接受策略、SQLite 批准状态 schema、HTTP 批准接口、真实连接来源地址字段、心跳行为、内置代理节点默认允许、统计存储接口复用、状态 owner、选择行为和兼容处理。 | 当前 design 若没有覆盖 `sn.http`/`sn.admin`/`sn.jwt` 或等价 SN 子节点，不能准入新的配置结构。 |
+| Design | 为 `CHG-pn-port-mapping-observed-address` 定义代理节点本地监听 Endpoint 与 `port_mapping` 分开上报/解析、控制节点 observed IP 获取、合成 `PnServerInfo` Endpoint 地址规则、selector 有效性比较、旧地址字段停止依赖/清理和控制节点重启后的 live-only 选择语义。 | 当前 design 只要求 observed address 展示，没有覆盖 observed IP + mapped external port 作为客户端可连接地址的生成，也没有覆盖不持久化代理节点地址。 |
+| Design | 为 `CHG-pn-server-endpoint-address-contract` 定义代理节点上报 Endpoint、控制节点返回 Endpoint、HTTP projection 和客户端连接消费的跨模块合同。 | 当前 proposal/design 仍以 `PnServerInfo.ip/port/addresses` 为主，不能准入 Endpoint 地址合同变更。 |
 | Design | 为 `CHG-server-identity-cert-name` 定义证书名字配置字段、默认值、环境变量、推荐模板位置、旧 identity 文件兼容、保留私钥重签流程、不可重签时的错误处理和 `p2p-frame` X509 API 使用方式。 | 当前 design 没有覆盖证书名字、identity subject/name 更新或保留私钥重签证书，不能准入生产代码变更。 |
 | Design | 为 `CHG-server-proxy-node-reported-name` 定义代理节点名字字段如何从配置进入注册/心跳上报、控制节点运行时状态、HTTP 管理列表、返回给客户端的 `PnServerInfo.name`，以及未设置名字和名字变化的 fallback。 | 当前 design 没有覆盖代理节点上报名字或客户端代理节点信息中的名字字段，不能准入生产代码变更。 |
 | Design | 为 `CHG-pure-pn-no-sn-client` 定义替代控制通道：命令发送接口、连接建立、在线判断、重连、失败处理、远端 tunnel 校验、PN 连接校验、心跳和流量上报全部不得依赖 `SNClientService`/`ReportSn`。 | 当前实现借用 `stack.sn_client().get_cmd_client()`，直接 implementation 会丢失控制面功能或继续触发 SN 上报。 |
 | Design | 为 `CHG-server-node-id-base36` 定义服务端 NodeId base36 canonical 写入/解析、旧 base58 读取兼容或迁移策略，以及与 `vpn-frame`、`bucky-vpn`、`vpn_web` 的跨模块接口边界。 | 当前服务端代码和 design 多处默认 base58，无法直接 implementation。 |
 | Implementation | 在 approved design 和 admission 后，更新 `vpn-server/src/server_config.rs`、`vpn-server/src/main.rs`、`vpn-server/src/api.rs`、`vpn-server/src/sqlite_store_factory.rs`、代理节点 selection/control/heartbeat code，以及代理 traffic persistence wiring 以匹配 approved design。 | 当前 `/pn_proxy_nodes` 只返回 `pn_server`、`status`、`live`、`updated_at` 和 `comment`，没有真实连接来源地址字段。 |
+| Implementation | 在 approved design 和 admission 后，更新代理节点上线/心跳合并逻辑，使代理节点只上报本地监听 Endpoint + `port_mapping` 元数据，由控制节点用 observed IP + mapped external port 合成 live PN server 地址，并停止把代理节点地址作为控制节点 SQLite 真相。 | 当前逻辑可能把 observed endpoint 和 reported endpoint 仅追加到 addresses，或在代理节点本地提前替换监听端口，且 SQLite schema 中仍有 PN address 字段，可能继续下发旧地址。 |
 | Implementation | 在 approved design 和 admission 后，更新 `vpn-server/config/config.example.yaml`、`vpn-server/src/server_config.rs` 和 `vpn-server/src/main.rs`，使配置可设置证书名字，并在名字变化时复用旧私钥重签证书。 | 当前 identity 生成只在 identity 文件不存在时调用默认名字生成路径，没有名字配置或重签流程。 |
 | Implementation | 在 approved design 和 admission 后，更新代理控制 client/server、selector state、API DTO 和 `NodeNetwork.pn_server` 构造路径，使上报名字进入返回给客户端的代理节点信息。 | 当前代理节点信息只表达 id/ip/port/observed address 等字段，没有上报名字贯穿路径。 |
 | Testing | 在 post-implementation testing 阶段新增或更新测试，覆盖配置解析、deprecated/removed 字段行为、`sn` 域纯代理节点控制节点地址验证、`sn` 域 HTTP 管理面监听解析、`sn` 域管理员账号解析、`sn` 域 JWT 签名解析、内置代理节点默认允许、批准状态持久化、HTTP 批准/拒绝接口权限与错误语义、统计持久化接口使用、外部代理节点接受、heartbeat timeout/recovery、选择和失败路径。 | 该行为变更影响配置、schema、HTTP 控制面、权限、liveness、统计持久化和 runtime integration。 |
+| Testing | 为 `CHG-pn-port-mapping-observed-address` 设计验证：代理节点上报内网本地监听 Endpoint 与单独 `port_mapping` 时，控制节点用 observed IP 和映射外网端口合成下发 Endpoint；代理节点本地上报端口不被替换；修改映射或 observed IP 后不复用旧地址；SN/control IP 和代理节点地址不作为 SQLite 真相。 | 该行为直接影响 NAT/LB/容器部署下客户端能否连接代理节点。 |
+| Testing | 为 `CHG-pn-server-endpoint-address-contract` 设计验证：代理节点上报 Endpoint、控制节点下发 Endpoint、客户端按 Endpoint 协议连接，覆盖 QUIC/TCP 地址并避免只依赖拆散 ip/port。 | 该行为改变共享协议地址形状，需要跨模块验证。 |
 | Testing | 为 `CHG-server-identity-cert-name` 设计配置解析和 identity 更新验证：默认名字、新名字配置、已有 identity 同名不重写、已有私钥改名重签、旧 identity 不可解析时失败或显式初始化路径。 | 证书名字变更涉及 identity 持久化，缺少测试会难以及时发现私钥轮换或静默覆盖。 |
 | Testing | 为 `CHG-server-proxy-node-reported-name` 设计验证：有名字上报并返回给客户端、无名字 fallback、名字变化不改变审批 key、HTTP 管理列表显示名字、客户端消费依赖由 `bucky-vpn` 测试覆盖。 | 名字贯穿代理上报和客户端连接路径，缺少测试会导致控制面或客户端继续按 id/name fallback 连接。 |
 | Acceptance | 重新审计 proposal、design、implementation 和 testing 的一致性后再接受该变更。 | 当前 approved 下游 artifacts 在本 proposal 更新后已经 stale。 |
 
 ## Approval Record
-- approver: user-request
-- approval_date: 2026-07-06T16:09:15+08:00
+- approver: auto-pipeline
+- approval_date: 2026-07-07T00:41:31+08:00
 - user_statement: "确认，自动处理后续步骤"

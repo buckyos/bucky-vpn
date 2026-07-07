@@ -8,17 +8,14 @@ use p2p_frame::endpoint::{Endpoint, Protocol};
 use p2p_frame::networks::{
     IncomingTunnelValidateContext, IncomingTunnelValidator, TunnelPurpose, ValidateResult,
 };
-use p2p_frame::p2p_identity::{P2pId, P2pIdentityRef};
+use p2p_frame::p2p_identity::P2pId;
 use p2p_frame::pn::{PnConnectionValidateContext, PnConnectionValidator};
 use p2p_frame::sn::types::{SnTunnelClassification, SnTunnelRead, SnTunnelWrite};
-use p2p_frame::stack::{P2pConfig, create_p2p_env};
 use p2p_frame::ttp::{
-    TtpClient, TtpClientRef, TtpConnector, TtpPortListener, TtpServerRef, TtpStreamMeta, TtpTarget,
+    TtpClientRef, TtpConnector, TtpPortListener, TtpServerRef, TtpStreamMeta, TtpTarget,
 };
-use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use vpn_frame::client::VpnServerClient;
 use vpn_frame::cmd_server::client::{
@@ -29,7 +26,7 @@ use vpn_frame::cmd_server::errors::{CmdErrorCode, CmdResult, into_cmd_err};
 use vpn_frame::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
 use vpn_frame::server::{NodeId, PnServerSelector, VpnStore, VpnStoreFactory};
 use vpn_frame::{
-    PnServerAddress, PnServerInfo, ReportPnTrafficStatsReq, ReportPnTrafficStatsResp,
+    Endpoint as VpnEndpoint, PnServerInfo, ReportPnTrafficStatsReq, ReportPnTrafficStatsResp,
     ValidatePnConnectionReq, ValidatePnConnectionResp, VpnCmdCode, VpnCmdHeader, VpnTunnelId,
 };
 
@@ -150,35 +147,12 @@ impl ClassifiedCmdTunnelFactory<SnTunnelClassification, (), SnTunnelRead, SnTunn
 }
 
 pub async fn create_vpn_control_client(
-    local_identity: P2pIdentityRef,
+    ttp_client: TtpClientRef,
     control_server: &PnControlServerConfig,
     conn_timeout: Duration,
 ) -> VpnResult<VpnControlClientRef> {
-    let control_endpoint = Endpoint::from((
-        Protocol::Quic,
-        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
-    ));
-    let p2p_config = P2pConfig::new(
-        Arc::new(X509IdentityFactory),
-        Arc::new(X509IdentityCertFactory),
-        vec![control_endpoint],
-    );
-    let p2p_env = create_p2p_env(p2p_config)
-        .await
-        .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
     let control_id =
         P2pId::from_str(&control_server.id).map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
-    p2p_env
-        .net_manager()
-        .add_listen_device(local_identity.clone())
-        .await
-        .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
-    p2p_env
-        .net_manager()
-        .listen(p2p_env.endpoints(), p2p_env.port_mapping().clone())
-        .await
-        .map_err(into_vpn_err!(VpnErrorCode::Failed))?;
-    let ttp_client = TtpClient::new(local_identity, p2p_env.net_manager().clone());
     let factory = ControlCmdTunnelFactory::new(
         ttp_client,
         control_id,
@@ -365,7 +339,7 @@ pub async fn register_proxy_control_cmd_listener(
                     };
                     let pn_server = PnServerInfo::new_with_primary_address(
                         meta.remote_id.to_string(),
-                        pn_server_address_from_endpoint(remote_ep),
+                        pn_endpoint_from_p2p_endpoint(remote_ep),
                         Vec::new(),
                     );
                     if let Err(err) = pn_server_selector.report_observed_heartbeat(&pn_server).await
@@ -391,13 +365,13 @@ pub async fn register_proxy_control_cmd_listener(
         .map_err(into_vpn_err!(VpnErrorCode::Failed))
 }
 
-fn pn_server_address_from_endpoint(endpoint: Endpoint) -> PnServerAddress {
+fn pn_endpoint_from_p2p_endpoint(endpoint: Endpoint) -> VpnEndpoint {
     let protocol = match endpoint.protocol() {
-        Protocol::Quic => PnServerAddress::PROTOCOL_QUIC,
-        Protocol::Tcp => PnServerAddress::PROTOCOL_TCP,
-        Protocol::Ext(_) => PnServerAddress::PROTOCOL_QUIC,
+        Protocol::Quic => VpnEndpoint::PROTOCOL_QUIC,
+        Protocol::Tcp => VpnEndpoint::PROTOCOL_TCP,
+        Protocol::Ext(_) => VpnEndpoint::PROTOCOL_QUIC,
     };
-    PnServerAddress::new_with_protocol(protocol, endpoint.addr().ip(), endpoint.addr().port())
+    VpnEndpoint::new_with_protocol(protocol, endpoint.addr().ip(), endpoint.addr().port())
 }
 
 fn into_cmd_tunnel(
@@ -446,11 +420,9 @@ pub struct VpnCmdPnConnectionValidator {
     traffic_node_tracker: Option<PnTrafficNodeTrackerRef>,
 }
 
-pub struct VpnCmdIncomingTunnelValidator {
-    client: VpnControlClientRef,
+pub struct DeferredVpnCmdIncomingTunnelValidator {
+    client: Mutex<Option<VpnControlClientRef>>,
 }
-
-struct RejectAllIncomingTunnelValidator;
 
 impl VpnCmdPnConnectionValidator {
     pub fn new_with_traffic_node_tracker(
@@ -464,56 +436,58 @@ impl VpnCmdPnConnectionValidator {
     }
 }
 
-impl VpnCmdIncomingTunnelValidator {
-    pub fn new(client: VpnControlClientRef) -> Arc<Self> {
-        Arc::new(Self { client })
+impl DeferredVpnCmdIncomingTunnelValidator {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            client: Mutex::new(None),
+        })
+    }
+
+    pub fn set_client(&self, client: VpnControlClientRef) {
+        *self.client.lock().unwrap() = Some(client);
     }
 }
 
-pub fn reject_all_incoming_tunnel_validator() -> p2p_frame::networks::IncomingTunnelValidatorRef {
-    Arc::new(RejectAllIncomingTunnelValidator)
-}
-
 #[async_trait::async_trait]
-impl IncomingTunnelValidator for RejectAllIncomingTunnelValidator {
+impl IncomingTunnelValidator for DeferredVpnCmdIncomingTunnelValidator {
     async fn validate(
         &self,
         ctx: &IncomingTunnelValidateContext,
     ) -> p2p_frame::error::P2pResult<ValidateResult> {
+        let client = self.client.lock().unwrap().clone();
+        let Some(client) = client else {
+            return Ok(ValidateResult::Reject(format!(
+                "incoming tunnel rejected because remote validation is unavailable remote={} local={}",
+                ctx.remote_id, ctx.local_id
+            )));
+        };
+        validate_incoming_tunnel_with_control_client(&client, ctx).await
+    }
+}
+
+async fn validate_incoming_tunnel_with_control_client(
+    client: &VpnControlClientRef,
+    ctx: &IncomingTunnelValidateContext,
+) -> p2p_frame::error::P2pResult<ValidateResult> {
+    let remote_node_id = NodeId::from(ctx.remote_id.as_slice());
+    let allowed = client
+        .validate_pn_connection(remote_node_id.clone(), remote_node_id)
+        .await
+        .map_err(|err| {
+            p2p_frame::error::p2p_err!(
+                p2p_frame::error::P2pErrorCode::InternalError,
+                "validate incoming tunnel by vpn server failed: code={:?} msg={}",
+                err.code(),
+                err.msg()
+            )
+        })?;
+    if allowed {
+        Ok(ValidateResult::Accept)
+    } else {
         Ok(ValidateResult::Reject(format!(
-            "incoming tunnel rejected because remote validation is unavailable remote={} local={}",
+            "incoming tunnel rejected by vpn server remote={} local={}",
             ctx.remote_id, ctx.local_id
         )))
-    }
-}
-
-#[async_trait::async_trait]
-impl IncomingTunnelValidator for VpnCmdIncomingTunnelValidator {
-    async fn validate(
-        &self,
-        ctx: &IncomingTunnelValidateContext,
-    ) -> p2p_frame::error::P2pResult<ValidateResult> {
-        let remote_node_id = NodeId::from(ctx.remote_id.as_slice());
-        let allowed = self
-            .client
-            .validate_pn_connection(remote_node_id.clone(), remote_node_id)
-            .await
-            .map_err(|err| {
-                p2p_frame::error::p2p_err!(
-                    p2p_frame::error::P2pErrorCode::InternalError,
-                    "validate incoming tunnel by vpn server failed: code={:?} msg={}",
-                    err.code(),
-                    err.msg()
-                )
-            })?;
-        if allowed {
-            Ok(ValidateResult::Accept)
-        } else {
-            Ok(ValidateResult::Reject(format!(
-                "incoming tunnel rejected by vpn server remote={} local={}",
-                ctx.remote_id, ctx.local_id
-            )))
-        }
     }
 }
 

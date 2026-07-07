@@ -3,8 +3,8 @@ module: bucky-vpn-server
 version: v0.1
 status: approved
 approved_by: auto-pipeline
-approved_at: 2026-07-06T16:09:15+08:00
-approved_content_sha256: 328dc855b3fe5e38e743d1c3aece5ec2c7d6dd2439c42849049be7c79c547779
+approved_at: 2026-07-07T00:41:31+08:00
+approved_content_sha256: df5709a08c83948be788fb3888870852aa6c64c5ca13123eacb99a3c80562c8d
 ---
 
 # bucky-vpn-server Testing
@@ -26,7 +26,7 @@ approved_content_sha256: 328dc855b3fe5e38e743d1c3aece5ec2c7d6dd2439c42849049be7c
 | --- | --- | --- | --- | --- | --- |
 | `server-config` | 解析本地开关和 SN-owned 控制节点配置，移除静态外部代理地址合同。 | 默认启用、禁用 SN/PN、`sn.control_server`、`sn.http`、`sn.admin`、`sn.jwt` 解析，旧字段兼容，不再注入 `pn.server_addresses`。 | unit | `vpn-server/src/server_config.rs` | none |
 | `process-assembly` | 组装控制节点、内置代理节点、外部代理控制 client 和统计服务。 | `pn.enabled=true` 时内置代理默认可选；纯代理节点连接控制节点后启动心跳。 | dv | `python3 ./harness/scripts/test-run.py bucky-vpn-server dv` | runtime branch covered by compile/DV only; full network smoke deferred |
-| `control-node-control` | 管理外部代理节点批准、心跳 liveness 和选择状态。 | 使用控制命令上报 endpoint heartbeat，控制节点 selector 只选择 approved + live 的远端代理。 | unit/dv | `vpn-server/src/server_config.rs`, `vpn-server/src/pn_traffic_service.rs`, dv build | full multi-process smoke deferred |
+| `control-node-control` | 管理外部代理节点批准、心跳 liveness、port_mapping 合成和选择状态。 | 使用控制命令上报本地监听 Endpoint + `port_mapping`，控制节点 selector 只选择 approved + live 的远端代理，并用 observed IP + mapped external port 合成下发 Endpoint。 | unit/dv | `vpn-server/src/server_config.rs`, `vpn-server/src/pn_traffic_service.rs`, dv build | full multi-process smoke deferred |
 | `control-node-control` | 管理 proxy-control 专用 purpose 接入。 | 代理控制通道使用专用 purpose，不能复用 SN command purpose，控制节点 listener 使用独立 proxy-control command service 而不是 `SnService`。 | unit | `vpn-server/src/vpn_control_client.rs` | identity-gate full runtime smoke deferred |
 | `sqlite-persistence` | 持久化外部代理节点批准状态。 | `pn_proxy_node` schema、pending/approved/rejected 状态和旧库迁移可编译。 | unit/dv | `cargo check -p bucky-vpn-server`, `python3 ./harness/scripts/test-run.py bucky-vpn-server unit` | direct SQLite restart fixture deferred |
 | `http-api` | 暴露外部代理节点列表、真实连接来源地址、批准和拒绝接口。 | 新接口复用 Bearer session，注册到 HTTP 控制面；列表响应在可用时返回 `observed_addr`，缺失时不改变审批状态。 | dv/integration | `cargo check -p bucky-vpn-server`, workspace test | direct HTTP smoke deferred |
@@ -45,7 +45,7 @@ approved_content_sha256: 328dc855b3fe5e38e743d1c3aece5ec2c7d6dd2439c42849049be7c
 | --- | --- | --- | --- |
 | YAML config | Missing optional PN fields keeps local default; `sn.control_server` supplies pure proxy control-node address; `sn.http`, `sn.admin`, and `sn.jwt` supply control-node management settings. | Invalid control endpoint fails parsing; legacy `pn.control_server`, top-level `http`, top-level `admin`, and top-level `jwt` remain compatible. | unit config tests |
 | External proxy control channel | Pure proxy node can create control client and use control commands. | Missing `sn.control_server` while SN disabled logs warning and rejects proxy connections. | dv build plus future integration |
-| Heartbeat over traffic report | Remote reporter sends zero delta heartbeat with proxy endpoint through existing command; selector admits and expires remote proxy by TTL. | Reporter error logs warning and next tick retries. | unit selector TTL tests plus dv build |
+| Heartbeat over traffic report | Remote reporter sends zero delta heartbeat with proxy local listen Endpoint and optional port_mapping through existing command; selector applies observed IP + mapped external port and expires remote proxy by TTL. | Reporter error logs warning and next tick retries. | unit selector TTL tests plus dv build |
 | HTTP proxy approval API | Authenticated users can list, approve and reject proxy nodes, and list responses expose observed address when runtime peer WAN address is available. | Missing/invalid Bearer token is rejected by existing session decode path; missing peer WAN observation leaves `observed_addr` absent/null. | dv compile plus future HTTP smoke |
 | Traffic persistence | Non-zero deltas write through existing SQLite-backed interface. | Zero heartbeat does not create local parallel store. | unit/integration future |
 | Server NodeId text contract | API responses, SQLite new key writes, selector comparisons and NodeId logs use base36. | Old base58 SQLite rows are not automatically migrated; password hashes still use existing non-NodeId base58. | unit/dv/integration |
@@ -70,6 +70,8 @@ approved_content_sha256: 328dc855b3fe5e38e743d1c3aece5ec2c7d6dd2439c42849049be7c
 | CHG-server-node-id-base36 | `Directly Mapped Change Items` | VAL-server-node-id-base36 | dv | bucky-vpn-server-dv | no | cargo check and workspace compatibility cover API/store/log call sites; old database migration remains out of scope. |
 | CHG-server-identity-cert-name | `Directly Mapped Change Items` | VAL-server-identity-cert-name | unit | bucky-vpn-server-unit | no | Config parsing is unit covered; certificate re-signing with existing key is covered by compile/review of identity load path and dependency wiring. |
 | CHG-server-proxy-node-reported-name | `Directly Mapped Change Items` | VAL-server-proxy-reported-name | unit | bucky-vpn-server-unit | no | Selector merge and SQLite-backed proxy node listing preserve reported names; API/store DTOs compile. |
+| CHG-pn-port-mapping-observed-address | `Directly Mapped Change Items` | VAL-server-observed-mapped-endpoint | unit | bucky-vpn-server-unit | no | Selector tests cover local listen Endpoint reporting, observed IP plus reported port_mapping synthesis in both heartbeat orders, no local port rewrite, and store-backed listing. |
+| CHG-pn-server-endpoint-address-contract | `Directly Mapped Change Items` | VAL-server-pn-endpoint-contract | unit | bucky-vpn-server-unit | no | Config projection, proxy-control observed heartbeat, HTTP DTOs, and store paths compile and unit tests assert Endpoint-shaped PN server values. |
 
 ## Case-Type Coverage
 | change_id | case_type | required | validation_id | level | status | gap_manual_reason |
@@ -193,6 +195,20 @@ approved_content_sha256: 328dc855b3fe5e38e743d1c3aece5ec2c7d6dd2439c42849049be7c
 | CHG-server-proxy-node-reported-name | compatibility | yes | VAL-server-proxy-reported-name-integration | integration | covered | none |
 | CHG-server-proxy-node-reported-name | lifecycle | yes | VAL-server-proxy-reported-name | unit | covered | none |
 | CHG-server-proxy-node-reported-name | cross-module | yes | VAL-server-proxy-reported-name-integration | integration | covered | none |
+| CHG-pn-port-mapping-observed-address | normal | yes | VAL-server-observed-mapped-endpoint | unit | covered | none |
+| CHG-pn-port-mapping-observed-address | boundary | yes | VAL-server-observed-mapped-endpoint | unit | covered | none |
+| CHG-pn-port-mapping-observed-address | negative | yes | VAL-server-observed-mapped-endpoint | unit | covered | none |
+| CHG-pn-port-mapping-observed-address | error | no | VAL-server-observed-mapped-endpoint | unit | not-applicable | Address synthesis is pure merge logic and introduces no new error return. |
+| CHG-pn-port-mapping-observed-address | compatibility | yes | VAL-server-observed-mapped-endpoint | dv | covered | none |
+| CHG-pn-port-mapping-observed-address | lifecycle | yes | VAL-server-observed-mapped-endpoint | unit | covered | none |
+| CHG-pn-port-mapping-observed-address | cross-module | yes | VAL-server-observed-mapped-endpoint-integration | integration | covered | none |
+| CHG-pn-server-endpoint-address-contract | normal | yes | VAL-server-pn-endpoint-contract | unit | covered | none |
+| CHG-pn-server-endpoint-address-contract | boundary | yes | VAL-server-pn-endpoint-contract | unit | covered | none |
+| CHG-pn-server-endpoint-address-contract | negative | no | VAL-server-pn-endpoint-contract | unit | not-applicable | Server accepts shared Endpoint values; protocol validation remains at config/API parse boundaries. |
+| CHG-pn-server-endpoint-address-contract | error | yes | VAL-server-pn-endpoint-contract | unit | covered | none |
+| CHG-pn-server-endpoint-address-contract | compatibility | yes | VAL-server-pn-endpoint-contract | dv | covered | none |
+| CHG-pn-server-endpoint-address-contract | lifecycle | yes | VAL-server-pn-endpoint-contract | unit | covered | none |
+| CHG-pn-server-endpoint-address-contract | cross-module | yes | VAL-server-pn-endpoint-contract-integration | integration | covered | none |
 
 ## Design Element Coverage
 | element_type | design_source | derived_cases | level | status | gap_manual_reason |
@@ -231,6 +247,10 @@ The lowest reliable layer for config and selector behavior is unit tests in `ser
 | `resolve_service_endpoints` | proxy enabled with no static list | no static proxy endpoint injection | `vpn-server/src/server_config.rs` | covered | not-applicable: updated test |
 | `ConfigPnServerSelector::report_heartbeat` | remote proxy heartbeat | remote proxy endpoint becomes selectable before TTL | `vpn-server/src/server_config.rs` | covered | not-applicable: selector unit test |
 | `ConfigPnServerSelector::is_valid/select` | remote proxy TTL expired | remote proxy endpoint is removed from selection | `vpn-server/src/server_config.rs` | covered | not-applicable: selector unit test |
+| `endpoints_to_pn_server` | local listen Endpoint with configured `port_mapping` | reports local listen Endpoint ports unchanged and carries mapping metadata separately | `vpn-server/src/server_config.rs` | covered | none |
+| `ConfigPnServerSelector::report_observed_heartbeat` + `report_heartbeat` | observed then reported heartbeat | selected proxy uses observed connection IP and mapped external port from separately reported port_mapping | `vpn-server/src/server_config.rs` | covered | none |
+| `ConfigPnServerSelector::report_heartbeat` + `report_observed_heartbeat` | reported then observed heartbeat | selected proxy is rewritten from reported private IP/listen port to observed connection IP and mapped external port | `vpn-server/src/server_config.rs` | covered | none |
+| `SqliteVpnStore` PN server fields | proxy node and network PN server rows | persists stable id/name only and returns live selector endpoints when online | `vpn-server/src/sqlite_store_factory.rs`, `vpn-server/src/server_config.rs` | covered | none |
 | `get_server_name_config` | YAML `name` with surrounding whitespace | returns normalized server identity/proxy reported name | `vpn-server/src/server_config.rs` | covered | none |
 | `ConfigPnServerSelector` reported name merge | reported and observed heartbeat order | selected proxy keeps the reported name while using the observed address | `vpn-server/src/server_config.rs` | covered | none |
 | `ConfigPnServerSelector` store-backed reported name merge | observed then reported heartbeat | listed proxy node keeps the reported name in SQLite-backed path | `vpn-server/src/server_config.rs` | covered | none |
@@ -271,5 +291,5 @@ The lowest reliable layer for config and selector behavior is unit tests in `ser
 
 ## Approval Record
 - approver: auto-pipeline
-- approval_date: 2026-07-06T16:09:15+08:00
+- approval_date: 2026-07-07T00:41:31+08:00
 - user_statement: "确认，自动处理后续步骤"

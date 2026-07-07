@@ -3,8 +3,8 @@ module: bucky-vpn
 version: v0.1
 status: approved
 approved_by: auto-pipeline
-approved_at: 2026-07-06T16:09:15+08:00
-approved_content_sha256: d1d76e0ad7e71699515ad5d15064ee0178de39c85ad921013b216aa5b2960eba
+approved_at: 2026-07-07T00:22:12+08:00
+approved_content_sha256: 9a5c30fd825fed22af3957efb55f170965c8cc385e4fabb23c6b2d06fe4ecd4c
 ---
 
 # bucky-vpn Testing
@@ -61,6 +61,7 @@ approved_content_sha256: d1d76e0ad7e71699515ad5d15064ee0178de39c85ad921013b216aa
 | CHG-client-sn-quic-tcp-priority | design.md Directly Mapped Change Items | VAL-client-sn-endpoint-list | unit | bucky-vpn-unit | no | none |
 | CHG-client-join-server-name-for-sn | design.md Directly Mapped Change Items | VAL-client-join-server-name | unit | bucky-vpn-unit | no | none |
 | CHG-client-pn-proxy-reported-name | design.md Directly Mapped Change Items | VAL-client-pn-proxy-reported-name | unit | bucky-vpn-unit | no | Shared `PnServerInfo::remote_name` unit coverage plus client crate tests cover the connection target wiring. |
+| CHG-client-pn-proxy-endpoint-address | design.md Directly Mapped Change Items | VAL-client-pn-endpoint-address | unit | bucky-vpn-unit | no | Unit tests cover Endpoint ordering, deduplication, and protocol conversion; DV build covers `connect_pn_server` p2p-frame target wiring. |
 
 ## Case-Type Coverage
 | change_id | case_type | required | validation_id | level | status | gap_manual_reason |
@@ -107,6 +108,13 @@ approved_content_sha256: d1d76e0ad7e71699515ad5d15064ee0178de39c85ad921013b216aa
 | CHG-client-pn-proxy-reported-name | compatibility | yes | VAL-client-pn-proxy-reported-name-dv | dv | covered | none |
 | CHG-client-pn-proxy-reported-name | lifecycle | no | VAL-client-pn-proxy-reported-name | unit | not-applicable | Remote name is computed for a single connection attempt. |
 | CHG-client-pn-proxy-reported-name | cross-module | yes | VAL-client-pn-proxy-reported-name-integration | integration | covered | none |
+| CHG-client-pn-proxy-endpoint-address | normal | yes | VAL-client-pn-endpoint-address | unit | covered | none |
+| CHG-client-pn-proxy-endpoint-address | boundary | yes | VAL-client-pn-endpoint-address | unit | covered | none |
+| CHG-client-pn-proxy-endpoint-address | negative | yes | VAL-client-pn-endpoint-address | unit | covered | none |
+| CHG-client-pn-proxy-endpoint-address | error | yes | VAL-client-pn-endpoint-address | unit | covered | none |
+| CHG-client-pn-proxy-endpoint-address | compatibility | yes | VAL-client-pn-endpoint-address-dv | dv | covered | none |
+| CHG-client-pn-proxy-endpoint-address | lifecycle | no | VAL-client-pn-endpoint-address | unit | not-applicable | Endpoint selection happens per connection attempt and has no persisted client lifecycle state. |
+| CHG-client-pn-proxy-endpoint-address | cross-module | yes | VAL-client-pn-endpoint-address-integration | integration | covered | none |
 
 ## Design Element Coverage
 | element_type | design_source | derived_cases | level | status | gap_manual_reason |
@@ -160,6 +168,9 @@ The join `server_name` change is verified at unit level because the client-owned
 | `P2pVpnClientKey` | structured key with `server_name` | round-trips server id, server, port, and normalized server_name | `vpn-client/src/p2p_vpn.rs` | covered | none |
 | `P2pVpnClientKey` | legacy `server_id_server:port` key | parses old key with no `server_name` for compatibility | `vpn-client/src/p2p_vpn.rs` | covered | none |
 | `connect_pn_server` target construction | PN server has optional reported name | uses shared `PnServerInfo::remote_name()` for p2p-frame remote name and keeps `PnServerInfo.id` as remote id | `vpn-client/src/p2p_vpn.rs`; `vpn-frame/src/vpn_protocol.rs` | covered | none |
+| `pn_server_endpoints` | repeated QUIC endpoint and TCP fallback endpoint | orders QUIC Endpoint values before non-QUIC values and deduplicates without reconstructing from split fields | `vpn-client/src/p2p_vpn.rs` | covered | none |
+| `pn_endpoint_to_p2p_endpoint` | QUIC and TCP Endpoint protocols | converts server-returned Endpoint values into p2p-frame `Endpoint` targets while preserving protocol and port | `vpn-client/src/p2p_vpn.rs` | covered | none |
+| `pn_endpoint_to_p2p_endpoint` | unknown protocol string | returns `VpnErrorCode::InvalidParam` instead of silently connecting to the wrong transport | `vpn-client/src/p2p_vpn.rs` | covered | none |
 
 ## DV Tests
 | workflow | kind | entry | expected_result | test_file_or_script | status | gap_manual_reason |
@@ -193,5 +204,5 @@ The join `server_name` change is verified at unit level because the client-owned
 
 ## Approval Record
 - approver: auto-pipeline
-- approval_date: 2026-07-06T16:09:15+08:00
+- approval_date: 2026-07-07T00:22:12+08:00
 - user_statement: "确认，自动处理后续步骤"

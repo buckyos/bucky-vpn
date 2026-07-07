@@ -3,8 +3,8 @@ module: vpn-frame
 version: v0.1
 status: approved
 approved_by: auto-pipeline
-approved_at: 2026-07-06T16:09:15+08:00
-approved_content_sha256: 482ce1c55a01aac4faecbe6ac83481a8fd79774ed60a402623df39b9ed13422f
+approved_at: 2026-07-07T00:41:31+08:00
+approved_content_sha256: d8a3aa8b94779181fb96c621aba72fa46819d1c1654df40d040d540d63e03230
 ---
 
 # vpn-frame Testing
@@ -25,12 +25,12 @@ approved_content_sha256: 482ce1c55a01aac4faecbe6ac83481a8fd79774ed60a402623df39b
 ## Submodule Tests
 | submodule | responsibility | detailed_testing_doc | required_behavior | boundary_failure_cases | test_type | test_file |
 |-----------|----------------|----------------------|-------------------|------------------------|-----------|-----------|
-| protocol | Shared protocol type | none | `PnServerInfo` carries id, ip, and port without endpoint-string identity helpers. | absent PN server remains `None` | unit | `vpn-frame/src/vpn_protocol.rs` |
+| protocol | Shared protocol type | none | `PnServerInfo` carries id, Endpoint values, and optional report-time port_mapping without endpoint-string identity helpers. | absent PN server remains `None`; port_mapping does not rewrite local Endpoint ports | unit | `vpn-frame/src/vpn_protocol.rs` |
 | protocol-name | Shared proxy display/certificate name metadata | none | `PnServerInfo.name` carries an optional reported proxy name and `remote_name()` falls back to id when absent. | blank names normalize to absent | unit | `vpn-frame/src/vpn_protocol.rs` |
 | server-runtime | Builds `NodeNetwork` values and receives heartbeat reports | none | selected and reported PN servers are structured values whose id is the server P2P node id. | selector returns none or rejects stale value | dv | `harness/scripts/test-run.py` |
-| persistence | Stores network and proxy-node PN server data | none | network and proxy-node rows bind PN server id/ip/port separately. | old endpoint-string data is unsupported | unit/dv | `vpn-server/src/sqlite_store_factory.rs`, harness runner |
-| api | Exposes server-side PN server JSON models | none | proxy-node and network APIs use id/ip/port JSON objects. | endpoint-string request bodies no longer match server models | integration | `vpn-server/src/api.rs`, harness runner |
-| client-runtime | Consumes `NodeNetwork.pn_server` | none | client code derives a P2P endpoint from ip/port only at the P2P boundary. | absent PN info is skipped | integration | `harness/scripts/test-run.py` |
+| persistence | Stores stable PN server identity/policy while endpoints stay live | none | network and proxy-node rows no longer treat transport endpoints as SQLite truth. | live endpoint is unavailable until a proxy reports/refreshes it | unit/dv | `vpn-server/src/sqlite_store_factory.rs`, harness runner |
+| api | Exposes server-side PN server JSON models | none | proxy-node and network APIs use Endpoint-shaped JSON values. | invalid endpoint protocol is rejected by consumers at the p2p boundary | integration | `vpn-server/src/api.rs`, harness runner |
+| client-runtime | Consumes `NodeNetwork.pn_server` | none | client code consumes server-returned Endpoint values directly at the P2P boundary. | absent PN info is skipped | integration | `harness/scripts/test-run.py` |
 | node-id-contract | Shared NodeId text helpers and runtime logs | none | base36 is the canonical NodeId external text output while raw bytes/codecs stay unchanged. | legacy base58 text is not used for new output | unit/dv | `vpn-frame/src/server/node_store.rs`, `harness/scripts/test-run.py` |
 
 ## Module-Level Tests
@@ -43,11 +43,11 @@ approved_content_sha256: 482ce1c55a01aac4faecbe6ac83481a8fd79774ed60a402623df39b
 ## External Interface Tests
 | interface | responsibility | success_case | failure_boundary_case | test_type | test_doc_or_file |
 |-----------|----------------|--------------|-----------------------|-----------|------------------|
-| `NodeNetwork.pn_server` | Shared protocol field consumed by client and server binaries | valid selector produces `PnServerInfo` with P2P node id, ip, and port | no valid selector produces `None` | unit/integration | `vpn-frame/src/vpn_protocol.rs`, harness integration |
-| `ReportPnTrafficStatsReq.pn_server` | Heartbeat/report command payload | remote PN server report carries structured id/ip/port | absent PN server skips selector heartbeat | integration | harness integration |
+| `NodeNetwork.pn_server` | Shared protocol field consumed by client and server binaries | valid selector produces `PnServerInfo` with P2P node id and Endpoint values | no valid selector produces `None` | unit/integration | `vpn-frame/src/vpn_protocol.rs`, harness integration |
+| `ReportPnTrafficStatsReq.pn_server` | Heartbeat/report command payload | remote PN server report carries structured id/Endpoint plus optional port_mapping metadata | absent PN server skips selector heartbeat | integration | harness integration |
 | `PnServerInfo.name` | Optional reported proxy name consumed by server/client binaries | non-empty name is preserved as PN server metadata | blank or absent name falls back to `PnServerInfo.id` for remote connection name | unit/integration | `vpn-frame/src/vpn_protocol.rs`, harness integration |
-| SQLite PN server fields | Store selected and approved PN servers | network/proxy-node rows bind id/ip/port columns | endpoint-string columns are not read as compatible data | unit/dv | `vpn-server/src/sqlite_store_factory.rs`, harness runner |
-| HTTP API PN server JSON | Server-side admin API data model | list/approve/reject bodies use id/ip/port objects | endpoint-string request body is not supported | integration | `vpn-server/src/api.rs`, harness runner |
+| SQLite PN server fields | Store selected and approved PN server identity/policy | network/proxy-node rows bind id/name while endpoint columns are not address truth | stale endpoint columns are ignored in favor of live selector state | unit/dv | `vpn-server/src/sqlite_store_factory.rs`, harness runner |
+| HTTP API PN server JSON | Server-side admin API data model | list/approve/reject bodies use Endpoint-shaped objects | invalid endpoint protocol fails at consumer conversion | integration | `vpn-server/src/api.rs`, harness runner |
 | NodeId external text | Shared NodeId helper contract | `NodeId` round-trips through base36 and runtime call sites emit base36 | old base58 output is not accepted as canonical output | unit/dv | `vpn-frame/src/server/node_store.rs`, harness runner |
 
 ## Direct Change Coverage
@@ -56,6 +56,8 @@ approved_content_sha256: 482ce1c55a01aac4faecbe6ac83481a8fd79774ed60a402623df39b
 | CHG-pn-server-info-contract | design.md Directly Mapped Change Items | VAL-pn-server-info-unit | unit | vpn-frame-unit | no | none |
 | CHG-node-id-base36-contract | design.md Directly Mapped Change Items | VAL-node-id-base36-contract | unit | vpn-frame-unit | no | none |
 | CHG-pn-server-reported-name-contract | design.md Directly Mapped Change Items | VAL-pn-server-reported-name-unit | unit | vpn-frame-unit | no | none |
+| CHG-pn-server-endpoint-address-contract | design.md Directly Mapped Change Items | VAL-pn-server-endpoint-address-unit | unit | vpn-frame-unit | no | none |
+| CHG-pn-server-address-live-state-contract | design.md Directly Mapped Change Items | VAL-pn-server-live-address-integration | integration | vpn-frame-integration | no | none |
 
 ## Case-Type Coverage
 | change_id | case_type | required | validation_id | level | status | gap_manual_reason |
@@ -81,11 +83,25 @@ approved_content_sha256: 482ce1c55a01aac4faecbe6ac83481a8fd79774ed60a402623df39b
 | CHG-pn-server-reported-name-contract | compatibility | yes | VAL-pn-server-reported-name-integration | integration | covered | none |
 | CHG-pn-server-reported-name-contract | lifecycle | no | VAL-pn-server-reported-name-unit | unit | not-applicable | Name metadata has no independent lifecycle in vpn-frame. |
 | CHG-pn-server-reported-name-contract | cross-module | yes | VAL-pn-server-reported-name-integration | integration | covered | none |
+| CHG-pn-server-endpoint-address-contract | normal | yes | VAL-pn-server-endpoint-address-unit | unit | covered | none |
+| CHG-pn-server-endpoint-address-contract | boundary | yes | VAL-pn-server-endpoint-address-unit | unit | covered | none |
+| CHG-pn-server-endpoint-address-contract | negative | no | VAL-pn-server-endpoint-address-unit | unit | not-applicable | Endpoint values are accepted as structured data; protocol validation happens at p2p boundary consumers. |
+| CHG-pn-server-endpoint-address-contract | error | no | VAL-pn-server-endpoint-address-unit | unit | not-applicable | Shared Endpoint construction does not introduce a new error return. |
+| CHG-pn-server-endpoint-address-contract | compatibility | yes | VAL-pn-server-endpoint-address-integration | integration | covered | none |
+| CHG-pn-server-endpoint-address-contract | lifecycle | no | VAL-pn-server-endpoint-address-unit | unit | not-applicable | Endpoint value shape has no independent runtime lifecycle. |
+| CHG-pn-server-endpoint-address-contract | cross-module | yes | VAL-pn-server-endpoint-address-integration | integration | covered | none |
+| CHG-pn-server-address-live-state-contract | normal | yes | VAL-pn-server-live-address-integration | integration | covered | none |
+| CHG-pn-server-address-live-state-contract | boundary | yes | VAL-pn-server-live-address-integration | integration | covered | none |
+| CHG-pn-server-address-live-state-contract | negative | yes | VAL-pn-server-live-address-integration | integration | covered | none |
+| CHG-pn-server-address-live-state-contract | error | yes | VAL-pn-server-live-address-integration | integration | covered | none |
+| CHG-pn-server-address-live-state-contract | compatibility | yes | VAL-pn-server-live-address-integration | integration | covered | none |
+| CHG-pn-server-address-live-state-contract | lifecycle | yes | VAL-pn-server-live-address-integration | integration | covered | none |
+| CHG-pn-server-address-live-state-contract | cross-module | yes | VAL-pn-server-live-address-integration | integration | covered | none |
 
 ## Design Element Coverage
 | element_type | design_source | derived_cases | level | status | gap_manual_reason |
 |--------------|---------------|---------------|-------|--------|-------------------|
-| parameter-domain | design.md Interfaces and Dependencies | id string, IPv4, IPv6, port range | unit | covered | none |
+| parameter-domain | design.md Interfaces and Dependencies | id string, IPv4 Endpoint, IPv6 Endpoint, port range | unit | covered | none |
 | state-transition | design.md Data and State | selected none to tuple, tuple to none, proxy-node missing to pending to approved/rejected | dv | covered | none |
 | failure-path | design.md Key Call Flows | no valid selector sends none; missing approval returns false; connect failure remains existing `VpnResult` | dv | covered | none |
 | error-handling | design.md Key Call Flows | database errors propagate through existing `VpnResult`; P2P connect errors remain at boundary | dv | covered | none |
@@ -101,9 +117,12 @@ The lowest useful validation for the protocol struct is unit level. Structured S
 ## Unit Tests
 | function_or_unit | branch_or_condition | covered_behavior | test_file | status | gap_manual_reason |
 |------------------|---------------------|------------------|-----------|--------|-------------------|
-| `PnServerInfo::new` | valid id/ip/port | constructs the same structured tuple without endpoint parsing | `vpn-frame/src/vpn_protocol.rs` | covered | none |
+| `PnServerInfo::new` | valid id/ip/port compatibility constructor | constructs Endpoint values without endpoint-string parsing | `vpn-frame/src/vpn_protocol.rs` | covered | none |
 | `PnServerInfo::with_name` / `remote_name` | non-empty and blank optional names | trims reported names and falls back to id when absent | `vpn-frame/src/vpn_protocol.rs` | covered | none |
-| SQLite PN server binding | network/proxy-node structured rows | stores and reads id/ip/port fields separately | `vpn-server/src/sqlite_store_factory.rs` | covered | none |
+| `PnServerInfo::new` / `primary_endpoint` | IPv4 and IPv6 endpoint values | stores PN address as Endpoint values rather than split `ip`/`port` fields | `vpn-frame/src/vpn_protocol.rs` | covered | none |
+| `PnServerInfo::with_port_mapping` | non-empty mapping with local Endpoint port | stores report-time port_mapping while preserving the local Endpoint listen port | `vpn-frame/src/vpn_protocol.rs` | covered | none |
+| `PnServerInfo::new_with_endpoints` / `add_endpoint` | duplicate endpoint list entries | deduplicates Endpoint values while preserving protocol/address/port together | `vpn-frame/src/vpn_protocol.rs`, `vpn-client/src/p2p_vpn.rs` | covered | none |
+| SQLite PN server binding | network/proxy-node structured rows | stores and reads id/name while live endpoints come from selector state | `vpn-server/src/sqlite_store_factory.rs` | covered | none |
 | old endpoint compatibility | old endpoint string | no parser/helper accepts old endpoint strings as PN server data | compile/build contract | covered | none |
 | `NodeId::to_base36` / `NodeId::from_base36` | valid and invalid text | round-trips canonical NodeId text and rejects malformed values | `vpn-frame/src/server/node_store.rs` | covered | none |
 
@@ -129,5 +148,5 @@ The lowest useful validation for the protocol struct is unit level. Structured S
 
 ## Approval Record
 - approver: auto-pipeline
-- approval_date: 2026-07-06T16:09:15+08:00
+- approval_date: 2026-07-07T00:41:31+08:00
 - user_statement: "确认，自动处理后续步骤"

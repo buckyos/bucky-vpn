@@ -13,9 +13,8 @@ use crate::server_config::{
 use crate::sqlite_store_factory::{P2pSnCmdServer, SqliteStoreFactory};
 use crate::user_store::{SqliteUserStore, User};
 use crate::vpn_control_client::{
-    VpnCmdIncomingTunnelValidator, VpnCmdPnConnectionValidator, VpnCmdPnTrafficReporter,
-    create_proxy_control_cmd_service, create_vpn_control_client,
-    register_proxy_control_cmd_listener, reject_all_incoming_tunnel_validator,
+    DeferredVpnCmdIncomingTunnelValidator, VpnCmdPnConnectionValidator, VpnCmdPnTrafficReporter,
+    create_proxy_control_cmd_service, create_vpn_control_client, register_proxy_control_cmd_listener,
 };
 use base58::ToBase58;
 use bucky_raw_codec::{RawConvertTo, RawDecode, RawEncode, RawFrom};
@@ -24,7 +23,7 @@ use p2p_frame::p2p_identity::{P2pIdentity, P2pIdentityFactory, P2pIdentityRef, P
 use p2p_frame::pn::PnServer;
 use p2p_frame::sn::service::{SnServiceConfig, create_sn_service};
 use p2p_frame::stack::{P2pConfig, create_p2p_env};
-use p2p_frame::ttp::{TtpServer, TtpServerRef};
+use p2p_frame::ttp::{TtpClient, TtpClientRef, TtpServer, TtpServerRef};
 use p2p_frame::x509;
 use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
 use rcgen::KeyPair;
@@ -110,11 +109,16 @@ fn resign_encoded_identity_with_name(data: &[u8], name: &str) -> Result<Vec<u8>,
         .map_err(|err| format!("encode identity failed: {err:?}"))
 }
 
-async fn start_proxy_ttp_server(
+struct ProxyTtpRuntime {
+    server: TtpServerRef,
+    client: TtpClientRef,
+}
+
+async fn start_proxy_ttp_runtime(
     local_identity: P2pIdentityRef,
     endpoints: Vec<Endpoint>,
     incoming_tunnel_validator: p2p_frame::networks::IncomingTunnelValidatorRef,
-) -> p2p_frame::error::P2pResult<TtpServerRef> {
+) -> p2p_frame::error::P2pResult<ProxyTtpRuntime> {
     let p2p_env = create_p2p_env(
         P2pConfig::new(
             Arc::new(X509IdentityFactory),
@@ -128,12 +132,17 @@ async fn start_proxy_ttp_server(
         .net_manager()
         .add_listen_device(local_identity.clone())
         .await?;
-    let ttp_server = TtpServer::new(local_identity, p2p_env.net_manager().clone())?;
+    let net_manager = p2p_env.net_manager().clone();
+    let ttp_server = TtpServer::new(local_identity.clone(), net_manager.clone())?;
+    let ttp_client = TtpClient::new(local_identity, net_manager);
     p2p_env
         .net_manager()
         .listen(p2p_env.endpoints(), p2p_env.port_mapping().clone())
         .await?;
-    Ok(ttp_server)
+    Ok(ProxyTtpRuntime {
+        server: ttp_server,
+        client: ttp_client,
+    })
 }
 
 #[tokio::main]
@@ -236,35 +245,7 @@ async fn main() {
     } else {
         Vec::new()
     };
-    let remote_control_client = if standalone_proxy_node {
-        match pn_config.control_server.as_ref() {
-            Some(control_server) => match create_vpn_control_client(
-                control_identity.clone(),
-                control_server,
-                std::time::Duration::from_secs(5),
-            )
-            .await
-            {
-                Ok(client) => Some(client),
-                Err(err) => {
-                    log::error!(
-                        "create vpn control client failed: code={:?} msg={}",
-                        err.code(),
-                        err.msg()
-                    );
-                    None
-                }
-            },
-            None => {
-                log::warn!(
-                    "standalone proxy node requires pn.control_server for remote tunnel validation"
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let mut remote_control_client = None;
     let sn_service_config = SnServiceConfig::new(
         local_identity,
         Arc::new(X509IdentityFactory),
@@ -275,24 +256,45 @@ async fn main() {
         sn_service.start().await.unwrap();
         Some(sn_service.ttp_server())
     } else if standalone_proxy_node {
-        let incoming_tunnel_validator: p2p_frame::networks::IncomingTunnelValidatorRef =
-            if let Some(client) = remote_control_client.as_ref() {
-                VpnCmdIncomingTunnelValidator::new(client.clone())
-            } else {
-                reject_all_incoming_tunnel_validator()
-            };
-        let ttp_server = start_proxy_ttp_server(
+        let incoming_tunnel_validator = DeferredVpnCmdIncomingTunnelValidator::new();
+        let ttp_runtime = start_proxy_ttp_runtime(
             control_identity.clone(),
             eps.clone(),
-            incoming_tunnel_validator,
+            incoming_tunnel_validator.clone(),
         )
         .await
         .unwrap();
+        match pn_config.control_server.as_ref() {
+            Some(control_server) => match create_vpn_control_client(
+                ttp_runtime.client.clone(),
+                control_server,
+                std::time::Duration::from_secs(5),
+            )
+            .await
+            {
+                Ok(client) => {
+                    incoming_tunnel_validator.set_client(client.clone());
+                    remote_control_client = Some(client);
+                }
+                Err(err) => {
+                    log::error!(
+                        "create vpn control client failed: code={:?} msg={}",
+                        err.code(),
+                        err.msg()
+                    );
+                }
+            },
+            None => {
+                log::warn!(
+                    "standalone proxy node requires pn.control_server for remote tunnel validation"
+                );
+            }
+        }
         log::info!(
             "default sn server disabled by config file {}, standalone proxy ttp listener started",
             config_file
         );
-        Some(ttp_server)
+        Some(ttp_runtime.server)
     } else {
         log::info!("default sn server disabled by config file {}", config_file);
         None
@@ -323,6 +325,7 @@ async fn main() {
             pn_servers,
             store_factory.clone(),
         ));
+        pn_server_selector.start_remote_liveness_monitor();
         let cmd_server = Arc::new(P2pSnCmdServer::new(sn_service.clone()));
         let vpn_server = VpnServer::new_with_pn_server_selector(
             cmd_server,

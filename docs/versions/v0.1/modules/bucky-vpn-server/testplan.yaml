@@ -23,10 +23,11 @@ levels:
         - 本轮若实现 PN 节点/用户统计，应在该层至少覆盖节点快照映射、当前用户聚合逻辑和跨重启累计恢复
         - 本轮控制节点/代理节点配置应覆盖默认 YAML 选择、旧 TOML fallback、SN/PN 开关缺省开启、移除静态代理地址、纯代理节点控制节点地址解析、内置代理节点默认允许和心跳入口
         - 本轮代理节点名字应覆盖 YAML name 解析、上报名合并和存储返回路径
+        - 本轮 port_mapping 应覆盖代理节点上报本地监听 Endpoint 端口、单独携带 mapping 元数据，以及控制节点 observed IP + mapped external port 合成下发 Endpoint
     steps:
       - id: bucky-vpn-server-unit
         name: 运行 bucky-vpn-server crate 测试
-        change_ids: ["CHG-pn-config-no-static-addresses", "CHG-external-pn-active-control", "CHG-pure-pn-no-sn-client", "CHG-external-pn-approval-persistence", "CHG-external-pn-observed-address", "CHG-pure-pn-sn-address", "CHG-sn-http-config", "CHG-sn-admin-config", "CHG-sn-jwt-config", "CHG-pn-sn-heartbeat", "CHG-colocated-pn-default-allowed", "CHG-pn-traffic-db-interface", "CHG-local-pn-toggle-preserved", "CHG-server-node-id-base36", "CHG-server-identity-cert-name", "CHG-server-proxy-node-reported-name"]
+        change_ids: ["CHG-pn-config-no-static-addresses", "CHG-external-pn-active-control", "CHG-pure-pn-no-sn-client", "CHG-external-pn-approval-persistence", "CHG-external-pn-observed-address", "CHG-pure-pn-sn-address", "CHG-sn-http-config", "CHG-sn-admin-config", "CHG-sn-jwt-config", "CHG-pn-sn-heartbeat", "CHG-colocated-pn-default-allowed", "CHG-pn-traffic-db-interface", "CHG-local-pn-toggle-preserved", "CHG-server-node-id-base36", "CHG-server-identity-cert-name", "CHG-server-proxy-node-reported-name", "CHG-pn-port-mapping-observed-address", "CHG-pn-server-endpoint-address-contract"]
         run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn-server", "unit"]
   dv:
     mode: enabled
@@ -47,7 +48,7 @@ levels:
     steps:
       - id: bucky-vpn-server-dv
         name: 构建 bucky-vpn-server crate
-        change_ids: ["CHG-pn-config-no-static-addresses", "CHG-external-pn-active-control", "CHG-pure-pn-no-sn-client", "CHG-external-pn-approval-http-api", "CHG-external-pn-observed-address", "CHG-pure-pn-sn-address", "CHG-sn-http-config", "CHG-sn-admin-config", "CHG-sn-jwt-config", "CHG-pn-sn-heartbeat", "CHG-colocated-pn-default-allowed", "CHG-pn-traffic-db-interface", "CHG-local-pn-toggle-preserved", "CHG-server-node-id-base36", "CHG-server-identity-cert-name", "CHG-server-proxy-node-reported-name"]
+        change_ids: ["CHG-pn-config-no-static-addresses", "CHG-external-pn-active-control", "CHG-pure-pn-no-sn-client", "CHG-external-pn-approval-http-api", "CHG-external-pn-observed-address", "CHG-pure-pn-sn-address", "CHG-sn-http-config", "CHG-sn-admin-config", "CHG-sn-jwt-config", "CHG-pn-sn-heartbeat", "CHG-colocated-pn-default-allowed", "CHG-pn-traffic-db-interface", "CHG-local-pn-toggle-preserved", "CHG-server-node-id-base36", "CHG-server-identity-cert-name", "CHG-server-proxy-node-reported-name", "CHG-pn-port-mapping-observed-address", "CHG-pn-server-endpoint-address-contract"]
         run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn-server", "dv"]
   integration:
     mode: enabled
@@ -72,5 +73,5 @@ levels:
     steps:
       - id: bucky-vpn-server-integration
         name: 运行 workspace 测试
-        change_ids: ["CHG-pn-config-no-static-addresses", "CHG-external-pn-active-control", "CHG-pure-pn-no-sn-client", "CHG-external-pn-approval-persistence", "CHG-external-pn-approval-http-api", "CHG-external-pn-observed-address", "CHG-pure-pn-sn-address", "CHG-sn-http-config", "CHG-sn-admin-config", "CHG-sn-jwt-config", "CHG-pn-sn-heartbeat", "CHG-colocated-pn-default-allowed", "CHG-pn-traffic-db-interface", "CHG-local-pn-toggle-preserved", "CHG-server-node-id-base36", "CHG-server-identity-cert-name", "CHG-server-proxy-node-reported-name"]
+        change_ids: ["CHG-pn-config-no-static-addresses", "CHG-external-pn-active-control", "CHG-pure-pn-no-sn-client", "CHG-external-pn-approval-persistence", "CHG-external-pn-approval-http-api", "CHG-external-pn-observed-address", "CHG-pure-pn-sn-address", "CHG-sn-http-config", "CHG-sn-admin-config", "CHG-sn-jwt-config", "CHG-pn-sn-heartbeat", "CHG-colocated-pn-default-allowed", "CHG-pn-traffic-db-interface", "CHG-local-pn-toggle-preserved", "CHG-server-node-id-base36", "CHG-server-identity-cert-name", "CHG-server-proxy-node-reported-name", "CHG-pn-port-mapping-observed-address", "CHG-pn-server-endpoint-address-contract"]
         run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn-server", "integration"]

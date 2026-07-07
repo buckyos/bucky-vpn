@@ -97,19 +97,23 @@ pub struct GetVpnInfoReq {
     pub client_version: Option<String>,
 }
 
-fn default_pn_server_address_protocol() -> String {
-    PnServerAddress::PROTOCOL_QUIC.to_string()
+fn default_endpoint_protocol() -> String {
+    Endpoint::PROTOCOL_QUIC.to_string()
 }
 
-#[derive(Debug, RawEncode, RawDecode, Serialize, Deserialize, Clone, Eq, PartialEq, Hash)]
-pub struct PnServerAddress {
-    #[serde(default = "default_pn_server_address_protocol")]
+#[derive(
+    Debug, RawEncode, RawDecode, Serialize, Deserialize, Clone, Eq, PartialEq, Hash, PartialOrd, Ord,
+)]
+pub struct Endpoint {
+    #[serde(default = "default_endpoint_protocol")]
     pub protocol: String,
     pub ip: IpAddr,
     pub port: u16,
 }
 
-impl PnServerAddress {
+pub type PnServerAddress = Endpoint;
+
+impl Endpoint {
     pub const PROTOCOL_QUIC: &'static str = "quic";
     pub const PROTOCOL_TCP: &'static str = "tcp";
 
@@ -130,54 +134,86 @@ impl PnServerAddress {
     }
 }
 
+#[derive(
+    Debug, RawEncode, RawDecode, Serialize, Deserialize, Clone, Eq, PartialEq, Hash, Default,
+)]
+pub struct PnServerPortMapping {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quic: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp: Option<u16>,
+}
+
+impl PnServerPortMapping {
+    pub fn is_empty(&self) -> bool {
+        self.quic.is_none() && self.tcp.is_none()
+    }
+}
+
 #[derive(Debug, RawEncode, RawDecode, Serialize, Deserialize, Clone, Eq, PartialEq, Hash)]
 pub struct PnServerInfo {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    pub ip: IpAddr,
-    pub port: u16,
     #[serde(default)]
-    pub addresses: Vec<PnServerAddress>,
+    pub endpoints: Vec<Endpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_mapping: Option<PnServerPortMapping>,
 }
 
 impl PnServerInfo {
     pub fn new(id: String, ip: IpAddr, port: u16) -> Self {
-        Self::new_with_addresses(id, ip, port, Vec::new())
+        Self::new_with_endpoint(id, Endpoint::new(ip, port))
+    }
+
+    pub fn new_with_endpoint(id: String, endpoint: Endpoint) -> Self {
+        Self::new_with_endpoints(id, vec![endpoint])
     }
 
     pub fn new_with_primary_address(
         id: String,
-        primary: PnServerAddress,
-        addresses: Vec<PnServerAddress>,
+        primary: Endpoint,
+        addresses: Vec<Endpoint>,
     ) -> Self {
+        let mut endpoints = Vec::with_capacity(addresses.len() + 1);
+        endpoints.push(primary);
+        endpoints.extend(addresses);
+        Self::new_with_endpoints(id, endpoints)
+    }
+
+    pub fn new_with_endpoints(id: String, endpoints: Vec<Endpoint>) -> Self {
         let mut info = Self {
             id,
             name: None,
-            ip: primary.ip,
-            port: primary.port,
-            addresses: Vec::new(),
+            endpoints: Vec::new(),
+            port_mapping: None,
         };
-        info.add_address(primary);
-        for address in addresses {
-            info.add_address(address);
+        for endpoint in endpoints {
+            info.add_endpoint(endpoint);
         }
         info
     }
 
-    pub fn new_with_addresses(
-        id: String,
-        ip: IpAddr,
-        port: u16,
-        addresses: Vec<PnServerAddress>,
-    ) -> Self {
-        Self::new_with_primary_address(id, PnServerAddress::new(ip, port), addresses)
+    pub fn new_with_addresses(id: String, ip: IpAddr, port: u16, addresses: Vec<Endpoint>) -> Self {
+        let mut info = Self::new_with_endpoint(id, Endpoint::new(ip, port));
+        for address in addresses {
+            info.add_endpoint(address);
+        }
+        info
     }
 
-    pub fn add_address(&mut self, address: PnServerAddress) {
-        if !self.addresses.contains(&address) {
-            self.addresses.push(address);
+    pub fn add_endpoint(&mut self, endpoint: Endpoint) {
+        if !self.endpoints.contains(&endpoint) {
+            self.endpoints.push(endpoint);
         }
+    }
+
+    pub fn add_address(&mut self, address: Endpoint) {
+        self.add_endpoint(address);
+    }
+
+    pub fn primary_endpoint(&self) -> Option<&Endpoint> {
+        self.endpoints.first()
     }
 
     pub fn with_name(mut self, name: Option<String>) -> Self {
@@ -185,6 +221,11 @@ impl PnServerInfo {
             let name = name.trim().to_owned();
             if name.is_empty() { None } else { Some(name) }
         });
+        self
+    }
+
+    pub fn with_port_mapping(mut self, port_mapping: Option<PnServerPortMapping>) -> Self {
+        self.port_mapping = port_mapping.filter(|mapping| !mapping.is_empty());
         self
     }
 
@@ -276,11 +317,12 @@ pub struct ValidatePnConnectionResp {
 
 #[cfg(test)]
 mod tests {
-    use super::{PnServerAddress, PnServerInfo};
+    use super::{PnServerAddress, PnServerInfo, PnServerPortMapping};
     use std::net::IpAddr;
 
     #[test]
     fn pn_server_info_carries_node_id_and_ipv4_address() {
+        let endpoint = PnServerAddress::new(IpAddr::from([127, 0, 0, 1]), 3624);
         let pn_server = PnServerInfo::new(
             "server-node-id".to_string(),
             IpAddr::from([127, 0, 0, 1]),
@@ -288,12 +330,8 @@ mod tests {
         );
 
         assert_eq!(pn_server.id, "server-node-id");
-        assert_eq!(pn_server.ip, IpAddr::from([127, 0, 0, 1]));
-        assert_eq!(pn_server.port, 3624);
-        assert_eq!(
-            pn_server.addresses,
-            vec![PnServerAddress::new(IpAddr::from([127, 0, 0, 1]), 3624)]
-        );
+        assert_eq!(pn_server.primary_endpoint(), Some(&endpoint));
+        assert_eq!(pn_server.endpoints, vec![endpoint]);
     }
 
     #[test]
@@ -305,8 +343,13 @@ mod tests {
         );
 
         assert_eq!(pn_server.id, "server-node-id");
-        assert_eq!(pn_server.ip, "::1".parse::<IpAddr>().unwrap());
-        assert_eq!(pn_server.port, 3624);
+        assert_eq!(
+            pn_server.primary_endpoint(),
+            Some(&PnServerAddress::new(
+                "::1".parse::<IpAddr>().unwrap(),
+                3624
+            ))
+        );
     }
 
     #[test]
@@ -330,5 +373,30 @@ mod tests {
 
         assert_eq!(unnamed.name, None);
         assert_eq!(unnamed.remote_name(), "server-node-id");
+    }
+
+    #[test]
+    fn pn_server_info_carries_port_mapping_without_rewriting_endpoint_port() {
+        let pn_server = PnServerInfo::new(
+            "server-node-id".to_string(),
+            IpAddr::from([127, 0, 0, 1]),
+            3624,
+        )
+        .with_port_mapping(Some(PnServerPortMapping {
+            quic: Some(443),
+            tcp: None,
+        }));
+
+        assert_eq!(
+            pn_server.primary_endpoint(),
+            Some(&PnServerAddress::new(IpAddr::from([127, 0, 0, 1]), 3624))
+        );
+        assert_eq!(
+            pn_server.port_mapping,
+            Some(PnServerPortMapping {
+                quic: Some(443),
+                tcp: None,
+            })
+        );
     }
 }

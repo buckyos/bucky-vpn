@@ -3,8 +3,8 @@ module: bucky-vpn
 version: v0.1
 status: approved
 approved_by: user-request
-approved_at: 2026-07-06T16:09:15+08:00
-approved_content_sha256: 69f611cce308376e1b9ce662d50e88b6c1535e4e42f3f63762f7fa7853ee8071
+approved_at: 2026-07-06T23:48:34+08:00
+approved_content_sha256: 96b1401c6fde7f84ece1ff389540e45898097601461262492c9915fbeb32f324
 ---
 
 # bucky-vpn Proposal
@@ -24,6 +24,8 @@ approved_content_sha256: 69f611cce308376e1b9ce662d50e88b6c1535e4e42f3f63762f7fa7
 
 新增要求：当控制节点返回的代理节点信息中包含代理节点上报的名字时，客户端连接该代理节点必须使用该名字。该名字来自服务端返回的 `PnServerInfo.name` 或 design 选定的等价字段；它只影响代理节点连接 name，不替代代理节点 id、IP/port endpoint 或客户端选择策略。
 
+新增要求：控制节点下发给客户端的代理节点地址应使用 `Endpoint` 类型或 design 选定的等价共享 Endpoint 合同。客户端连接 PN 代理节点时应消费该 Endpoint，不应再从拆散的 `ip`/`port` 字段重建传输地址。
+
 ## Scope
 ### In scope
 - `vpn-client` 客户端装配层的 pntunnel 代理选择需求。
@@ -36,6 +38,7 @@ approved_content_sha256: 69f611cce308376e1b9ce662d50e88b6c1535e4e42f3f63762f7fa7
 - 客户端连接 SN 时支持 QUIC 和 TCP endpoint，并保持 QUIC 优先。
 - 客户端 `join` 支持可选 `server_name`，用于 SN 连接 name，且按域名/IP 输入自动选择兼容默认值。
 - 客户端连接 PN 代理节点时使用服务端返回的代理节点上报名字。
+- 客户端连接 PN 代理节点时使用服务端返回的 Endpoint 地址。
 
 ### Out of scope
 - 重做服务端 PN server 选择策略。
@@ -65,7 +68,8 @@ approved_content_sha256: 69f611cce308376e1b9ce662d50e88b6c1535e4e42f3f63762f7fa7
 - 假设 `server_name` 只影响连接 SN 时的 remote name，不参与 identity 目录命名，也不改变服务端证书 id / `server_id` 的解析。
 - 假设空字符串或全空白 `server_name` 等价于未设置；域名默认值来自用户输入的 `server` 字段，IP 默认值来自 `server_id`。
 - 假设服务端返回的代理节点名字字段是可选的；未提供、为空或全空白时，客户端按 design 定义 fallback，不能因此破坏旧服务端或旧代理节点。
-- 假设代理节点名字用于连接代理节点的 remote/proxy name，不改变 resolver 选择哪一个 `PnServerInfo`，也不改变 endpoint 派生。
+- 假设代理节点名字用于连接代理节点的 remote/proxy name，不改变 resolver 选择哪一个 `PnServerInfo`，也不改变 Endpoint 地址选择。
+- 假设代理节点地址由 `vpn-frame` shared protocol 以 Endpoint 形状提供；客户端不负责从 split ip/port 重组协议端点。
 
 ## Constraints
 - 允许使用的库/组件：现有 `vpn-client`、`vpn-frame`、`p2p_frame`、异步 trait 模式和现有 VPN 类型。
@@ -74,7 +78,8 @@ approved_content_sha256: 69f611cce308376e1b9ce662d50e88b6c1535e4e42f3f63762f7fa7
 - 客户端新展示/请求的 NodeId 字符串必须使用 base36，与 `vpn-frame` 合同一致。
 - SN 多传输支持不得改变现有 key 解析、identity 存储目录和默认 QUIC 连接行为；TCP 只作为补充 endpoint 提供给 p2p-frame。
 - `server_name` 支持必须保持已有 `join --name` 的网络成员名含义不变，并保持旧 `joined_networks` 记录可读。
-- 连接代理节点时，客户端不得把代理节点名字当作 `PnServerInfo.id`、endpoint 或持久化 key；名字只作为连接 name 输入。
+- 连接代理节点时，客户端不得把代理节点名字当作 `PnServerInfo.id`、Endpoint 或持久化 key；名字只作为连接 name 输入。
+- 客户端连接代理节点时必须使用控制节点返回的 Endpoint 地址形状，保留协议、地址和端口整体语义。
 
 ## Requirement Challenge
 | question | evaluation | risk_or_tradeoff | decision |
@@ -88,6 +93,7 @@ approved_content_sha256: 69f611cce308376e1b9ce662d50e88b6c1535e4e42f3f63762f7fa7
 | `server_name` 是否应该复用现有 `join --name`？ | 不应复用。`--name` 已表示加入网络时服务端看到的节点名，而 `server_name` 是连接 SN 时用于 p2p-frame remote name / SNI 的技术参数。 | 复用会让网络成员显示名和连接证书名混淆，且无法在同一次 join 中同时表达两个值。 | 新增独立 `--server_name` 和 API 字段；未设置时按域名/IP 规则生成默认 SN name。 |
 | 客户端是否应使用服务端返回的代理节点名字连接 PN 代理？ | 应该。用户要求控制节点返回代理节点上报名字后，客户端连接时使用该名字。 | 需要确认具体底层调用的 remote name 参数；如果仍用 id，命名证书场景会失败或不匹配。 | 客户端在连接代理节点时优先使用 `PnServerInfo.name`，缺失时按 design fallback。 |
 | 代理节点名字是否应参与代理选择或持久化 key？ | 不应。代理选择仍应由服务端返回的 `PnServerInfo` 和 resolver 策略决定；名字可能重复或变更。 | 把名字当 key 会导致名字变化破坏连接缓存或选错代理。 | 名字只作为连接 name 传给底层 P2P 连接，不替代 id/ip/port。 |
+| 客户端是否应继续从 `ip`/`port` 重建 PN Endpoint？ | 不应。控制节点下发 Endpoint 时已经携带协议、地址和端口，客户端再重组会丢失或误判协议语义。 | 需要依赖 `vpn-frame` Endpoint-shaped PN server 合同，并同步连接代码和测试。 | 客户端消费服务端返回的 Endpoint 地址，不再把 split ip/port 当作 PN 地址合同。 |
 
 ## Large Module Submodule Decision
 | submodule | new_or_existing | responsibility | proposal_packet | reason |
@@ -96,6 +102,7 @@ approved_content_sha256: 69f611cce308376e1b9ce662d50e88b6c1535e4e42f3f63762f7fa7
 | `sn-client-transport` | existing | 客户端创建 P2P stack 时的 SN endpoint 和本地 P2P transport 装配策略 | `docs/versions/v0.1/modules/bucky-vpn/proposal.md` | 该需求只改变现有 `p2p_vpn.rs` SN endpoint 列表和 `main.rs` P2P local endpoints，不需要独立业务子模块。 |
 | `sn-server-name` | existing | 客户端 join 参数到 `P2pSn::new` name 的解析和持久化 | `docs/versions/v0.1/modules/bucky-vpn/proposal.md` | 该需求附着在现有 join/API/P2P stack 装配路径上，不需要独立业务子模块 packet。 |
 | `pn-proxy-name` | existing | 客户端从 `PnServerInfo` 读取代理节点上报名字，并在连接代理节点时使用该名字。 | `docs/versions/v0.1/modules/bucky-vpn/proposal.md` | 该需求附着在现有代理连接和 pntunnel 创建路径上，不需要独立业务子模块 packet。 |
+| `pn-proxy-endpoint` | existing | 客户端从 `PnServerInfo` 读取代理节点 Endpoint 地址，并按 Endpoint 协议连接代理节点。 | `docs/versions/v0.1/modules/bucky-vpn/proposal.md` | 该需求附着在现有代理连接路径上，不需要独立业务子模块 packet。 |
 
 ## Trigger Matrix
 | trigger_category | applies | evidence | required_checks | deferred_checks_and_reason |
@@ -108,6 +115,7 @@ approved_content_sha256: 69f611cce308376e1b9ce662d50e88b6c1535e4e42f3f63762f7fa7
 | runtime/integration | yes | SN 连接路径是客户端上线前置条件，远端 SN endpoint 列表或本地 transport listener 缺 TCP 都会导致 TCP SN 地址不可用。 | implementation 后应运行 `cargo check -p bucky-vpn` 或 harness 中 bucky-vpn 相关入口，并在 testing 阶段补 endpoint/listener 列表验证。 |  |
 | runtime/integration | yes | `server_name` 会参与 p2p-frame SN command tunnel 建连，错误默认值会导致域名证书场景连接失败。 | implementation 后应覆盖显式 `server_name`、域名默认和 IP 默认，并运行 bucky-vpn unit/DV。 |  |
 | runtime/integration | yes | 代理节点上报名字会参与客户端连接 PN proxy；错误 fallback 或继续使用 id 会导致命名证书场景连接失败。 | implementation 后应覆盖有 `PnServerInfo.name`、无 name fallback、空白 name fallback 和不改变 proxy selection key。 | owner: bucky-vpn/vpn-frame/bucky-vpn-server; risk: shared protocol 或服务端返回字段未同步时无法完整验证。 |
+| runtime/integration | yes | 代理节点地址改为 Endpoint-shaped 下发；客户端错误重建 ip/port 或忽略协议会导致连接错误。 | implementation 后应覆盖 QUIC/TCP Endpoint 消费、Endpoint 顺序和无 split ip/port fallback。 | owner: bucky-vpn/vpn-frame/bucky-vpn-server; risk: shared protocol 未同步时无法完整验证。 |
 | build/dependency/config/deployment | yes | 客户端本地 API 地址需要通过配置或环境变量设置。 | design 必须列明配置键、默认值和兼容性；implementation 后运行客户端构建或集成脚本。 |  |
 | ui/datamodel/workflow | yes | `join` / `state` CLI 需要使用配置化本地 API 地址连接 daemon，并以 base36 展示/传递 NodeId；`join` 还需要可选 `--server_name`。 | design 必须保证默认 CLI 工作流不变，只有显式配置时切换地址；NodeId 输出与服务端 API 合同一致；`server_name` 不改变 `--name` 语义。 |  |
 | harness/process | yes | 现有 approved docs 无 `change_id`，本需求必须先补 proposal/design 才能 implementation。 | `doc-structure-check.py --docs proposal` 和 proposal stage scope check。 |  |
@@ -121,6 +129,7 @@ approved_content_sha256: 69f611cce308376e1b9ce662d50e88b6c1535e4e42f3f63762f7fa7
 - 客户端连接 SN 时可同时使用 QUIC 和 TCP，并保持 QUIC 优先。
 - 客户端 join 可为 SN 连接指定 `server_name`，未指定时域名 server 使用域名、IP server 使用 `server_id`。
 - 客户端连接代理节点时使用控制节点返回的代理节点上报名字。
+- 客户端连接代理节点时使用控制节点返回的 Endpoint 地址，而不是从拆散 ip/port 字段重组。
 
 ## Proposal Items
 | proposal_id | change_id | outcome | success_evidence |
@@ -131,6 +140,7 @@ approved_content_sha256: 69f611cce308376e1b9ce662d50e88b6c1535e4e42f3f63762f7fa7
 | PROP-client-sn-quic-tcp-priority | CHG-client-sn-quic-tcp-priority | 客户端连接 SN 时同时注册 QUIC 和 TCP endpoint，并把 QUIC endpoint 放在 TCP endpoint 前面；本地 P2P 环境同时启用 QUIC/TCP listener。 | Design 中出现同名 `change_id`、明确 endpoint/listener 构造顺序；implementation admission 通过后 `vpn-client/src/p2p_vpn.rs` 不再只为 SN 构造单一 QUIC endpoint，`vpn-client/src/main.rs` 不再只启用单一 QUIC P2P endpoint。 |
 | PROP-client-join-server-name-for-sn | CHG-client-join-server-name-for-sn | `join` 命令和本地 `/join` API 支持可选 `server_name`，并在创建 SN client stack 时传给 `P2pSn::new`；未设置时域名 server 默认用域名，IP server 默认用 `server_id`。 | Design 中出现同名 `change_id`、明确 CLI/API/持久化字段、默认规则和 scope paths；implementation admission 通过后 `vpn-client/src/p2p_vpn.rs` 第 544 行不再无条件使用 `sn_id.to_string()` 作为 SN name。 |
 | PROP-client-pn-proxy-reported-name | CHG-client-pn-proxy-reported-name | 客户端连接 PN 代理节点时优先使用服务端返回的代理节点上报名字；未提供名字时按 approved design fallback，且名字不替代 PN server id。 | Design 中出现同名 `change_id`、明确 `PnServerInfo.name` 消费位置、底层连接参数、fallback 和 scope paths；implementation admission 通过后代理连接不再只使用 id/name fallback。 |
+| PROP-client-pn-proxy-endpoint-address | CHG-client-pn-proxy-endpoint-address | 客户端连接 PN 代理节点时使用服务端返回的 Endpoint 地址，保留协议、地址和端口整体语义。 | Design 中出现同名 `change_id`、明确 `PnServerInfo` Endpoint 字段消费位置、QUIC/TCP 协议处理和 scope paths；implementation admission 通过后代理连接不再从 split ip/port 重建地址。 |
 
 ## Success Criteria
 - `PnProxyRouteResolver` 的职责、输入、输出和默认行为在 design 中明确。
@@ -146,6 +156,8 @@ approved_content_sha256: 69f611cce308376e1b9ce662d50e88b6c1535e4e42f3f63762f7fa7
 - 当 `PnServerInfo.name` 非空时，客户端连接代理节点使用该名字作为 remote/proxy connection name。
 - 当 `PnServerInfo.name` 缺失或空白时，客户端按 design fallback，并保持旧服务端兼容。
 - 代理节点名字不改变 resolver 选择结果、PN server id、endpoint 派生或持久化 key。
+- 当 `PnServerInfo` 返回 Endpoint 地址时，客户端按 Endpoint 协议、地址和端口连接 PN 代理节点。
+- 客户端不再依赖 split `ip`/`port` 字段重建 PN 代理 Endpoint。
 
 ## Risks
 - resolver 边界若放到共享层，可能把客户端策略泄漏到 `vpn-frame`。
@@ -158,6 +170,8 @@ approved_content_sha256: 69f611cce308376e1b9ce662d50e88b6c1535e4e42f3f63762f7fa7
 - 如果客户端继续用 PN server id 作为代理连接 name，配置了名字的代理节点可能无法通过证书/name 校验。
 - 如果客户端把代理节点名字放进 resolver key 或 worker pool key，名字变化可能导致错误复用或重复连接。
 - 如果没有无 name fallback，旧服务端返回的 `PnServerInfo` 会变成不可连接。
+- 如果客户端继续从 split ip/port 重建 Endpoint，可能丢失 QUIC/TCP 协议信息，或在服务端已合成 Endpoint 后连接错误地址。
+- 如果 Endpoint 地址参与 worker/cache key 的方式未定义，地址更新后可能错误复用旧 tunnel。
 
 ## Downstream Follow-Up
 - Design stage: 为 `CHG-client-pn-proxy-route-resolver` 补充 `design.md`，明确 trait 位置、调用流、错误处理、兼容性和 scope paths。
@@ -178,8 +192,11 @@ approved_content_sha256: 69f611cce308376e1b9ce662d50e88b6c1535e4e42f3f63762f7fa7
 - Design stage: 为 `CHG-client-pn-proxy-reported-name` 补充 `design.md`，明确 `PnServerInfo.name` 字段消费、连接 PN proxy 时的 remote name 参数、无名字 fallback、worker/cache key 是否受影响和 scope paths。
 - Implementation stage: 只有 `vpn-frame` / `bucky-vpn-server` 代理名字合同和本模块 admission 均通过后，才能修改客户端代理连接路径。
 - Testing stage: implementation 后补充验证，覆盖有上报名字、无名字、空白名字、名字变化不影响 resolver id/endpoint 和旧服务端兼容。
+- Design stage: 为 `CHG-client-pn-proxy-endpoint-address` 补充 `design.md`，明确 `PnServerInfo` Endpoint 字段消费、连接 PN proxy 时的 Endpoint 协议处理、地址更新对 worker/cache key 的影响和 scope paths。
+- Implementation stage: 只有 `vpn-frame` / `bucky-vpn-server` Endpoint 地址合同和本模块 admission 均通过后，才能修改客户端代理连接路径。
+- Testing stage: implementation 后补充验证，覆盖 QUIC Endpoint、TCP Endpoint、Endpoint 顺序、地址更新和不再依赖 split ip/port。
 
 ## Approval Record
 - approver: user-request
-- approval_date: 2026-07-06T16:09:15+08:00
+- approval_date: 2026-07-06T23:48:34+08:00
 - user_statement: "确认，自动处理后续步骤"

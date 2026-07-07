@@ -29,33 +29,18 @@ fn node_id_db_key(node_id: &NodeId) -> String {
     node_id.to_base58()
 }
 
-fn pn_server_addresses_db_key(pn_server: &PnServerInfo) -> VpnResult<String> {
-    serde_json::to_string(&pn_server.addresses).map_err(into_vpn_err!(VpnErrorCode::InvalidParam))
-}
-
 fn pn_server_from_db(
     id: String,
     name: String,
-    ip: String,
-    port: i64,
-    addresses: String,
+    _ip: String,
+    _port: i64,
+    _addresses: String,
 ) -> VpnResult<Option<PnServerInfo>> {
     if id.is_empty() {
         return Ok(None);
     }
-    let addresses = if addresses.is_empty() {
-        Vec::new()
-    } else {
-        serde_json::from_str(&addresses).map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?
-    };
     Ok(Some(
-        PnServerInfo::new_with_addresses(
-            id,
-            IpAddr::from_str(&ip).map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?,
-            port as u16,
-            addresses,
-        )
-        .with_name(Some(name)),
+        PnServerInfo::new_with_endpoints(id, Vec::new()).with_name(Some(name)),
     ))
 }
 
@@ -66,9 +51,9 @@ fn pn_server_db_parts(
         Some(pn_server) => Ok((
             pn_server.id.clone(),
             pn_server.name.clone().unwrap_or_default(),
-            pn_server.ip.to_string(),
-            pn_server.port as i64,
-            pn_server_addresses_db_key(pn_server)?,
+            "".to_string(),
+            0,
+            "".to_string(),
         )),
         None => Ok((
             "".to_string(),
@@ -452,9 +437,9 @@ impl SqliteVpnStore {
                 sql_query(sql)
                     .bind(&pn_server.id)
                     .bind(pn_server.name.clone().unwrap_or_default())
-                    .bind(pn_server.ip.to_string())
-                    .bind(pn_server.port as i64)
-                    .bind(pn_server_addresses_db_key(pn_server)?)
+                    .bind("")
+                    .bind(0)
+                    .bind("")
                     .bind(ProxyNodeApprovalStatus::Pending.as_str())
                     .bind(Self::now_secs() as i64),
             )
@@ -484,9 +469,9 @@ impl SqliteVpnStore {
                 sql_query(sql)
                     .bind(&pn_server.id)
                     .bind(pn_server.name.clone().unwrap_or_default())
-                    .bind(pn_server.ip.to_string())
-                    .bind(pn_server.port as i64)
-                    .bind(pn_server_addresses_db_key(pn_server)?)
+                    .bind("")
+                    .bind(0)
+                    .bind("")
                     .bind(status.as_str())
                     .bind(Self::now_secs() as i64)
                     .bind(comment.unwrap_or("")),

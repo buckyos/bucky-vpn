@@ -3,8 +3,8 @@ module: bucky-vpn
 version: v0.1
 status: approved
 approved_by: auto-pipeline
-approved_at: 2026-07-06T16:09:15+08:00
-approved_content_sha256: 3613060c1ad38cb395146c6551171a1519549ed8378642ea54f3e96a5578f4c0
+approved_at: 2026-07-06T23:48:34+08:00
+approved_content_sha256: a5ab102fb1a976d1565a4cd73d8b053e1e86912d2638a83f447bb120e74f546d
 ---
 
 # bucky-vpn Design
@@ -22,12 +22,14 @@ This design also implements `CHG-client-join-server-name-for-sn`: the `join` com
 
 This design also implements `CHG-client-pn-proxy-reported-name`: when the server-provided `PnServerInfo` contains a non-empty `name`, the client uses that name as the PN proxy remote name when connecting to the proxy node. Missing names preserve the existing fallback to the PN proxy P2P id.
 
+This design also implements `CHG-client-pn-proxy-endpoint-address`: when the server-provided `PnServerInfo` contains Endpoint-shaped proxy addresses, the client connects using those Endpoint values directly. The client no longer treats split `ip`/`port` fields as the PN proxy address contract.
+
 ## Overall Approach
 Keep the shared `vpn-frame` tunnel manager contract unchanged. `vpn-frame` already stores each network route's `PnServerInfo` and uses it in the tunnel pool key. The missing client behavior is that the P2P stack proxy client currently has no route resolver configured, so p2p-frame falls back to a single configured relay or fails when none is configured.
 
 `vpn-client/src/p2p_vpn.rs` will add a client-owned resolver object that maps target `NodeId` / P2P id to the selected PN server P2P id. `P2pVpnTunnelFactory::on_vpn_info_received` updates this resolver from every `NodeVpnInfo` member and the network `pn_server`. `P2pVpnClientFactory::create_client` passes the same resolver to `P2pStackConfig::set_proxy_route_resolver` before creating the stack. When p2p-frame opens a proxy tunnel, it calls the resolver with the target P2P id and receives the PN relay P2P id.
 
-For PN proxy connection naming, `P2pVpnTunnelFactory::connect_pn_server` keeps deriving `remote_id` from `PnServerInfo.id` and endpoints from `ip/port/addresses`, but computes `remote_name` from `PnServerInfo.name` when the value is present and not blank. If `name` is absent or blank, the client uses `remote_id.to_string()` so old control nodes and old proxy nodes remain connectable.
+For PN proxy connection, `P2pVpnTunnelFactory::connect_pn_server` keeps deriving `remote_id` from `PnServerInfo.id`, but consumes the Endpoint values carried by `PnServerInfo` for connection attempts. QUIC endpoints remain preferred in the ordered candidate list when the server returns both QUIC and TCP. `remote_name` is computed from `PnServerInfo.name` when the value is present and not blank; if `name` is absent or blank, the client uses `remote_id.to_string()` so old control nodes and old proxy nodes remain connectable only when they still provide compatible Endpoint data.
 
 For local API configuration, `vpn-client/src/cli.rs` owns a small `LocalApiConfig` helper because the CLI is the consumer that needs a base URL and the daemon only needs the bind address. The helper reads `VPN_*` environment values and the existing `setting.toml` from the resolved `data.dir`, then applies defaults `api.ip = "127.0.0.1"` and `api.port = 4536`. `run_daemon` uses the bind address when creating `HttpServerConfig`; `Cli::join` and `Cli::get_state` use the helper's base URL for `HttpClient`.
 
@@ -45,6 +47,7 @@ For SN server name setup, `main.rs` adds a `--server_name` option to `join`, `cl
 | SN transport selection | Provide local QUIC/TCP P2P endpoints and ordered remote QUIC/TCP SN endpoints to p2p-frame | Reimplementing endpoint selection in the client would duplicate p2p-frame behavior and expand this change beyond the requested scope. |
 | SN server name source | Add `server_name` to join input instead of global config or reusing `--name` | SN name is per joined server and distinct from network member display name; a global setting or overloaded flag would be ambiguous. |
 | PN proxy remote name | Use `PnServerInfo.name` with id fallback | This reuses the server-reported metadata and avoids adding a client-side proxy name registry. |
+| PN proxy address | Consume Endpoint values from `PnServerInfo` | Endpoint preserves protocol/address/port and avoids reconstructing transport addresses from split fields. |
 
 ## Current Structure
 | path | current_responsibility | change |
@@ -54,7 +57,7 @@ For SN server name setup, `main.rs` adds a `--server_name` option to `join`, `cl
 | `vpn-client/src/main.rs` | Resolves data dir, builds P2P env, loads settings, starts local HTTP API | Use configurable local API bind address when starting the daemon HTTP server; build local P2P endpoints as QUIC and TCP on `p2p.port`. |
 | `vpn-client/src/cli.rs` | Implements CLI commands by posting to the local daemon API | Resolve the local daemon API target from the same config/defaults instead of hardcoding `127.0.0.1:4536`. |
 | `vpn-client/src/p2p_vpn.rs` | Creates the client P2P stack and registers SN information with p2p-frame | Build the SN endpoint list as QUIC then TCP for the resolved SN address. |
-| `vpn-client/src/p2p_vpn.rs` | Connects to PN proxy nodes from server-provided `PnServerInfo` | Use reported `name` as `TtpTarget.remote_name` when present; keep `id` as `remote_id`. |
+| `vpn-client/src/p2p_vpn.rs` | Connects to PN proxy nodes from server-provided `PnServerInfo` | Use returned Endpoint values as connection targets; use reported `name` as `TtpTarget.remote_name` when present; keep `id` as `remote_id`. |
 | `vpn-client/src/main.rs`, `vpn-client/src/cli.rs`, `vpn-client/src/api.rs`, `vpn-client/src/p2p_vpn.rs` | Carry join input into the daemon-managed client factory | Add optional `server_name`, persist it with joined networks, and use it as the SN remote name during stack creation. |
 | `vpn-frame/src/client/tunnel_manager.rs` | Maintains route table and tunnel pools keyed by target and `PnServerInfo` | No design change; existing PN value remains useful for pool separation. |
 | `p2p_frame::stack::PnProxyRouteResolver` | External crate extension point for target-to-relay PN routing | Client implements this trait with local route state. |
@@ -72,7 +75,7 @@ For SN server name setup, `main.rs` adds a `--server_name` option to `join`, `cl
 | Default P2P port semantics stay unchanged | QUIC and TCP both use the existing `p2p.port` value, so no new config key or identity directory dimension is introduced. |
 | Existing `join --name` remains the network member name | SN remote name uses the new `--server_name`; `--name` continues to be passed only to `vpn_client.join`. |
 | Existing joined records remain readable | Missing `server_name` in old `joined_networks` records defaults to `None` and then follows the domain/IP fallback rule. |
-| PN proxy identity remains id-based | `PnServerInfo.name` affects only the P2P remote name parameter; route resolver keys, remote id parsing, and endpoints still use `id/ip/port/addresses`. |
+| PN proxy identity remains id-based | `PnServerInfo.name` affects only the P2P remote name parameter; route resolver keys and remote id parsing still use `id`, while connection targets use returned Endpoint values. |
 
 ## Submodules
 | submodule | type | responsibility | depends_on |
@@ -99,6 +102,7 @@ The resolver is a client technical submodule because it adapts VPN info received
 | Local API address resolution | technical | Let multiple client daemons run on one host without changing API routes | Existing config/environment loading | Keep resolution inside `vpn-client` CLI/entry code and do not change `vpn-client/src/api.rs`. |
 | NodeId client string boundary | technical | Display and consume stable node identity strings | Shared `NodeId` helper contract | Use base36 for NodeId output and avoid base58-only client operations. |
 | PN proxy remote name | technical | Provide p2p-frame with the proxy node name reported by the control node | `TtpTarget.remote_name` and `PnServerInfo.name` | Use reported `name` for PN proxy connect while keeping `remote_id` from `id`. |
+| PN proxy Endpoint address | technical | Provide p2p-frame with the proxy Endpoint returned by the control node | `TtpTarget.remote_ep` and `PnServerInfo` Endpoint values | Iterate server-returned Endpoint candidates directly, preserving QUIC/TCP protocol. |
 
 ## Dependency Graph
 | source | depends_on | reason | cycle_check |
@@ -110,6 +114,7 @@ The resolver is a client technical submodule because it adapts VPN info received
 | `p2p-vpn-runtime` | `sn-client-transport` | Stack config needs the ordered remote SN endpoint list before calling `add_sn` | acyclic |
 | `p2p-vpn-runtime` | `sn-server-name` | Stack config needs the effective SN remote name before calling `add_sn` | acyclic |
 | `p2p-vpn-runtime` | `pn-proxy-route-resolver` | PN proxy connect uses selected `PnServerInfo` and reported name metadata. | acyclic |
+| `p2p-vpn-runtime` | `vpn-frame` protocol | PN proxy connect consumes Endpoint-shaped `PnServerInfo` address values. | external shared contract |
 | `pn-proxy-route-resolver` | none | Route cache has no dependency on higher-level client assembly | acyclic |
 | `sn-client-transport` | none | Endpoint construction depends only on the resolved SN socket address | acyclic |
 | `sn-server-name` | none | Name resolution depends only on join input and IP/domain classification | acyclic |
@@ -125,7 +130,7 @@ The resolver is a client technical submodule because it adapts VPN info received
 | SN server name registration | `P2pVpnClientFactory::create_client` | `sn-server-name` | Compute effective SN name from `server_name`, domain server, or `server_id`, then pass it to `P2pSn::new`. | Empty `server_name` is treated as absent; DNS/socket errors remain separate from name selection and keep existing `VpnResult` behavior. |
 | VPN info refresh | `VpnClient::run_proc` through `P2pVpnTunnelFactory::on_vpn_info_received` | `pn-proxy-route-resolver` | Refresh target member to selected PN server id mappings. | Invalid PN server id returns `VpnErrorCode::InvalidParam`, preventing a route refresh that could use a wrong relay. |
 | Pntunnel creation | p2p-frame proxy client | `pn-proxy-route-resolver` | Resolve target P2P id to PN relay P2P id. | Missing target route returns p2p `InvalidParam`; p2p-frame keeps owning final connect failure semantics. |
-| PN proxy connection | `P2pVpnTunnelFactory::connect_pn_server` | `p2p-vpn-runtime` | Connect to selected PN proxy endpoint with `remote_id` from `PnServerInfo.id` and remote name from `PnServerInfo.name` if present. | Invalid id still returns `VpnErrorCode::InvalidParam`; missing name falls back to id; connect failures keep existing address retry behavior. |
+| PN proxy connection | `P2pVpnTunnelFactory::connect_pn_server` | `p2p-vpn-runtime` | Connect to selected PN proxy Endpoint with `remote_id` from `PnServerInfo.id` and remote name from `PnServerInfo.name` if present. | Invalid id still returns `VpnErrorCode::InvalidParam`; missing name falls back to id; empty endpoint list fails before opening a tunnel; connect failures keep existing address retry behavior. |
 | Local API address resolution | `run_daemon`, `Cli::join`, `Cli::get_state` | `client-local-api-config` | Use the same configured daemon address for server bind and CLI target. | Invalid or missing config falls back to defaults where practical; invalid port values are ignored by typed config parsing. |
 
 ## Large Module Submodule Decision
@@ -135,6 +140,7 @@ The resolver is a client technical submodule because it adapts VPN info received
 | `sn-client-transport` | PROP-client-sn-quic-tcp-priority | existing module-level packet, no direct submodule packet | `docs/versions/v0.1/modules/bucky-vpn/design.md` | The endpoint list construction is a narrow technical change inside existing P2P client assembly. |
 | `sn-server-name` | PROP-client-join-server-name-for-sn | existing module-level packet, no direct submodule packet | `docs/versions/v0.1/modules/bucky-vpn/design.md` | The join/API field and P2P stack name selection are narrow additions to existing client assembly paths. |
 | `pn-proxy-remote-name` | PROP-client-pn-proxy-reported-name | existing module-level packet, no direct submodule packet | `docs/versions/v0.1/modules/bucky-vpn/design.md` | The change is a narrow use of metadata already carried by `PnServerInfo` inside the existing PN connect function. |
+| `pn-proxy-endpoint-address` | PROP-client-pn-proxy-endpoint-address | existing module-level packet, no direct submodule packet | `docs/versions/v0.1/modules/bucky-vpn/design.md` | The change is a narrow use of Endpoint data already carried by `PnServerInfo` inside the existing PN connect function. |
 
 ## Trigger Matrix
 | trigger_category | applies | evidence | design_coverage | required_checks | deferred_checks_and_reason |
@@ -148,6 +154,7 @@ The resolver is a client technical submodule because it adapts VPN info received
 | runtime/integration | yes | Client online behavior depends on p2p-frame consuming local P2P endpoints and remote SN endpoint list. | Key call flows cover local endpoint list construction before env creation and remote SN endpoint list construction before stack creation. | `cargo check -p bucky-vpn` or harness DV; testing stage records endpoint/listener validation |  |
 | runtime/integration | yes | Client online behavior can depend on p2p-frame using the expected SN remote name for tunnel establishment. | Key call flows cover `server_name` resolution before stack creation. | unit tests plus bucky-vpn DV |  |
 | contract/protocol | yes | Client consumes `PnServerInfo.name` from the control-node response and passes it to the P2P connect target. | Key call flows keep id as identity and name as remote-name metadata. | schema-check; admission-check; cargo check/test for `bucky-vpn` |  |
+| contract/protocol | yes | Client consumes Endpoint-shaped PN proxy addresses from `PnServerInfo`. | Key call flows keep id as identity and use returned Endpoint values as `remote_ep` candidates. | schema-check; admission-check; cargo check/test for `bucky-vpn` | owner: vpn-frame/bucky-vpn-server; risk: shared protocol must be updated first |
 | build/dependency/config/deployment | yes | Local API bind/target address is configurable through settings/environment. | Config keys and defaults are listed in data/state and interfaces sections. | process integration script plus targeted client build/test |  |
 | ui/datamodel/workflow | yes | CLI `join` and `state` target a configurable local daemon URL; `join` also accepts optional `--server_name`. | Default workflow remains `127.0.0.1:4536`; configured workflow supports multiple daemon instances; `--name` remains network member name. | process integration script exercises configured ports; unit tests cover name defaulting |  |
 | contract/protocol | yes | Client consumes NodeId strings received from server APIs and logs local NodeId values. | Base36 is the canonical NodeId text format; P2P ids remain separate. | cargo check/test for `bucky-vpn` | owner: shared server contract; risk: stale base58-only server data may fail earlier in the server boundary |
@@ -162,6 +169,7 @@ The resolver is a client technical submodule because it adapts VPN info received
 | CHG-client-sn-quic-tcp-priority | PROP-client-sn-quic-tcp-priority | Build local P2P endpoints as QUIC and TCP on `p2p.port`; build the remote SN endpoint vector as QUIC first and TCP second for the resolved SN socket address, then pass it to `P2pSn::new` without adding client-side endpoint selection. | `vpn-client/src/main.rs`, `vpn-client/src/p2p_vpn.rs` |
 | CHG-client-join-server-name-for-sn | PROP-client-join-server-name-for-sn | Add optional `server_name` to join CLI/API and persisted join records; carry it through the client factory key; pass the effective name to `P2pSn::new`, defaulting to domain server or `server_id` for IP servers. | `vpn-client/src/main.rs`, `vpn-client/src/cli.rs`, `vpn-client/src/api.rs`, `vpn-client/src/p2p_vpn.rs` |
 | CHG-client-pn-proxy-reported-name | PROP-client-pn-proxy-reported-name | Use non-empty `PnServerInfo.name` as PN proxy `remote_name` during connect, while preserving `id` as `remote_id` and falling back to id when name is absent. | `vpn-client/src/p2p_vpn.rs` |
+| CHG-client-pn-proxy-endpoint-address | PROP-client-pn-proxy-endpoint-address | Use Endpoint values returned in `PnServerInfo` as PN proxy connection targets, preserving QUIC/TCP protocol and no longer reconstructing endpoints from split ip/port fields. | `vpn-client/src/p2p_vpn.rs` |
 
 ## Implementation Order
 | phase | goal | prerequisite | output | dependency | parallel |
@@ -176,6 +184,7 @@ The resolver is a client technical submodule because it adapts VPN info received
 | 8 | Add local and remote SN TCP endpoint registration | approved SN endpoint admission | `P2pConfig` listens on QUIC/TCP and `P2pSn` receives QUIC/TCP remote endpoints in that order | none | yes |
 | 9 | Add join server_name support for SN remote name | approved server-name admission | CLI/API/persisted join records carry optional `server_name`; `P2pSn::new` receives explicit or default effective name | none | yes |
 | 10 | Use reported PN proxy name during proxy connect | approved reported-name admission | `TtpTarget.remote_name` uses `PnServerInfo.name` when present and id fallback otherwise | none | yes |
+| 11 | Use Endpoint-shaped PN proxy addresses during proxy connect | approved Endpoint address admission | `TtpTarget.remote_ep` uses Endpoint values from `PnServerInfo`, with QUIC/TCP order preserved | none | yes |
 
 ## Key Decisions
 | decision | chosen | alternatives_considered | rejection_reason |
@@ -188,6 +197,7 @@ The resolver is a client technical submodule because it adapts VPN info received
 | SN endpoint handling | Provide `[QUIC, TCP]` local and remote endpoints to p2p-frame | Try QUIC then TCP manually in client code | p2p-frame already owns endpoint selection and connection establishment; duplicating it would broaden the client responsibility. |
 | SN server name handling | Add separate `server_name` join input and persist it | Reuse `join --name`; add global config; always use `server_id` | `--name` already means network member display name; global config is wrong for multiple joined servers; always using `server_id` fails domain-name certificate/SNI scenarios. |
 | PN proxy remote name handling | Use `PnServerInfo.name` with id fallback | Always use `id`; reuse join `server_name` | Always using id ignores the proxy-reported name; join `server_name` names the SN control node, not the selected PN proxy. |
+| PN proxy address handling | Use Endpoint values from `PnServerInfo` | Reconstruct Endpoint from split `ip`/`port`; keep both paths | Reconstruction loses protocol semantics; dual paths would keep the old contract alive and complicate failure behavior. |
 
 ## Data and State
 | data_or_state | owner_submodule | access_for_others | state_transitions |
@@ -200,6 +210,7 @@ The resolver is a client technical submodule because it adapts VPN info received
 | remote SN endpoint vector | `sn-client-transport` | Passed once to `P2pSn::new` during stack creation | resolved SN socket address -> ordered QUIC/TCP endpoint list -> p2p-frame connection selection |
 | join server_name | `sn-server-name` | `Cli::join` and `/join` write optional value; `P2pVpnClientFactory::create_client` reads it from the structured client key | absent old/new record -> domain/IP fallback; explicit non-empty value -> passed to `P2pSn::new`; blank value -> treated as absent |
 | PN proxy reported name | `p2p-vpn-runtime` | `connect_pn_server` reads from `PnServerInfo` returned by control node | absent/blank -> remote_name id fallback；present -> remote_name uses reported name；id and route cache remain unchanged |
+| PN proxy Endpoint candidates | `p2p-vpn-runtime` | `connect_pn_server` reads Endpoint values from `PnServerInfo` returned by control node | no endpoints -> connection failure；one or more endpoints -> try in server-provided order with QUIC/TCP protocol preserved；refreshed VPN info -> new tunnel keys use refreshed `PnServerInfo` |
 
 ## Testability
 | seam | verification |
@@ -213,6 +224,7 @@ The resolver is a client technical submodule because it adapts VPN info received
 | local and remote SN endpoint construction | Focused unit-style checks can assert endpoint count and ordering without requiring a live SN connection. |
 | SN server name defaulting | Unit tests can assert explicit value, domain default, IP default, blank fallback, and old-key compatibility without live SN. |
 | PN proxy remote name fallback | Focused tests can construct `PnServerInfo` with present/blank/missing name and assert the chosen remote name without needing a live proxy. |
+| PN proxy Endpoint consumption | Focused tests can construct `PnServerInfo` with QUIC/TCP Endpoint candidates and assert connect attempts preserve protocol and order through a fake TTP client seam if available. |
 
 ## Interfaces and Dependencies
 | interface | consumer | compatibility | notes |
@@ -227,6 +239,7 @@ The resolver is a client technical submodule because it adapts VPN info received
 | Join `server_name` field and CLI `--server_name` | `CHG-client-join-server-name-for-sn`, local daemon API, CLI users | backward-compatible | The field is optional; omitted old clients and old persisted records default to domain server or `server_id`. |
 | `P2pSn::new` name parameter | p2p-frame stack, `CHG-client-join-server-name-for-sn` | backward-compatible | Existing IP-based joins keep using `server_id`; domain joins use the domain by default unless explicitly overridden. |
 | `TtpTarget.remote_name` for PN proxy connect | p2p-frame TTP client, `CHG-client-pn-proxy-reported-name` | backward-compatible | Present `PnServerInfo.name` is used as the remote name; absent or blank values use the current id fallback. |
+| `TtpTarget.remote_ep` for PN proxy connect | p2p-frame TTP client, `CHG-client-pn-proxy-endpoint-address` | migration-required | The endpoint comes from `PnServerInfo` Endpoint values; split ip/port PN address fields are no longer the client contract. |
 
 ## Document Index
 | document | topic | scope |
@@ -246,8 +259,9 @@ The resolver is a client technical submodule because it adapts VPN info received
 | Local TCP listener may conflict with an already-used TCP `p2p.port` | Reuse the existing `p2p.port` to avoid new configuration and let p2p-frame surface listener failure at startup. | Revert the local endpoint vector to the single QUIC endpoint. |
 | Incorrect `server_name` default can break SN tunnel establishment for domain certificates | Derive domain default from the original `server` host and IP default from `server_id`; allow explicit override. | Remove `--server_name` and restore unconditional `sn_id.to_string()` for `P2pSn::new`. |
 | PN proxy name may be absent from older control nodes | Treat missing or blank `PnServerInfo.name` as absent and fall back to id. | Revert `remote_name` selection to id only if p2p-frame rejects reported names. |
+| PN proxy Endpoint list may be empty or malformed | Fail the PN proxy connection attempt rather than reconstructing an endpoint from stale split fields. | Revert to split-field reconstruction only with a new approved requirement. |
 
 ## Approval Record
 - approver: auto-pipeline
-- approval_date: 2026-07-06T16:09:15+08:00
+- approval_date: 2026-07-06T23:48:34+08:00
 - user_statement: "确认，自动处理后续步骤"

@@ -22,7 +22,7 @@ levels:
     steps:
       - id: bucky-vpn-unit
         name: 运行 bucky-vpn crate 测试
-        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36", "CHG-client-sn-quic-tcp-priority", "CHG-client-join-server-name-for-sn", "CHG-client-pn-proxy-reported-name"]
+        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36", "CHG-client-sn-quic-tcp-priority", "CHG-client-join-server-name-for-sn", "CHG-client-pn-proxy-reported-name", "CHG-client-pn-proxy-endpoint-address"]
         run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn", "unit"]
   dv:
     mode: enabled
@@ -38,7 +38,7 @@ levels:
     steps:
       - id: bucky-vpn-dv
         name: 构建 bucky-vpn crate
-        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36", "CHG-client-sn-quic-tcp-priority", "CHG-client-join-server-name-for-sn", "CHG-client-pn-proxy-reported-name"]
+        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36", "CHG-client-sn-quic-tcp-priority", "CHG-client-join-server-name-for-sn", "CHG-client-pn-proxy-reported-name", "CHG-client-pn-proxy-endpoint-address"]
         run: ["python3", "./harness/scripts/test-run.py", "bucky-vpn", "dv"]
   integration:
     mode: enabled
@@ -67,5 +67,5 @@ levels:
     steps:
       - id: bucky-vpn-integration
         name: 运行 PN proxy 多拓扑、1 CPU control/proxy 和流量上报进程集成测试
-        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36", "CHG-client-pn-proxy-reported-name"]
+        change_ids: ["CHG-client-pn-proxy-route-resolver", "CHG-client-configurable-local-api-address", "CHG-client-node-id-base36", "CHG-client-pn-proxy-reported-name", "CHG-client-pn-proxy-endpoint-address"]
         run: ["python3", "./harness/scripts/bucky-vpn-process-integration.py", "--use-base-image", "--parallel-instances", "2"]

@@ -16,7 +16,7 @@ use vpn_frame::deserialize_u64_from_string;
 use vpn_frame::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
 use vpn_frame::serialize_u64_as_string;
 use vpn_frame::server::{NetworkGroupId, NetworkId, NodeId};
-use vpn_frame::{PnServerAddress, PnServerInfo};
+use vpn_frame::{Endpoint as VpnEndpoint, PnServerInfo, PnServerPortMapping};
 
 pub struct Api;
 
@@ -85,21 +85,21 @@ struct DeleteJoinedNodeReq {
 }
 
 #[derive(Serialize, Deserialize, utoipa::ToSchema)]
-pub struct JsonPnServerAddress {
-    #[serde(default = "default_pn_server_address_protocol")]
+pub struct JsonEndpoint {
+    #[serde(default = "default_endpoint_protocol")]
     pub protocol: String,
     pub ip: String,
     pub port: u16,
 }
 
-fn default_pn_server_address_protocol() -> String {
-    PnServerAddress::PROTOCOL_QUIC.to_string()
+fn default_endpoint_protocol() -> String {
+    VpnEndpoint::PROTOCOL_QUIC.to_string()
 }
 
-impl TryFrom<JsonPnServerAddress> for PnServerAddress {
+impl TryFrom<JsonEndpoint> for VpnEndpoint {
     type Error = vpn_frame::errors::VpnError;
 
-    fn try_from(value: JsonPnServerAddress) -> VpnResult<Self> {
+    fn try_from(value: JsonEndpoint) -> VpnResult<Self> {
         Ok(Self::new_with_protocol(
             value.protocol,
             value
@@ -111,8 +111,8 @@ impl TryFrom<JsonPnServerAddress> for PnServerAddress {
     }
 }
 
-impl From<PnServerAddress> for JsonPnServerAddress {
-    fn from(value: PnServerAddress) -> Self {
+impl From<VpnEndpoint> for JsonEndpoint {
+    fn from(value: VpnEndpoint) -> Self {
         Self {
             protocol: value.protocol,
             ip: value.ip.to_string(),
@@ -126,27 +126,35 @@ pub struct JsonPnServerInfo {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    pub ip: String,
-    pub port: u16,
     #[serde(default)]
-    pub addresses: Vec<JsonPnServerAddress>,
+    pub endpoints: Vec<JsonEndpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_mapping: Option<JsonPnServerPortMapping>,
+}
+
+#[derive(Serialize, Deserialize, utoipa::ToSchema)]
+pub struct JsonPnServerPortMapping {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quic: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp: Option<u16>,
 }
 
 impl JsonPnServerInfo {
     fn into_pn_server_info(self) -> VpnResult<PnServerInfo> {
-        let ip = self
-            .ip
-            .parse()
-            .map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
-        let addresses = self
-            .addresses
+        let endpoints = self
+            .endpoints
             .into_iter()
             .map(TryInto::try_into)
             .collect::<VpnResult<Vec<_>>>()?;
-        Ok(PnServerInfo::new_with_addresses(
-            self.id, ip, self.port, addresses,
-        ))
-        .map(|info| info.with_name(self.name))
+        Ok(PnServerInfo::new_with_endpoints(self.id, endpoints))
+            .map(|info| info.with_name(self.name))
+            .map(|info| {
+                info.with_port_mapping(self.port_mapping.map(|mapping| PnServerPortMapping {
+                    quic: mapping.quic,
+                    tcp: mapping.tcp,
+                }))
+            })
     }
 }
 
@@ -155,9 +163,11 @@ impl From<PnServerInfo> for JsonPnServerInfo {
         Self {
             id: value.id,
             name: value.name,
-            ip: value.ip.to_string(),
-            port: value.port,
-            addresses: value.addresses.into_iter().map(Into::into).collect(),
+            endpoints: value.endpoints.into_iter().map(Into::into).collect(),
+            port_mapping: value.port_mapping.map(|mapping| JsonPnServerPortMapping {
+                quic: mapping.quic,
+                tcp: mapping.tcp,
+            }),
         }
     }
 }

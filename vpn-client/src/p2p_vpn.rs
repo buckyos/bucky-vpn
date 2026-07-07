@@ -36,8 +36,8 @@ use vpn_frame::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
 use vpn_frame::serialize_u64_as_string;
 use vpn_frame::server::{NetworkGroupId, NetworkId, NodeId};
 use vpn_frame::{
-    NodeVpnInfo, PnServerAddress, PnServerInfo, VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv,
-    VpnTunnelSend,
+    Endpoint as VpnEndpoint, NodeVpnInfo, PnServerInfo, VpnTunnelFactory, VpnTunnelListener,
+    VpnTunnelRecv, VpnTunnelSend,
 };
 
 pub struct P2pVpnTunnelRecv {
@@ -215,8 +215,8 @@ impl P2pVpnTunnelFactory {
             pn_server.id
         ))?;
         let mut failed_addresses = Vec::new();
-        for address in pn_server_addresses(pn_server) {
-            let endpoint = pn_server_address_endpoint(&address)?;
+        for endpoint_info in pn_server_endpoints(pn_server) {
+            let endpoint = pn_endpoint_to_p2p_endpoint(&endpoint_info)?;
             match self
                 .stack
                 .sn_client()
@@ -231,23 +231,28 @@ impl P2pVpnTunnelFactory {
             {
                 Ok(_) => {
                     log::debug!(
-                        "connect pn server {} {}:{} succeeded",
+                        "connect pn server {} {}://{}:{} succeeded",
                         pn_server.id,
-                        address.ip,
-                        address.port
+                        endpoint_info.protocol,
+                        endpoint_info.ip,
+                        endpoint_info.port
                     );
                     return Ok(());
                 }
                 Err(err) => {
                     log::warn!(
-                        "connect pn server {} {}:{} failed: code={:?} msg={}",
+                        "connect pn server {} {}://{}:{} failed: code={:?} msg={}",
                         pn_server.id,
-                        address.ip,
-                        address.port,
+                        endpoint_info.protocol,
+                        endpoint_info.ip,
+                        endpoint_info.port,
                         err.code(),
                         err.msg()
                     );
-                    failed_addresses.push(format!("{}:{}", address.ip, address.port));
+                    failed_addresses.push(format!(
+                        "{}://{}:{}",
+                        endpoint_info.protocol, endpoint_info.ip, endpoint_info.port
+                    ));
                 }
             }
         }
@@ -260,51 +265,49 @@ impl P2pVpnTunnelFactory {
     }
 }
 
-fn pn_server_addresses(pn_server: &PnServerInfo) -> Vec<PnServerAddress> {
-    let mut addresses = Vec::new();
-    let primary = PnServerAddress::new(pn_server.ip, pn_server.port);
-    for address in &pn_server.addresses {
-        if address != &primary && is_quic_pn_server_address(address) {
-            add_pn_server_address(&mut addresses, address.clone());
+fn pn_server_endpoints(pn_server: &PnServerInfo) -> Vec<VpnEndpoint> {
+    let mut endpoints = Vec::new();
+    for endpoint in &pn_server.endpoints {
+        if is_quic_pn_endpoint(endpoint) {
+            add_pn_endpoint(&mut endpoints, endpoint.clone());
         }
     }
-    add_pn_server_address(&mut addresses, primary);
-    for address in &pn_server.addresses {
-        if !is_quic_pn_server_address(address) {
-            add_pn_server_address(&mut addresses, address.clone());
+    for endpoint in &pn_server.endpoints {
+        if !is_quic_pn_endpoint(endpoint) {
+            add_pn_endpoint(&mut endpoints, endpoint.clone());
         }
     }
-    addresses
+    endpoints
 }
 
-fn add_pn_server_address(addresses: &mut Vec<PnServerAddress>, address: PnServerAddress) {
-    if !addresses.contains(&address) {
-        addresses.push(address);
+fn add_pn_endpoint(endpoints: &mut Vec<VpnEndpoint>, endpoint: VpnEndpoint) {
+    if !endpoints.contains(&endpoint) {
+        endpoints.push(endpoint);
     }
 }
 
-fn is_quic_pn_server_address(address: &PnServerAddress) -> bool {
+fn is_quic_pn_endpoint(endpoint: &VpnEndpoint) -> bool {
     matches!(
-        address.protocol.as_str(),
-        PnServerAddress::PROTOCOL_QUIC | "qic"
+        endpoint.protocol.as_str(),
+        VpnEndpoint::PROTOCOL_QUIC | "qic"
     )
 }
 
-fn pn_server_address_endpoint(address: &PnServerAddress) -> VpnResult<Endpoint> {
-    let protocol = match address.protocol.as_str() {
-        PnServerAddress::PROTOCOL_QUIC | "qic" => Protocol::Quic,
-        PnServerAddress::PROTOCOL_TCP => Protocol::Tcp,
+fn pn_endpoint_to_p2p_endpoint(endpoint: &VpnEndpoint) -> VpnResult<Endpoint> {
+    let protocol = match endpoint.protocol.as_str() {
+        VpnEndpoint::PROTOCOL_QUIC | "qic" => Protocol::Quic,
+        VpnEndpoint::PROTOCOL_TCP => Protocol::Tcp,
         protocol => {
             return Err(vpn_err!(
                 VpnErrorCode::InvalidParam,
-                "invalid pn server address protocol {}",
+                "invalid pn server endpoint protocol {}",
                 protocol
             ));
         }
     };
     Ok(Endpoint::from((
         protocol,
-        SocketAddr::new(address.ip, address.port),
+        SocketAddr::new(endpoint.ip, endpoint.port),
     )))
 }
 
@@ -774,39 +777,47 @@ mod tests {
     }
 
     #[test]
-    fn pn_server_addresses_prefer_explicit_addresses_and_deduplicate() {
-        let pn_server = PnServerInfo::new_with_addresses(
+    fn pn_server_endpoints_prefer_quic_and_deduplicate() {
+        let pn_server = PnServerInfo::new_with_endpoints(
             p2p_id(7).to_string(),
-            IpAddr::from([127, 0, 0, 1]),
-            3624,
             vec![
-                VpnPnServerAddress::new(IpAddr::from([127, 0, 0, 1]), 3624),
                 VpnPnServerAddress::new(IpAddr::from([10, 0, 0, 2]), 3625),
                 VpnPnServerAddress::new(IpAddr::from([10, 0, 0, 2]), 3625),
+                VpnPnServerAddress::new_tcp(IpAddr::from([127, 0, 0, 1]), 443),
             ],
         );
 
         assert_eq!(
-            pn_server_addresses(&pn_server),
+            pn_server_endpoints(&pn_server),
             vec![
                 VpnPnServerAddress::new(IpAddr::from([10, 0, 0, 2]), 3625),
-                VpnPnServerAddress::new(IpAddr::from([127, 0, 0, 1]), 3624),
+                VpnPnServerAddress::new_tcp(IpAddr::from([127, 0, 0, 1]), 443),
             ]
         );
     }
 
     #[test]
-    fn pn_server_address_endpoint_uses_reported_protocol() {
+    fn pn_endpoint_to_p2p_endpoint_uses_reported_protocol() {
         let tcp_address = VpnPnServerAddress::new_tcp(IpAddr::from([127, 0, 0, 1]), 443);
         let quic_address = VpnPnServerAddress::new(IpAddr::from([127, 0, 0, 1]), 3624);
 
-        let tcp_endpoint = pn_server_address_endpoint(&tcp_address).unwrap();
-        let quic_endpoint = pn_server_address_endpoint(&quic_address).unwrap();
+        let tcp_endpoint = pn_endpoint_to_p2p_endpoint(&tcp_address).unwrap();
+        let quic_endpoint = pn_endpoint_to_p2p_endpoint(&quic_address).unwrap();
 
         assert_eq!(tcp_endpoint.protocol(), Protocol::Tcp);
         assert_eq!(tcp_endpoint.addr().port(), 443);
         assert_eq!(quic_endpoint.protocol(), Protocol::Quic);
         assert_eq!(quic_endpoint.addr().port(), 3624);
+    }
+
+    #[test]
+    fn pn_endpoint_to_p2p_endpoint_rejects_unknown_protocol() {
+        let endpoint =
+            VpnPnServerAddress::new_with_protocol("http", IpAddr::from([127, 0, 0, 1]), 80);
+
+        let err = pn_endpoint_to_p2p_endpoint(&endpoint).unwrap_err();
+
+        assert_eq!(err.code(), VpnErrorCode::InvalidParam);
     }
 
     #[test]
