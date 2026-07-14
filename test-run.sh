@@ -11,7 +11,6 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 export UV_PROJECT_ENVIRONMENT=".venv"
-export OSTYPE="${OSTYPE:-unknown}"
 VENV_PYTHON=".venv/bin/python"
 
 if [ ! -x "$VENV_PYTHON" ]; then
@@ -19,7 +18,11 @@ if [ ! -x "$VENV_PYTHON" ]; then
   uv venv .venv
 fi
 
+# Activation scripts are sourced code and may read shell-specific variables
+# such as OSTYPE without a default. Suspend nounset only while sourcing them.
+set +u
 . ".venv/bin/activate"
+set -u
 
 if [ -f "pyproject.toml" ]; then
   echo "Syncing Python environment with uv"

@@ -1,6 +1,7 @@
 mod api;
 mod cli;
 mod p2p_vpn;
+mod pn_server_info;
 mod setting;
 
 #[cfg(target_os = "windows")]
@@ -13,7 +14,7 @@ use crate::p2p_vpn::{
 };
 use crate::setting::Setting;
 use p2p_frame::endpoint::{Endpoint, Protocol};
-use p2p_frame::stack::{P2pConfig, create_p2p_env, ServerRuntime, ServerRuntimeConfig};
+use p2p_frame::stack::{P2pConfig, ServerRuntime, ServerRuntimeConfig, create_p2p_env};
 use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
 use sfo_http::http_server::HttpServerConfig;
 use sfo_http::tide_server::TideHttpServer;
@@ -70,10 +71,11 @@ async fn run_daemon() {
         Arc::new(X509IdentityFactory),
         Arc::new(X509IdentityCertFactory),
         eps,
-        server_runtime.clone()
-    )
-    .set_quic_connect_timeout(Duration::from_secs(8))
-    .set_quic_idle_time(Duration::from_secs(30));
+        server_runtime,
+    );
+    let p2p_config = p2p_config
+        .set_quic_connect_timeout(Duration::from_secs(8))
+        .set_quic_idle_time(Duration::from_secs(30));
     let p2p_env = create_p2p_env(p2p_config).await.unwrap();
     log::info!("client p2p env endpoints: {:?}", p2p_env.endpoints());
 

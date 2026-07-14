@@ -1,9 +1,11 @@
-use crate::pn_traffic_service::PnTrafficServiceRef;
-use crate::server_config::ConfigPnServerSelectorRef;
+use crate::pn_server_info::{
+    PnServerEndpoint as VpnEndpoint, PnServerInfoPayload, PnServerPortMapping,
+    decode_pn_server_info, encode_pn_server_info,
+};
+use crate::pn_server_manager::PnServerManagerRef;
+use crate::pn_traffic_service::{PnTrafficServiceRef, UserTrafficSnapshot};
 use crate::sqlite_store_factory::VpnServerRef;
 use crate::user_store::UserManagerRef;
-use p2p_frame::p2p_identity::P2pId;
-use p2p_frame::pn::PnUserTrafficSnapshot;
 use serde::{Deserialize, Serialize};
 use sfo_account::AccountManager;
 use sfo_http::http::header::AUTHORIZATION;
@@ -11,12 +13,11 @@ use sfo_http::http_server::{HttpMethod, HttpServer, Request, Response};
 use sfo_http::openapi::OpenApiServer;
 use sfo_http::openapi::utoipa;
 use std::net::{IpAddr, Ipv4Addr};
-use vpn_frame::cmd_server::PeerId;
+use vpn_frame::PnServerInfo;
 use vpn_frame::deserialize_u64_from_string;
 use vpn_frame::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
 use vpn_frame::serialize_u64_as_string;
 use vpn_frame::server::{NetworkGroupId, NetworkId, NodeId};
-use vpn_frame::{Endpoint as VpnEndpoint, PnServerInfo, PnServerPortMapping};
 
 pub struct Api;
 
@@ -147,24 +148,24 @@ impl JsonPnServerInfo {
             .into_iter()
             .map(TryInto::try_into)
             .collect::<VpnResult<Vec<_>>>()?;
-        Ok(PnServerInfo::new_with_endpoints(self.id, endpoints))
-            .map(|info| info.with_name(self.name))
-            .map(|info| {
-                info.with_port_mapping(self.port_mapping.map(|mapping| PnServerPortMapping {
-                    quic: mapping.quic,
-                    tcp: mapping.tcp,
-                }))
-            })
+        let payload = PnServerInfoPayload::new_with_endpoints(endpoints)
+            .with_name(self.name)
+            .with_port_mapping(self.port_mapping.map(|mapping| PnServerPortMapping {
+                quic: mapping.quic,
+                tcp: mapping.tcp,
+            }));
+        encode_pn_server_info(self.id, payload)
     }
 }
 
 impl From<PnServerInfo> for JsonPnServerInfo {
     fn from(value: PnServerInfo) -> Self {
+        let payload = decode_pn_server_info(&value).unwrap_or_default();
         Self {
             id: value.id,
-            name: value.name,
-            endpoints: value.endpoints.into_iter().map(Into::into).collect(),
-            port_mapping: value.port_mapping.map(|mapping| JsonPnServerPortMapping {
+            name: payload.name,
+            endpoints: payload.endpoints.into_iter().map(Into::into).collect(),
+            port_mapping: payload.port_mapping.map(|mapping| JsonPnServerPortMapping {
                 quic: mapping.quic,
                 tcp: mapping.tcp,
             }),
@@ -283,7 +284,7 @@ pub struct JsonNetwork {
 }
 
 impl JsonUserTrafficStats {
-    fn from_snapshot(snapshot: PnUserTrafficSnapshot) -> Self {
+    fn from_snapshot(snapshot: UserTrafficSnapshot) -> Self {
         Self {
             tx_bytes: snapshot.tx_bytes.to_string(),
             tx_speed: snapshot.tx_speed.to_string(),
@@ -294,29 +295,11 @@ impl JsonUserTrafficStats {
 }
 
 #[cfg(test)]
-fn accumulate_traffic_stats(snapshot: &mut PnUserTrafficSnapshot, item: &PnUserTrafficSnapshot) {
+fn accumulate_traffic_stats(snapshot: &mut UserTrafficSnapshot, item: &UserTrafficSnapshot) {
     snapshot.tx_bytes = snapshot.tx_bytes.saturating_add(item.tx_bytes);
     snapshot.tx_speed = snapshot.tx_speed.saturating_add(item.tx_speed);
     snapshot.rx_bytes = snapshot.rx_bytes.saturating_add(item.rx_bytes);
     snapshot.rx_speed = snapshot.rx_speed.saturating_add(item.rx_speed);
-}
-
-async fn observed_proxy_addr(
-    vpn_server: &VpnServerRef,
-    pn_server: &PnServerInfo,
-) -> Option<String> {
-    let peer_id = peer_id_from_pn_server_id(&pn_server.id)?;
-    let ips = vpn_server.get_peer_ip_list(&peer_id).await.ok()?;
-    ips.first().map(ToString::to_string)
-}
-
-fn peer_id_from_pn_server_id(id: &str) -> Option<PeerId> {
-    if let Ok(node_id) = NodeId::from_base36_or_base58(id) {
-        return Some(PeerId::from(node_id.as_slice()));
-    }
-    id.parse::<P2pId>()
-        .ok()
-        .map(|p2p_id| PeerId::from(p2p_id.as_slice()))
 }
 
 impl Api {
@@ -325,15 +308,13 @@ impl Api {
         user_manager: UserManagerRef,
         vpn_server: VpnServerRef,
         traffic_service: PnTrafficServiceRef,
-        pn_server_selector: ConfigPnServerSelectorRef,
+        pn_server_selector: PnServerManagerRef,
     ) {
         let tmp_user_manager = user_manager.clone();
         let tmp_pn_server_selector = pn_server_selector.clone();
-        let tmp_vpn_server = vpn_server.clone();
         server.serve("/pn_proxy_nodes", HttpMethod::GET, move |req: Req| {
             let user_manager = tmp_user_manager.clone();
             let pn_server_selector = tmp_pn_server_selector.clone();
-            let vpn_server = tmp_vpn_server.clone();
             async move {
                 let result: VpnResult<Vec<JsonProxyNode>> = async move {
                     let session = req
@@ -353,7 +334,10 @@ impl Api {
                     let nodes = pn_server_selector.list_proxy_nodes().await?;
                     let mut json_nodes = Vec::with_capacity(nodes.len());
                     for node in nodes {
-                        let observed_addr = observed_proxy_addr(&vpn_server, &node.pn_server).await;
+                        let observed_addr = node
+                            .observed_addr
+                            .as_ref()
+                            .map(|endpoint| endpoint.ip.to_string());
                         json_nodes.push(JsonProxyNode {
                             pn_server: node.pn_server.into(),
                             observed_addr,
@@ -556,11 +540,9 @@ impl Api {
 
         let tmp_user_manager = user_manager.clone();
         let tmp_vpn_server = vpn_server.clone();
-        let tmp_traffic_service = traffic_service.clone();
         server.serve("/allow_join", HttpMethod::POST, move |mut req: Req| {
             let user_manager = tmp_user_manager.clone();
             let vpn_server = tmp_vpn_server.clone();
-            let traffic_service = tmp_traffic_service.clone();
             async move {
                 let result: VpnResult<()> = async move {
                     let session = req
@@ -592,9 +574,6 @@ impl Api {
                         .any(|node| node.node_id.as_slice() == node_id.as_slice())
                     {
                         return Err(vpn_err!(VpnErrorCode::NoPermission, "No permission"));
-                    }
-                    if !req.allow_join {
-                        traffic_service.flush_node(&node_id).await?;
                     }
                     vpn_server
                         .network_manager()
@@ -653,14 +632,12 @@ impl Api {
 
         let tmp_user_manager = user_manager.clone();
         let tmp_vpn_server = vpn_server.clone();
-        let tmp_traffic_service = traffic_service.clone();
         server.serve(
             "/delete_joined_node",
             HttpMethod::POST,
             move |mut req: Req| {
                 let user_manager = tmp_user_manager.clone();
                 let vpn_server = tmp_vpn_server.clone();
-                let traffic_service = tmp_traffic_service.clone();
                 async move {
                     let result: VpnResult<()> = async move {
                         let session = req
@@ -693,7 +670,6 @@ impl Api {
                         {
                             return Err(vpn_err!(VpnErrorCode::NoPermission, "No permission"));
                         }
-                        traffic_service.flush_node(&node_id).await?;
                         vpn_server
                             .network_manager()
                             .del_joined_node(&user.account.network_id, &node_id)
@@ -1166,13 +1142,13 @@ mod tests {
 
     #[test]
     fn accumulate_traffic_stats_sums_all_fields() {
-        let mut total = PnUserTrafficSnapshot {
+        let mut total = UserTrafficSnapshot {
             tx_bytes: 10,
             tx_speed: 20,
             rx_bytes: 30,
             rx_speed: 40,
         };
-        let item = PnUserTrafficSnapshot {
+        let item = UserTrafficSnapshot {
             tx_bytes: 1,
             tx_speed: 2,
             rx_bytes: 3,
@@ -1183,7 +1159,7 @@ mod tests {
 
         assert_eq!(
             total,
-            PnUserTrafficSnapshot {
+            UserTrafficSnapshot {
                 tx_bytes: 11,
                 tx_speed: 22,
                 rx_bytes: 33,
@@ -1194,7 +1170,7 @@ mod tests {
 
     #[test]
     fn json_user_traffic_stats_uses_decimal_strings() {
-        let stats = JsonUserTrafficStats::from_snapshot(PnUserTrafficSnapshot {
+        let stats = JsonUserTrafficStats::from_snapshot(UserTrafficSnapshot {
             tx_bytes: 1024,
             tx_speed: 64,
             rx_bytes: 2048,

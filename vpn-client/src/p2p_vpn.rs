@@ -1,4 +1,8 @@
 #![allow(unused)]
+use crate::pn_server_info::{
+    PnServerAddress as VpnPnServerAddress, PnServerEndpoint as VpnEndpoint, PnServerInfoPayload,
+    decode_pn_server_info, encode_pn_server_info,
+};
 use p2p_frame::endpoint::{Endpoint, Protocol};
 use p2p_frame::error::{P2pErrorCode, P2pResult};
 use p2p_frame::networks::TunnelPurpose;
@@ -13,7 +17,7 @@ use p2p_frame::ttp::TtpTarget;
 use p2p_frame::x509;
 use p2p_frame::x509::X509IdentityFactory;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::Error;
 use std::net::{IpAddr, SocketAddr};
 use std::ops::DerefMut;
@@ -36,8 +40,8 @@ use vpn_frame::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
 use vpn_frame::serialize_u64_as_string;
 use vpn_frame::server::{NetworkGroupId, NetworkId, NodeId};
 use vpn_frame::{
-    Endpoint as VpnEndpoint, NodeVpnInfo, PnServerInfo, VpnTunnelFactory, VpnTunnelListener,
-    VpnTunnelRecv, VpnTunnelSend,
+    ClientProxyNodeInfo, NodeVpnInfo, VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv,
+    VpnTunnelSend,
 };
 
 pub struct P2pVpnTunnelRecv {
@@ -147,11 +151,7 @@ impl P2pVpnPnProxyRouteResolver {
             let Some(pn_server) = vpn_info.node_info.pn_server.as_ref() else {
                 continue;
             };
-            let pn_server_id = P2pId::from_str(&pn_server.id).map_err(into_vpn_err!(
-                VpnErrorCode::InvalidParam,
-                "parse pn server id {} failed",
-                pn_server.id
-            ))?;
+            let pn_server_id = P2pId::from(pn_server.proxy_id.as_slice());
             for member in vpn_info.members.iter() {
                 routes.insert(P2pId::from(member.id.as_slice()), pn_server_id.clone());
             }
@@ -191,6 +191,7 @@ pub struct P2pVpnTunnelFactory {
     vpn_port: u16,
     server_id: P2pId,
     proxy_route_resolver: Arc<P2pVpnPnProxyRouteResolver>,
+    connected_pn_targets: StdMutex<HashMap<ClientProxyNodeInfo, Vec<TtpTarget>>>,
 }
 
 impl P2pVpnTunnelFactory {
@@ -205,53 +206,70 @@ impl P2pVpnTunnelFactory {
             vpn_port,
             server_id,
             proxy_route_resolver,
+            connected_pn_targets: StdMutex::new(HashMap::new()),
         }
     }
 
-    async fn connect_pn_server(&self, pn_server: &PnServerInfo) -> VpnResult<()> {
-        let remote_id = P2pId::from_str(&pn_server.id).map_err(into_vpn_err!(
-            VpnErrorCode::InvalidParam,
-            "parse pn server id {} failed",
-            pn_server.id
-        ))?;
-        let mut failed_addresses = Vec::new();
+    fn pn_server_targets(&self, pn_server: &ClientProxyNodeInfo) -> VpnResult<Vec<TtpTarget>> {
+        let remote_id = P2pId::from(pn_server.proxy_id.as_slice());
+        let fallback_name = pn_server.proxy_id.to_p2p_base36();
+        let mut targets = Vec::new();
         for endpoint_info in pn_server_endpoints(pn_server) {
-            let endpoint = pn_endpoint_to_p2p_endpoint(&endpoint_info)?;
+            targets.push(TtpTarget {
+                local_ep: None,
+                remote_ep: pn_endpoint_to_p2p_endpoint(&endpoint_info)?,
+                remote_id: remote_id.clone(),
+                remote_name: Some(
+                    pn_server
+                        .name
+                        .clone()
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or_else(|| fallback_name.clone()),
+                ),
+            });
+        }
+        Ok(targets)
+    }
+
+    async fn connect_pn_server_targets(
+        &self,
+        pn_server: &ClientProxyNodeInfo,
+        targets: &[TtpTarget],
+    ) -> VpnResult<()> {
+        let mut failed_addresses = Vec::new();
+        for target in targets {
             match self
                 .stack
                 .sn_client()
                 .get_ttp_client()
-                .connect_server(TtpTarget {
-                    local_ep: None,
-                    remote_ep: endpoint,
-                    remote_id: remote_id.clone(),
-                    remote_name: Some(pn_server.remote_name().to_owned()),
-                })
+                .connect_server(target.clone())
                 .await
             {
                 Ok(_) => {
                     log::debug!(
-                        "connect pn server {} {}://{}:{} succeeded",
-                        pn_server.id,
-                        endpoint_info.protocol,
-                        endpoint_info.ip,
-                        endpoint_info.port
+                        "connect pn server {} {:?}://{}:{} succeeded",
+                        pn_server.proxy_id.to_base36(),
+                        target.remote_ep.protocol(),
+                        target.remote_ep.addr().ip(),
+                        target.remote_ep.addr().port()
                     );
                     return Ok(());
                 }
                 Err(err) => {
                     log::warn!(
-                        "connect pn server {} {}://{}:{} failed: code={:?} msg={}",
-                        pn_server.id,
-                        endpoint_info.protocol,
-                        endpoint_info.ip,
-                        endpoint_info.port,
+                        "connect pn server {} {:?}://{}:{} failed: code={:?} msg={}",
+                        pn_server.proxy_id.to_base36(),
+                        target.remote_ep.protocol(),
+                        target.remote_ep.addr().ip(),
+                        target.remote_ep.addr().port(),
                         err.code(),
                         err.msg()
                     );
                     failed_addresses.push(format!(
-                        "{}://{}:{}",
-                        endpoint_info.protocol, endpoint_info.ip, endpoint_info.port
+                        "{:?}://{}:{}",
+                        target.remote_ep.protocol(),
+                        target.remote_ep.addr().ip(),
+                        target.remote_ep.addr().port()
                     ));
                 }
             }
@@ -259,13 +277,58 @@ impl P2pVpnTunnelFactory {
         Err(vpn_err!(
             VpnErrorCode::Failed,
             "connect pn server {} failed for addresses [{}]",
-            pn_server.id,
+            pn_server.proxy_id.to_base36(),
             failed_addresses.join(", ")
         ))
     }
+
+    async fn sync_pn_server_connections(&self, vpn_infos: &[NodeVpnInfo]) -> VpnResult<()> {
+        let mut desired = HashMap::new();
+        for vpn_info in vpn_infos {
+            if let Some(pn_server) = vpn_info.node_info.pn_server.as_ref() {
+                if !desired.contains_key(pn_server) {
+                    desired.insert(pn_server.clone(), self.pn_server_targets(pn_server)?);
+                }
+            }
+        }
+
+        let mut connected = {
+            let mut connected = self.connected_pn_targets.lock().unwrap();
+            std::mem::take(&mut *connected)
+        };
+
+        for (pn_server, targets) in connected.iter() {
+            if !desired.contains_key(pn_server) {
+                let ttp_client = self.stack.sn_client().get_ttp_client();
+                for target in targets {
+                    if let Err(err) = ttp_client.remove_server(target) {
+                        log::warn!(
+                            "remove pn server {} {:?}://{}:{} failed: code={:?} msg={}",
+                            pn_server.proxy_id.to_base36(),
+                            target.remote_ep.protocol(),
+                            target.remote_ep.addr().ip(),
+                            target.remote_ep.addr().port(),
+                            err.code(),
+                            err.msg()
+                        );
+                    }
+                }
+            }
+        }
+
+        for (pn_server, targets) in desired {
+            if !connected.contains_key(&pn_server) {
+                self.connect_pn_server_targets(&pn_server, &targets).await?;
+            }
+            connected.insert(pn_server, targets);
+        }
+
+        *self.connected_pn_targets.lock().unwrap() = connected;
+        Ok(())
+    }
 }
 
-fn pn_server_endpoints(pn_server: &PnServerInfo) -> Vec<VpnEndpoint> {
+fn pn_server_endpoints(pn_server: &ClientProxyNodeInfo) -> Vec<VpnEndpoint> {
     let mut endpoints = Vec::new();
     for endpoint in &pn_server.endpoints {
         if is_quic_pn_endpoint(endpoint) {
@@ -322,16 +385,7 @@ fn sn_endpoints(sn_addr: SocketAddr) -> Vec<Endpoint> {
 impl VpnTunnelFactory<P2pVpnTunnelRecv, P2pVpnTunnelSend> for P2pVpnTunnelFactory {
     async fn on_vpn_info_received(&self, vpn_infos: &[NodeVpnInfo]) -> VpnResult<()> {
         self.proxy_route_resolver.update_routes(vpn_infos)?;
-        let mut connected = HashSet::new();
-        for vpn_info in vpn_infos {
-            let Some(pn_server) = vpn_info.node_info.pn_server.as_ref() else {
-                continue;
-            };
-            if connected.insert(pn_server.clone()) {
-                self.connect_pn_server(pn_server).await?;
-            }
-        }
-        Ok(())
+        self.sync_pn_server_connections(vpn_infos).await
     }
 
     async fn create_tunnel(
@@ -745,7 +799,6 @@ mod tests {
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
     use vpn_frame::NodeNetwork;
-    use vpn_frame::PnServerAddress as VpnPnServerAddress;
     use vpn_frame::server::NetworkMember;
 
     fn node_id(seed: u8) -> NodeId {
@@ -760,7 +813,21 @@ mod tests {
         TunnelPurpose::from_value(&value).unwrap()
     }
 
-    fn vpn_info(pn_server: Option<PnServerInfo>, members: Vec<NetworkMember>) -> NodeVpnInfo {
+    fn client_proxy(
+        proxy_id: NodeId,
+        endpoints: Vec<VpnPnServerAddress>,
+    ) -> ClientProxyNodeInfo {
+        ClientProxyNodeInfo {
+            proxy_id,
+            name: None,
+            endpoints,
+        }
+    }
+
+    fn vpn_info(
+        pn_server: Option<ClientProxyNodeInfo>,
+        members: Vec<NetworkMember>,
+    ) -> NodeVpnInfo {
         NodeVpnInfo {
             node_info: NodeNetwork {
                 id: 100,
@@ -772,14 +839,15 @@ mod tests {
                 ipv6_mask: 0,
                 pn_server,
             },
+            pn_server_changed: true,
             members,
         }
     }
 
     #[test]
     fn pn_server_endpoints_prefer_quic_and_deduplicate() {
-        let pn_server = PnServerInfo::new_with_endpoints(
-            p2p_id(7).to_string(),
+        let pn_server = client_proxy(
+            node_id(7),
             vec![
                 VpnPnServerAddress::new(IpAddr::from([10, 0, 0, 2]), 3625),
                 VpnPnServerAddress::new(IpAddr::from([10, 0, 0, 2]), 3625),
@@ -898,7 +966,13 @@ mod tests {
         let resolver = P2pVpnPnProxyRouteResolver::new();
         let target = node_id(1);
         let relay = p2p_id(2);
-        let pn_server = PnServerInfo::new(relay.to_string(), IpAddr::from([127, 0, 0, 1]), 3624);
+        let pn_server = client_proxy(
+            NodeId::from(relay.as_slice()),
+            vec![VpnPnServerAddress::new(
+                IpAddr::from([127, 0, 0, 1]),
+                3624,
+            )],
+        );
 
         resolver
             .update_routes(&[vpn_info(
@@ -923,7 +997,13 @@ mod tests {
         let resolver = P2pVpnPnProxyRouteResolver::new();
         let target = node_id(3);
         let relay = p2p_id(4);
-        let pn_server = PnServerInfo::new(relay.to_string(), IpAddr::from([127, 0, 0, 1]), 3624);
+        let pn_server = client_proxy(
+            NodeId::from(relay.as_slice()),
+            vec![VpnPnServerAddress::new(
+                IpAddr::from([127, 0, 0, 1]),
+                3624,
+            )],
+        );
 
         resolver
             .update_routes(&[vpn_info(
@@ -961,24 +1041,4 @@ mod tests {
         assert!(resolver.routes.lock().unwrap().is_empty());
     }
 
-    #[test]
-    fn resolver_rejects_invalid_pn_server_id() {
-        let resolver = P2pVpnPnProxyRouteResolver::new();
-        let pn_server = PnServerInfo::new(
-            "not-a-valid-p2p-id".to_string(),
-            IpAddr::from([127, 0, 0, 1]),
-            3624,
-        );
-
-        let result = resolver.update_routes(&[vpn_info(
-            Some(pn_server),
-            vec![NetworkMember {
-                id: node_id(6),
-                ip: "10.0.0.5".to_string(),
-                ipv6: None,
-            }],
-        )]);
-
-        assert!(result.is_err());
-    }
 }

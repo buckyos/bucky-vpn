@@ -2,6 +2,8 @@ use crate::errors::{VpnErrorCode, VpnResult, vpn_err};
 use base58::{FromBase58, ToBase58};
 use bucky_raw_codec::{RawDecode, RawEncode};
 
+const P2P_BASE36_ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+
 #[derive(Debug, Clone, Eq, PartialEq, Hash, RawEncode, RawDecode)]
 pub struct NodeId(Vec<u8>);
 impl NodeId {
@@ -19,10 +21,22 @@ impl NodeId {
         base36::encode(self.0.as_slice())
     }
 
+    pub fn to_p2p_base36(&self) -> String {
+        base_x::encode(P2P_BASE36_ALPHABET, self.0.as_slice())
+    }
+
     pub fn from_base36(base36: &str) -> VpnResult<Self> {
         Ok(Self(base36::decode(base36).map_err(|_e| {
             vpn_err!(VpnErrorCode::InvalidParam, "invalid node id {}", base36)
         })?))
+    }
+
+    pub fn from_p2p_base36(value: &str) -> VpnResult<Self> {
+        Ok(Self(
+            base_x::decode(P2P_BASE36_ALPHABET, &value.to_ascii_lowercase()).map_err(|_e| {
+                vpn_err!(VpnErrorCode::InvalidParam, "invalid p2p node id {}", value)
+            })?,
+        ))
     }
 
     pub fn to_canonical_string(&self) -> String {

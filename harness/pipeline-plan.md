@@ -64,3 +64,4 @@
 - [x] PN Endpoint/live-address behavior is implemented across shared protocol, server, and client.
 - [x] Required validation evidence exists.
 - [ ] Final acceptance passes. Blocked by `ACC-PN-ENDPOINT-001` and `ACC-PN-ENDPOINT-002`.
+

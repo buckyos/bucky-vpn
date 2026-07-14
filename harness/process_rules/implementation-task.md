@@ -9,7 +9,7 @@
 4. `docs/modules/<module>.md`
 5. `docs/architecture/` 中相关项目级约束
 6. `harness/rules/implementation-admission-rules.md`
-7. 如果命中高风险触发条件，再读 `harness/rules/trigger-based-validation-rules.md`
+7. 如果命中高风险触发条件，再读 `harness/custom-rules/trigger-based-validation-rules.md`
 8. 如果任务自治级别或评审要求不清楚，再读 `harness/human-rules/`
 
 ## 开始实现前必须确认

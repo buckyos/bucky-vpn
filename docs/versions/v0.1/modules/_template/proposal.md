@@ -1,28 +1,42 @@
 ---
 module: example-module
+task_name: 001-example-task
+submodule: 001-example-task
 version: v0.1
 status: draft
 approved_by:
 approved_at:
+approved_content_sha256:
 ---
 
-# [模块名] Proposal
+# [Module Name] Proposal
 
-## 背景与目标
-<!-- 说明要解决什么问题，以及为什么现在要做 -->
+## Background and Goal
+<!-- What problem is being solved and why now -->
 
-## 范围
+## Scope
 ### In scope
 ### Out of scope
 ### Boundary with neighboring modules
 
-## 约束
-- 允许使用的库/组件：
-- 禁止采用的方案：
-- 系统约束：
+## Requirement Review
+<!-- Evaluate whether the requested outcome is reasonable, identify material tradeoffs, and record the chosen direction. -->
 
-## 高层结果
-<!-- 这里只写业务结果，详细 acceptance 标准放在 acceptance.md -->
+## Proposal Items
+| proposal_id | change_id | requirement | boundary | tradeoff | success_evidence | non_goal |
+|-------------|-----------|-------------|----------|----------|------------------|----------|
+| P-001 | CHG-example | | | | | |
 
-## 风险
-<!-- 高风险改动、共享合同、安全影响、迁移影响 -->
+## Success Criteria
+- Concrete user-visible or system-visible result:
+- Required evidence:
+- Explicit non-goals:
+
+## Risks
+<!-- High-risk changes, shared contracts, security or migration impact -->
+
+## Approval Record
+<!-- Fill only when the user explicitly approves this document. Agents MUST NOT fill this section or set `status: approved` on their own initiative. `approver` must match front matter `approved_by`; `user_statement` must quote the user's approval instruction verbatim. The same edit must record front matter `approved_content_sha256` from `schema-check.py --print-approval-hash <this-file>`; later content edits invalidate approval and require a sibling amendment/fix task. -->
+- approver:
+- approval_date:
+- user_statement: ""

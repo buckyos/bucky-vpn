@@ -1,20 +1,23 @@
 use crate::api::Api;
 use crate::pn_connection_validator::VpnServerPnConnectionValidator;
-use crate::pn_traffic_service::{
-    NoopPnTrafficSnapshotProvider, PnTrafficNodeSet, PnTrafficService,
-    TrackedPnTrafficSnapshotProvider,
-};
+use crate::pn_server_info::with_pn_server_name;
+use crate::pn_server_manager::PnServerManager;
+use crate::pn_traffic_service::PnTrafficService;
 use crate::server_config::{
-    ConfigPnServerSelector, build_server_config, endpoints_to_pn_server, get_pn_server_config,
-    get_server_name_config, get_sn_admin_config, get_sn_http_config, get_sn_jwt_config,
-    get_sn_server_config, is_standalone_proxy_node, resolve_service_endpoints,
-    select_default_config_file, should_start_pn_server,
+    build_server_config, endpoints_to_pn_server, get_pn_server_config,
+    get_pn_traffic_upload_config, get_server_name_config, get_sn_admin_config, get_sn_http_config,
+    get_sn_jwt_config, get_sn_server_config,
+    is_standalone_proxy_node, resolve_service_endpoints, select_default_config_file,
+    should_start_pn_server, validate_server_mode,
 };
 use crate::sqlite_store_factory::{P2pSnCmdServer, SqliteStoreFactory};
 use crate::user_store::{SqliteUserStore, User};
-use crate::vpn_control_client::{
-    DeferredVpnCmdIncomingTunnelValidator, VpnCmdPnConnectionValidator, VpnCmdPnTrafficReporter,
-    create_proxy_control_cmd_service, create_vpn_control_client, register_proxy_control_cmd_listener,
+use crate::pn_control_client::{
+    DeferredVpnCmdIncomingTunnelValidator, LocalPnTrafficReporter, VpnCmdPnConnectionValidator,
+    VpnCmdPnTrafficReporter, create_vpn_control_client,
+};
+use crate::pn_control_server::{
+    create_proxy_control_cmd_service, register_proxy_control_cmd_listener,
 };
 use base58::ToBase58;
 use bucky_raw_codec::{RawConvertTo, RawDecode, RawEncode, RawFrom};
@@ -23,7 +26,7 @@ use p2p_frame::p2p_identity::{P2pIdentity, P2pIdentityFactory, P2pIdentityRef, P
 use p2p_frame::pn::PnServer;
 use p2p_frame::sn::service::{SnServiceConfig, create_sn_service};
 use p2p_frame::stack::{P2pConfig, create_p2p_env};
-use p2p_frame::ttp::{TtpClient, TtpClientRef, TtpServer, TtpServerRef};
+use p2p_frame::ttp::{TtpClient, TtpServer, TtpServerRef};
 use p2p_frame::x509;
 use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
 use rcgen::KeyPair;
@@ -33,21 +36,24 @@ use sfo_http::openapi::OpenApiServer;
 use sfo_http::openapi::utoipa;
 use sfo_http::openapi::utoipa::OpenApi;
 use sfo_http::tide_server::TideHttpServer;
+use sfo_reuseport::{ServerRuntime, ServerRuntimeConfig};
 use sfo_sql::sqlite::{SqlPool, SqliteJournalMode};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use sfo_reuseport::{ServerRuntime, ServerRuntimeConfig};
 use vpn_frame::server::{NodeId, VpnServer, VpnStoreFactory};
 
 mod api;
 mod pn_connection_validator;
+mod pn_control_client;
+mod pn_control_server;
+mod pn_server_info;
+mod pn_server_manager;
 mod pn_traffic_service;
 mod server_config;
 mod sqlite_store_factory;
 mod user_store;
-mod vpn_control_client;
 
 #[derive(utoipa::OpenApi)]
 #[openapi(paths(), components())]
@@ -112,40 +118,70 @@ fn resign_encoded_identity_with_name(data: &[u8], name: &str) -> Result<Vec<u8>,
 
 struct ProxyTtpRuntime {
     server: TtpServerRef,
-    client: TtpClientRef,
 }
 
-async fn start_proxy_ttp_runtime(
+fn new_p2p_config(endpoints: Vec<Endpoint>, server_runtime: ServerRuntime) -> P2pConfig {
+    P2pConfig::new(
+        Arc::new(X509IdentityFactory),
+        Arc::new(X509IdentityCertFactory),
+        endpoints,
+        server_runtime,
+    )
+}
+
+fn new_sn_service_config(
+    local_identity: P2pIdentityRef,
+    server_runtime: ServerRuntime,
+) -> SnServiceConfig {
+    SnServiceConfig::new(
+        local_identity,
+        Arc::new(X509IdentityFactory),
+        Arc::new(X509IdentityCertFactory),
+        server_runtime,
+    )
+}
+
+async fn start_standalone_proxy_ttp_runtime(
     local_identity: P2pIdentityRef,
     endpoints: Vec<Endpoint>,
-    incoming_tunnel_validator: p2p_frame::networks::IncomingTunnelValidatorRef,
+    incoming_tunnel_validator: Arc<DeferredVpnCmdIncomingTunnelValidator>,
+    control_server: &crate::server_config::PnControlServerConfig,
     server_runtime: ServerRuntime,
-) -> p2p_frame::error::P2pResult<ProxyTtpRuntime> {
+) -> Result<(ProxyTtpRuntime, crate::pn_control_client::VpnControlClientRef), String> {
     let p2p_env = create_p2p_env(
-        P2pConfig::new(
-            Arc::new(X509IdentityFactory),
-            Arc::new(X509IdentityCertFactory),
-            endpoints,
-            server_runtime
-        )
-        .set_incoming_tunnel_validator(incoming_tunnel_validator),
+        new_p2p_config(endpoints, server_runtime)
+            .set_incoming_tunnel_validator(incoming_tunnel_validator.clone()),
     )
-    .await?;
+    .await
+    .map_err(|err| err.to_string())?;
     p2p_env
         .net_manager()
         .add_listen_device(local_identity.clone())
-        .await?;
+        .await
+        .map_err(|err| err.to_string())?;
     let net_manager = p2p_env.net_manager().clone();
-    let ttp_server = TtpServer::new(local_identity.clone(), net_manager.clone())?;
+    let ttp_server = TtpServer::new(local_identity.clone(), net_manager.clone())
+        .map_err(|err| err.to_string())?;
     let ttp_client = TtpClient::new(local_identity, net_manager);
+    let control_client = create_vpn_control_client(
+        ttp_client.clone(),
+        control_server,
+        std::time::Duration::from_secs(5),
+    )
+    .await
+    .map_err(|err| err.to_string())?;
+    incoming_tunnel_validator.set_client(control_client.clone());
     p2p_env
         .net_manager()
         .listen(p2p_env.endpoints(), p2p_env.port_mapping().clone())
-        .await?;
-    Ok(ProxyTtpRuntime {
-        server: ttp_server,
-        client: ttp_client,
-    })
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok((
+        ProxyTtpRuntime {
+            server: ttp_server,
+        },
+        control_client,
+    ))
 }
 
 #[tokio::main]
@@ -173,6 +209,8 @@ async fn main() {
     let server_name = get_server_name_config(&config);
     let sn_server_config = get_sn_server_config(&config);
     let pn_config = get_pn_server_config(&config).unwrap();
+    validate_server_mode(&sn_server_config, &pn_config).unwrap();
+    let pn_traffic_upload_config = get_pn_traffic_upload_config(&config).unwrap();
     let sn_http_config = if sn_server_config.enabled {
         Some(get_sn_http_config(&config).unwrap())
     } else {
@@ -240,9 +278,11 @@ async fn main() {
         &sn_endpoint,
         &eps,
         pn_route_hint,
+        pn_config.advertised_ip,
         &pn_config.port_mapping,
-    )
-    .with_name(server_name.clone());
+        pn_config.report_local_address,
+    );
+    let local_pn_server = with_pn_server_name(local_pn_server, server_name.clone()).unwrap();
     let pn_servers = if start_pn_server {
         vec![local_pn_server.clone()]
     } else {
@@ -250,52 +290,27 @@ async fn main() {
     };
     let mut remote_control_client = None;
     let server_runtime = ServerRuntime::start(ServerRuntimeConfig::default()).unwrap();
-    let sn_service_config = SnServiceConfig::new(
-        local_identity,
-        Arc::new(X509IdentityFactory),
-        Arc::new(X509IdentityCertFactory),
-        server_runtime.clone()
-    );
+    let sn_service_config = new_sn_service_config(local_identity, server_runtime.clone());
     let sn_service = create_sn_service(sn_service_config).await.unwrap();
     let pn_ttp_server = if sn_server_config.enabled {
         sn_service.start().await.unwrap();
         Some(sn_service.ttp_server())
     } else if standalone_proxy_node {
         let incoming_tunnel_validator = DeferredVpnCmdIncomingTunnelValidator::new();
-        let ttp_runtime = start_proxy_ttp_runtime(
+        let control_server = pn_config
+            .control_server
+            .as_ref()
+            .expect("standalone proxy mode was validated before runtime construction");
+        let (ttp_runtime, control_client) = start_standalone_proxy_ttp_runtime(
             control_identity.clone(),
             eps.clone(),
             incoming_tunnel_validator.clone(),
-            server_runtime.clone()
+            control_server,
+            server_runtime.clone(),
         )
         .await
         .unwrap();
-        match pn_config.control_server.as_ref() {
-            Some(control_server) => match create_vpn_control_client(
-                ttp_runtime.client.clone(),
-                control_server,
-                std::time::Duration::from_secs(5),
-            )
-            .await
-            {
-                Ok(client) => {
-                    incoming_tunnel_validator.set_client(client.clone());
-                    remote_control_client = Some(client);
-                }
-                Err(err) => {
-                    log::error!(
-                        "create vpn control client failed: code={:?} msg={}",
-                        err.code(),
-                        err.msg()
-                    );
-                }
-            },
-            None => {
-                log::warn!(
-                    "standalone proxy node requires pn.control_server for remote tunnel validation"
-                );
-            }
-        }
+        remote_control_client = Some(control_client);
         log::info!(
             "default sn server disabled by config file {}, standalone proxy ttp listener started",
             config_file
@@ -327,14 +342,17 @@ async fn main() {
             store.init_db().await.unwrap();
         }
 
-        let pn_server_selector = Arc::new(ConfigPnServerSelector::new_with_store(
+        let pn_server_selector = Arc::new(PnServerManager::new_with_store_and_remote_ttl(
             pn_servers,
             store_factory.clone(),
+            std::time::Duration::from_secs(pn_config.heartbeat_timeout_secs),
         ));
         pn_server_selector.start_remote_liveness_monitor();
         let cmd_server = Arc::new(P2pSnCmdServer::new(sn_service.clone()));
-        let vpn_server = VpnServer::new_with_pn_server_selector(
+        let proxy_control_cmd_service = create_proxy_control_cmd_service();
+        let vpn_server = VpnServer::new_with_pn_control_cmd_server(
             cmd_server,
+            proxy_control_cmd_service.clone(),
             store_factory.clone(),
             pn_server_selector.clone(),
         );
@@ -379,11 +397,6 @@ async fn main() {
             DefaultAccountManager::new(user_store, sn_jwt_config.key.clone().into_bytes());
 
         vpn_server.start();
-        let proxy_control_cmd_service = create_proxy_control_cmd_service(
-            vpn_server.clone(),
-            store_factory.clone(),
-            pn_server_selector.clone(),
-        );
         if let Err(err) = register_proxy_control_cmd_listener(
             sn_service.ttp_server(),
             proxy_control_cmd_service,
@@ -403,14 +416,11 @@ async fn main() {
         None
     };
 
+    let mut pn_server_runtime = None;
     let traffic_service = if start_pn_server {
-        let traffic_node_set = PnTrafficNodeSet::new();
         let pn_validator: p2p_frame::pn::PnConnectionValidatorRef =
             if let Some(client) = remote_control_client.as_ref() {
-                VpnCmdPnConnectionValidator::new_with_traffic_node_tracker(
-                    client.clone(),
-                    traffic_node_set.clone(),
-                )
+                VpnCmdPnConnectionValidator::new(client.clone())
             } else if let Some((_, _, vpn_server, _)) = control_runtime.as_ref() {
                 VpnServerPnConnectionValidator::new(
                     vpn_server.clone(),
@@ -422,25 +432,35 @@ async fn main() {
         let pn_server =
             PnServer::new_with_connection_validator(pn_ttp_server.clone().unwrap(), pn_validator);
         pn_server.start().await.unwrap();
-        let traffic_snapshot_provider =
-            TrackedPnTrafficSnapshotProvider::new(pn_server.clone(), traffic_node_set);
+        pn_server_runtime = Some(pn_server.clone());
         let traffic_service = if let Some((store_factory, _, _, _)) = control_runtime.as_ref() {
-            PnTrafficService::new(traffic_snapshot_provider, store_factory.clone())
+            PnTrafficService::new(store_factory.clone())
         } else {
-            PnTrafficService::new_without_store(traffic_snapshot_provider)
+            PnTrafficService::new_without_store()
         };
+        traffic_service.set_proxy_connection_source(pn_server.clone());
+        traffic_service.set_proxy_upload_config(pn_traffic_upload_config);
         if let Some(client) = remote_control_client {
             traffic_service.set_remote_reporter(VpnCmdPnTrafficReporter::new(
                 client,
                 local_pn_server.clone(),
             ));
-            traffic_service.start_remote_heartbeat(
-                NodeId::from(local_id.as_slice()),
-                std::time::Duration::from_secs(pn_config.report_interval_secs),
-            );
+            traffic_service.start_remote_heartbeat(std::time::Duration::from_secs(
+                pn_config.heartbeat_interval_secs,
+            ));
             log::info!(
-                "proxy node heartbeat and traffic report enabled by vpn command interval_secs={}",
-                pn_config.report_interval_secs
+                "proxy node heartbeat and traffic report enabled heartbeat_interval_secs={} report_interval_secs={}",
+                pn_config.heartbeat_interval_secs,
+                pn_config.report_interval_secs,
+            );
+        } else if let Some((_, _, vpn_server, _)) = control_runtime.as_ref() {
+            traffic_service.set_remote_reporter(LocalPnTrafficReporter::new(
+                vpn_server.clone(),
+                NodeId::from(local_id.as_slice()),
+            ));
+            log::info!(
+                "process-local proxy traffic report enabled report_interval_secs={}",
+                pn_config.report_interval_secs,
             );
         }
         traffic_service.start_background_flush(std::time::Duration::from_secs(
@@ -450,12 +470,9 @@ async fn main() {
     } else {
         log::info!("default pn server disabled by config file {}", config_file);
         if let Some((store_factory, _, _, _)) = control_runtime.as_ref() {
-            PnTrafficService::new(
-                Arc::new(NoopPnTrafficSnapshotProvider),
-                store_factory.clone(),
-            )
+            PnTrafficService::new(store_factory.clone())
         } else {
-            PnTrafficService::new_without_store(Arc::new(NoopPnTrafficSnapshotProvider))
+            PnTrafficService::new_without_store()
         }
     };
 
@@ -479,8 +496,51 @@ async fn main() {
             pn_server_selector.clone(),
         );
 
-        http_server.run().await.unwrap();
+        tokio::select! {
+            result = http_server.run() => result.unwrap(),
+            result = tokio::signal::ctrl_c() => {
+                if let Err(err) = result {
+                    log::warn!("failed to wait for shutdown signal: {}", err);
+                }
+            }
+        }
+    } else if let Err(err) = tokio::signal::ctrl_c().await {
+        log::warn!("failed to wait for shutdown signal: {}", err);
     }
 
-    std::future::pending::<()>().await;
+    let drain_timeout = std::time::Duration::from_secs(
+        pn_traffic_upload_config.shutdown_drain_secs,
+    );
+    let drain_deadline = std::time::Instant::now() + drain_timeout;
+    let relay_quiesced = if let Some(pn_server) = pn_server_runtime.as_ref() {
+        pn_server
+            .shutdown(drain_deadline.saturating_duration_since(std::time::Instant::now()))
+            .await
+    } else {
+        true
+    };
+    let shutdown_status = traffic_service
+        .shutdown_proxy_traffic(
+            drain_deadline.saturating_duration_since(std::time::Instant::now()),
+        )
+        .await;
+    if !relay_quiesced || !shutdown_status.is_success() {
+        let active_relays = pn_server_runtime
+            .as_ref()
+            .map(|pn_server| pn_server.active_relay_count())
+            .unwrap_or_default();
+        log::warn!(
+            "proxy traffic graceful drain incomplete relay_quiesced={} active_relays={} collector_exited={} final_collection_succeeded={} final_collection_error={:?} uploader_exited={} queued_batches={} queued_records={} oldest_batch_id={:?} terminal_rejected_records={} crash_recovery=in-memory-only",
+            relay_quiesced,
+            active_relays,
+            shutdown_status.collector_exited,
+            shutdown_status.final_collection_succeeded,
+            shutdown_status.final_collection_error,
+            shutdown_status.uploader_exited,
+            shutdown_status.queue.queued_batches,
+            shutdown_status.queue.queued_records,
+            shutdown_status.queue.oldest_batch_id,
+            shutdown_status.queue.terminal_rejected_records,
+        );
+    }
 }

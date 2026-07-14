@@ -36,10 +36,9 @@
 - 任务流程 overlay：`harness/process_rules/`
 - 领域 checklist：`harness/checklists/`
 - 协作模式与模块分级：`harness/human-rules/`
-- 高风险变更触发：`harness/rules/trigger-based-validation-rules.md`
+- 高风险变更触发：`harness/custom-rules/trigger-based-validation-rules.md`
 
 ## 当前已初始化模块
-- `repo-governance`：仓库级 harness、规则、模板和验证入口
 - `vpn-frame`：共享 VPN 协议与运行时库
 - `bucky-vpn`：客户端二进制
 - `bucky-vpn-server`：服务端二进制

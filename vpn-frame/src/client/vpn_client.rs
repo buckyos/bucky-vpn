@@ -7,7 +7,8 @@ use crate::client::{PacketRecv, VpnDevice, VpnServerClient};
 use crate::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
 use crate::server::{NetworkGroupId, NetworkId};
 use crate::{
-    VpnCmdCode, VpnCmdHeader, VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv, VpnTunnelSend,
+    ClientProxyNodeInfo, NodeVpnInfo, PnServerInfo, PnServerInfoPayload, VpnCmdCode, VpnCmdHeader,
+    VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv, VpnTunnelSend, encode_pn_server_info,
 };
 use bucky_raw_codec::RawDecode;
 use sfo_cmd_server::CmdTunnelMeta;
@@ -150,7 +151,9 @@ pub struct VpnClient<
     tunnel_manager: Mutex<Option<Arc<TunnelManager<R, S, F, L>>>>,
     packet_dispatcher: Mutex<Option<Arc<PacketDispatcher<R, S, F, L>>>>,
     run_handle: Mutex<Option<JoinHandle<()>>>,
+    pn_server_cache: Mutex<HashMap<NetworkId, Option<ClientProxyNodeInfo>>>,
     cur_version: AtomicU16,
+    cur_pn_info_version: AtomicU16,
     is_first: AtomicBool,
     client_version: String,
 }
@@ -195,7 +198,9 @@ impl<
             tunnel_manager: Mutex::new(None),
             packet_dispatcher: Mutex::new(None),
             run_handle: Mutex::new(None),
+            pn_server_cache: Mutex::new(HashMap::new()),
             cur_version: AtomicU16::new(0),
+            cur_pn_info_version: AtomicU16::new(0),
             is_first: AtomicBool::new(true),
             client_version,
         });
@@ -231,22 +236,29 @@ impl<
     }
 
     async fn run_proc(self: &Arc<Self>) -> VpnResult<()> {
-        let (server_version, vpn_infos) = if self.is_first.load(Ordering::Relaxed) {
-            let (server_version, vpn_infos) = self
-                .server_client
-                .get_vpn_info(None, Some(self.client_version.clone()))
-                .await?;
-            (server_version, vpn_infos)
-        } else {
-            self.server_client
-                .get_vpn_info(Some(self.cur_version.load(Ordering::SeqCst)), None)
-                .await?
-        };
+        let ((server_version, pn_info_version), vpn_infos) =
+            if self.is_first.load(Ordering::Relaxed) {
+                let (versions, vpn_infos) = self
+                    .server_client
+                    .get_vpn_info(None, None, Some(self.client_version.clone()))
+                    .await?;
+                (versions, vpn_infos)
+            } else {
+                self.server_client
+                    .get_vpn_info(
+                        Some(self.cur_version.load(Ordering::SeqCst)),
+                        Some(self.cur_pn_info_version.load(Ordering::SeqCst)),
+                        None,
+                    )
+                    .await?
+            };
         if !self.is_first.load(Ordering::Relaxed)
             && server_version == self.cur_version.load(Ordering::SeqCst)
+            && pn_info_version == self.cur_pn_info_version.load(Ordering::SeqCst)
         {
             return Ok(());
         }
+        let vpn_infos = self.apply_cached_pn_servers(vpn_infos);
         self.tunnel_factory.on_vpn_info_received(&vpn_infos).await?;
         self.is_first.store(false, Ordering::Relaxed);
         let mut vpn_devices = {
@@ -265,7 +277,12 @@ impl<
         for vpn_info in vpn_infos {
             let group_id = vpn_info.node_info.group_id;
             let network_id = vpn_info.node_info.id;
-            let pn_server = vpn_info.node_info.pn_server.clone();
+            let pn_server = vpn_info
+                .node_info
+                .pn_server
+                .as_ref()
+                .map(client_proxy_node_to_internal)
+                .transpose()?;
             let members = vpn_info
                 .members
                 .iter()
@@ -305,7 +322,14 @@ impl<
                 .add_network(group_id, network_id, pn_server, members);
         }
         self.cur_version.store(server_version, Ordering::SeqCst);
+        self.cur_pn_info_version
+            .store(pn_info_version, Ordering::SeqCst);
         Ok(())
+    }
+
+    fn apply_cached_pn_servers(&self, vpn_infos: Vec<NodeVpnInfo>) -> Vec<NodeVpnInfo> {
+        let mut pn_server_cache = self.pn_server_cache.lock().unwrap();
+        apply_cached_pn_servers(&mut pn_server_cache, vpn_infos)
     }
 
     pub async fn join(
@@ -317,6 +341,29 @@ impl<
             .join_network_group(network_group_id, name)
             .await
     }
+}
+
+fn apply_cached_pn_servers(
+    pn_server_cache: &mut HashMap<NetworkId, Option<ClientProxyNodeInfo>>,
+    mut vpn_infos: Vec<NodeVpnInfo>,
+) -> Vec<NodeVpnInfo> {
+    for vpn_info in vpn_infos.iter_mut() {
+        let network_id = vpn_info.node_info.id;
+        if vpn_info.pn_server_changed {
+            pn_server_cache.insert(network_id, vpn_info.node_info.pn_server.clone());
+        } else if let Some(pn_server) = pn_server_cache.get(&network_id) {
+            vpn_info.node_info.pn_server = pn_server.clone();
+        }
+    }
+    vpn_infos
+}
+
+fn client_proxy_node_to_internal(proxy: &ClientProxyNodeInfo) -> VpnResult<PnServerInfo> {
+    encode_pn_server_info(
+        proxy.proxy_id.to_base36(),
+        PnServerInfoPayload::new_with_endpoints(proxy.endpoints.clone())
+            .with_name(proxy.name.clone()),
+    )
 }
 
 fn is_broadcast_or_multicast(target: IpAddr, ipv4_mask: u8) -> bool {
@@ -353,5 +400,74 @@ impl<
         if let Some(handle) = run_handle.take() {
             handle.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_cached_pn_servers;
+    use crate::server::{NetworkMember, NodeId};
+    use crate::{ClientProxyNodeInfo, NodeNetwork, NodeVpnInfo};
+    use std::collections::HashMap;
+    use std::net::IpAddr;
+
+    fn vpn_info(
+        pn_server: Option<ClientProxyNodeInfo>,
+        pn_server_changed: bool,
+    ) -> NodeVpnInfo {
+        NodeVpnInfo {
+            node_info: NodeNetwork {
+                id: 100,
+                group_id: 200,
+                name: "test-network".to_string(),
+                ip: Some(IpAddr::from([10, 0, 0, 1])),
+                mask: 24,
+                ipv6: None,
+                ipv6_mask: 0,
+                pn_server,
+            },
+            members: vec![NetworkMember {
+                id: NodeId::from(vec![5u8; 32].as_slice()),
+                ip: "10.0.0.2".to_string(),
+                ipv6: None,
+            }],
+            pn_server_changed,
+        }
+    }
+
+    #[test]
+    fn cached_pn_server_is_reused_when_incremental_response_omits_unchanged_value() {
+        let pn_server = ClientProxyNodeInfo {
+            proxy_id: NodeId::from(vec![9u8; 32].as_slice()),
+            name: Some("proxy-node".to_string()),
+            endpoints: Vec::new(),
+        };
+        let mut cache = HashMap::new();
+
+        let initial =
+            apply_cached_pn_servers(&mut cache, vec![vpn_info(Some(pn_server.clone()), true)]);
+        assert_eq!(initial[0].node_info.pn_server.as_ref(), Some(&pn_server));
+
+        let incremental = apply_cached_pn_servers(&mut cache, vec![vpn_info(None, false)]);
+        assert_eq!(
+            incremental[0].node_info.pn_server.as_ref(),
+            Some(&pn_server)
+        );
+    }
+
+    #[test]
+    fn changed_none_clears_cached_pn_server() {
+        let pn_server = ClientProxyNodeInfo {
+            proxy_id: NodeId::from(vec![9u8; 32].as_slice()),
+            name: Some("proxy-node".to_string()),
+            endpoints: Vec::new(),
+        };
+        let mut cache = HashMap::new();
+        apply_cached_pn_servers(&mut cache, vec![vpn_info(Some(pn_server), true)]);
+
+        let cleared = apply_cached_pn_servers(&mut cache, vec![vpn_info(None, true)]);
+
+        assert!(cleared[0].node_info.pn_server.is_none());
+        assert_eq!(cache.get(&100), Some(&None));
     }
 }

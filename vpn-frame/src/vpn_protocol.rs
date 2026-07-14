@@ -1,4 +1,8 @@
 use crate::errors::{VpnError, VpnErrorCode, VpnResult};
+use crate::proxy_node::{
+    ClientProxyNodeInfo, NodeTrafficReport, NodeTrafficReportResp, ProxyNodeHeartbeat,
+    ProxyTrafficReport, ProxyTrafficReportResp,
+};
 use crate::sequence::Sequence;
 use crate::server::{NetworkGroupId, NetworkId, NetworkMember, NodeId};
 use bucky_raw_codec::{RawDecode, RawEncode, RawFixedBytes};
@@ -49,6 +53,10 @@ pub enum VpnCmdCode {
     ReportPnTrafficStatsResp = 0x99,
     ValidatePnConnection = 0x9a,
     ValidatePnConnectionResp = 0x9b,
+    ReportProxyTraffic = 0x9c,
+    ReportProxyTrafficResp = 0x9d,
+    ReportProxyHeartbeat = 0x9e,
+    ReportProxyHeartbeatResp = 0x9f,
 }
 
 impl TryFrom<u8> for VpnCmdCode {
@@ -66,6 +74,10 @@ impl TryFrom<u8> for VpnCmdCode {
             0x99 => Ok(VpnCmdCode::ReportPnTrafficStatsResp),
             0x9a => Ok(VpnCmdCode::ValidatePnConnection),
             0x9b => Ok(VpnCmdCode::ValidatePnConnectionResp),
+            0x9c => Ok(VpnCmdCode::ReportProxyTraffic),
+            0x9d => Ok(VpnCmdCode::ReportProxyTrafficResp),
+            0x9e => Ok(VpnCmdCode::ReportProxyHeartbeat),
+            0x9f => Ok(VpnCmdCode::ReportProxyHeartbeatResp),
             _ => Err(VpnError::new(
                 VpnErrorCode::InvalidParam,
                 format!("invalid package command type value {}", v),
@@ -76,6 +88,7 @@ impl TryFrom<u8> for VpnCmdCode {
 
 pub type VpnCmdHeader = CmdHeader<u16, u8>;
 pub type VpnTunnelId = sfo_cmd_server::TunnelId;
+pub const VPN_CMD_VERSION: u8 = 1;
 
 #[derive(RawDecode, RawEncode)]
 pub struct JoinNetworkGroupReq {
@@ -94,143 +107,19 @@ pub struct JoinNetworkGroupResp {
 pub struct GetVpnInfoReq {
     pub seq: Sequence,
     pub info_version: Option<u16>,
+    pub pn_info_version: Option<u16>,
     pub client_version: Option<String>,
-}
-
-fn default_endpoint_protocol() -> String {
-    Endpoint::PROTOCOL_QUIC.to_string()
-}
-
-#[derive(
-    Debug, RawEncode, RawDecode, Serialize, Deserialize, Clone, Eq, PartialEq, Hash, PartialOrd, Ord,
-)]
-pub struct Endpoint {
-    #[serde(default = "default_endpoint_protocol")]
-    pub protocol: String,
-    pub ip: IpAddr,
-    pub port: u16,
-}
-
-pub type PnServerAddress = Endpoint;
-
-impl Endpoint {
-    pub const PROTOCOL_QUIC: &'static str = "quic";
-    pub const PROTOCOL_TCP: &'static str = "tcp";
-
-    pub fn new(ip: IpAddr, port: u16) -> Self {
-        Self::new_with_protocol(Self::PROTOCOL_QUIC, ip, port)
-    }
-
-    pub fn new_tcp(ip: IpAddr, port: u16) -> Self {
-        Self::new_with_protocol(Self::PROTOCOL_TCP, ip, port)
-    }
-
-    pub fn new_with_protocol(protocol: impl Into<String>, ip: IpAddr, port: u16) -> Self {
-        Self {
-            protocol: protocol.into(),
-            ip,
-            port,
-        }
-    }
-}
-
-#[derive(
-    Debug, RawEncode, RawDecode, Serialize, Deserialize, Clone, Eq, PartialEq, Hash, Default,
-)]
-pub struct PnServerPortMapping {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quic: Option<u16>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tcp: Option<u16>,
-}
-
-impl PnServerPortMapping {
-    pub fn is_empty(&self) -> bool {
-        self.quic.is_none() && self.tcp.is_none()
-    }
 }
 
 #[derive(Debug, RawEncode, RawDecode, Serialize, Deserialize, Clone, Eq, PartialEq, Hash)]
 pub struct PnServerInfo {
     pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub endpoints: Vec<Endpoint>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub port_mapping: Option<PnServerPortMapping>,
+    pub info: Vec<u8>,
 }
 
 impl PnServerInfo {
-    pub fn new(id: String, ip: IpAddr, port: u16) -> Self {
-        Self::new_with_endpoint(id, Endpoint::new(ip, port))
-    }
-
-    pub fn new_with_endpoint(id: String, endpoint: Endpoint) -> Self {
-        Self::new_with_endpoints(id, vec![endpoint])
-    }
-
-    pub fn new_with_primary_address(
-        id: String,
-        primary: Endpoint,
-        addresses: Vec<Endpoint>,
-    ) -> Self {
-        let mut endpoints = Vec::with_capacity(addresses.len() + 1);
-        endpoints.push(primary);
-        endpoints.extend(addresses);
-        Self::new_with_endpoints(id, endpoints)
-    }
-
-    pub fn new_with_endpoints(id: String, endpoints: Vec<Endpoint>) -> Self {
-        let mut info = Self {
-            id,
-            name: None,
-            endpoints: Vec::new(),
-            port_mapping: None,
-        };
-        for endpoint in endpoints {
-            info.add_endpoint(endpoint);
-        }
-        info
-    }
-
-    pub fn new_with_addresses(id: String, ip: IpAddr, port: u16, addresses: Vec<Endpoint>) -> Self {
-        let mut info = Self::new_with_endpoint(id, Endpoint::new(ip, port));
-        for address in addresses {
-            info.add_endpoint(address);
-        }
-        info
-    }
-
-    pub fn add_endpoint(&mut self, endpoint: Endpoint) {
-        if !self.endpoints.contains(&endpoint) {
-            self.endpoints.push(endpoint);
-        }
-    }
-
-    pub fn add_address(&mut self, address: Endpoint) {
-        self.add_endpoint(address);
-    }
-
-    pub fn primary_endpoint(&self) -> Option<&Endpoint> {
-        self.endpoints.first()
-    }
-
-    pub fn with_name(mut self, name: Option<String>) -> Self {
-        self.name = name.and_then(|name| {
-            let name = name.trim().to_owned();
-            if name.is_empty() { None } else { Some(name) }
-        });
-        self
-    }
-
-    pub fn with_port_mapping(mut self, port_mapping: Option<PnServerPortMapping>) -> Self {
-        self.port_mapping = port_mapping.filter(|mapping| !mapping.is_empty());
-        self
-    }
-
-    pub fn remote_name(&self) -> &str {
-        self.name.as_deref().unwrap_or(&self.id)
+    pub fn new(id: String, info: Vec<u8>) -> Self {
+        Self { id, info }
     }
 }
 
@@ -243,13 +132,14 @@ pub struct NodeNetwork {
     pub mask: u8,
     pub ipv6: Option<IpAddr>,
     pub ipv6_mask: u8,
-    pub pn_server: Option<PnServerInfo>,
+    pub pn_server: Option<ClientProxyNodeInfo>,
 }
 
 #[derive(RawDecode, RawEncode)]
 pub struct NodeVpnInfo {
     pub node_info: NodeNetwork,
     pub members: Vec<NetworkMember>,
+    pub pn_server_changed: bool,
 }
 
 #[derive(RawDecode, RawEncode)]
@@ -257,6 +147,7 @@ pub struct GetVpnInfoResp {
     pub seq: Sequence,
     pub result: u8,
     pub info_version: u16,
+    pub pn_info_version: u16,
     pub vpn_list: Vec<NodeVpnInfo>,
 }
 
@@ -289,16 +180,39 @@ pub struct QueryNodeResp {
 #[derive(RawDecode, RawEncode)]
 pub struct ReportPnTrafficStatsReq {
     pub seq: Sequence,
-    pub node_id: NodeId,
-    pub pn_server: Option<PnServerInfo>,
-    pub tx_bytes: u64,
-    pub rx_bytes: u64,
+    pub reports: Vec<NodeTrafficReport>,
 }
 
 #[derive(RawDecode, RawEncode)]
 pub struct ReportPnTrafficStatsResp {
     pub seq: Sequence,
     pub result: u8,
+    pub reports: Vec<NodeTrafficReportResp>,
+}
+
+#[derive(RawDecode, RawEncode)]
+pub struct ReportProxyHeartbeatReq {
+    pub seq: Sequence,
+    pub heartbeat: ProxyNodeHeartbeat,
+}
+
+#[derive(RawDecode, RawEncode)]
+pub struct ReportProxyHeartbeatResp {
+    pub seq: Sequence,
+    pub result: u8,
+}
+
+#[derive(RawDecode, RawEncode)]
+pub struct ReportProxyTrafficReq {
+    pub seq: Sequence,
+    pub reports: Vec<ProxyTrafficReport>,
+}
+
+#[derive(RawDecode, RawEncode)]
+pub struct ReportProxyTrafficResp {
+    pub seq: Sequence,
+    pub result: u8,
+    pub reports: Vec<ProxyTrafficReportResp>,
 }
 
 #[derive(RawDecode, RawEncode)]
@@ -313,90 +227,53 @@ pub struct ValidatePnConnectionResp {
     pub seq: Sequence,
     pub result: u8,
     pub allowed: bool,
+    pub network_id: Option<NetworkId>,
+}
+
+impl ValidatePnConnectionResp {
+    pub fn validated_connection(&self) -> VpnResult<Option<crate::ValidatedPnConnection>> {
+        if !self.allowed {
+            return Ok(None);
+        }
+        self.network_id
+            .map(|network_id| Some(crate::ValidatedPnConnection { network_id }))
+            .ok_or_else(|| {
+                crate::errors::vpn_err!(
+                    VpnErrorCode::InvalidParam,
+                    "allowed pn connection response is missing network_id"
+                )
+            })
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PnServerAddress, PnServerInfo, PnServerPortMapping};
-    use std::net::IpAddr;
+    use super::PnServerInfo;
+    use crate::ClientProxyNodeInfo;
+    use crate::server::NodeId;
 
     #[test]
-    fn pn_server_info_carries_node_id_and_ipv4_address() {
-        let endpoint = PnServerAddress::new(IpAddr::from([127, 0, 0, 1]), 3624);
-        let pn_server = PnServerInfo::new(
-            "server-node-id".to_string(),
-            IpAddr::from([127, 0, 0, 1]),
-            3624,
-        );
-
+    fn pn_server_info_carries_opaque_info() {
+        let pn_server = PnServerInfo::new("server-node-id".to_string(), vec![1, 2, 3]);
         assert_eq!(pn_server.id, "server-node-id");
-        assert_eq!(pn_server.primary_endpoint(), Some(&endpoint));
-        assert_eq!(pn_server.endpoints, vec![endpoint]);
+        assert_eq!(pn_server.info, vec![1, 2, 3]);
     }
 
     #[test]
-    fn pn_server_info_carries_node_id_and_ipv6_address() {
-        let pn_server = PnServerInfo::new(
-            "server-node-id".to_string(),
-            "::1".parse::<IpAddr>().unwrap(),
-            3624,
-        );
+    fn client_proxy_node_info_serializes_as_typed_client_contract() {
+        let proxy = ClientProxyNodeInfo {
+            proxy_id: NodeId::from(vec![7u8; 32].as_slice()),
+            name: Some("proxy-7".to_string()),
+            endpoints: Vec::new(),
+        };
 
-        assert_eq!(pn_server.id, "server-node-id");
+        let json = serde_json::to_value(&proxy).unwrap();
+        assert_eq!(json["proxy_id"], proxy.proxy_id.to_base36());
+        assert_eq!(json["name"], "proxy-7");
+        assert!(json.get("info").is_none());
         assert_eq!(
-            pn_server.primary_endpoint(),
-            Some(&PnServerAddress::new(
-                "::1".parse::<IpAddr>().unwrap(),
-                3624
-            ))
-        );
-    }
-
-    #[test]
-    fn pn_server_info_normalizes_optional_remote_name() {
-        let named = PnServerInfo::new(
-            "server-node-id".to_string(),
-            IpAddr::from([127, 0, 0, 1]),
-            3624,
-        )
-        .with_name(Some(" proxy-a ".to_string()));
-
-        assert_eq!(named.name.as_deref(), Some("proxy-a"));
-        assert_eq!(named.remote_name(), "proxy-a");
-
-        let unnamed = PnServerInfo::new(
-            "server-node-id".to_string(),
-            IpAddr::from([127, 0, 0, 1]),
-            3624,
-        )
-        .with_name(Some("  ".to_string()));
-
-        assert_eq!(unnamed.name, None);
-        assert_eq!(unnamed.remote_name(), "server-node-id");
-    }
-
-    #[test]
-    fn pn_server_info_carries_port_mapping_without_rewriting_endpoint_port() {
-        let pn_server = PnServerInfo::new(
-            "server-node-id".to_string(),
-            IpAddr::from([127, 0, 0, 1]),
-            3624,
-        )
-        .with_port_mapping(Some(PnServerPortMapping {
-            quic: Some(443),
-            tcp: None,
-        }));
-
-        assert_eq!(
-            pn_server.primary_endpoint(),
-            Some(&PnServerAddress::new(IpAddr::from([127, 0, 0, 1]), 3624))
-        );
-        assert_eq!(
-            pn_server.port_mapping,
-            Some(PnServerPortMapping {
-                quic: Some(443),
-                tcp: None,
-            })
+            serde_json::from_value::<ClientProxyNodeInfo>(json).unwrap(),
+            proxy
         );
     }
 }

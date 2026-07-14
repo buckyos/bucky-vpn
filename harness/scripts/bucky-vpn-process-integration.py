@@ -1202,6 +1202,14 @@ def write_server_config(
         f"  enabled: {'true' if spec.pn_enabled else 'false'}",
         "  report_interval_secs: 1",
     ]
+    if spec.pn_enabled and spec.control_server is not None:
+        lines.extend(
+            [
+                "  port_mapping:",
+                f"    quic: {sn_port}",
+                f"    tcp: {sn_port}",
+            ]
+        )
     if control is not None:
         lines.extend(
             [
@@ -1564,10 +1572,18 @@ def wait_and_approve_proxy_nodes(
                         },
                         token=control["token"],
                     )
-            return
+            ready_nodes = [
+                node
+                for node in live_nodes
+                if node.get("status") == "approved"
+                and node.get("pn_server", {}).get("endpoints")
+            ]
+            if len(ready_nodes) >= expected_count:
+                return
         time.sleep(1)
     raise IntegrationError(
-        f"timed out waiting for live proxy nodes: expected={expected_count} seen={last_seen}"
+        "timed out waiting for approved proxy nodes with mapped endpoints: "
+        f"expected={expected_count} seen={last_seen}"
     )
 
 

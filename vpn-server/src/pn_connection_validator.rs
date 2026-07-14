@@ -1,7 +1,9 @@
 use crate::sqlite_store_factory::{SqliteStoreFactory, VpnServerRef};
 use p2p_frame::error::{P2pErrorCode, P2pResult, p2p_err};
 use p2p_frame::networks::ValidateResult;
-use p2p_frame::pn::{PnConnectionValidateContext, PnConnectionValidator};
+use p2p_frame::pn::{
+    PnConnectionValidateContext, PnConnectionValidation, PnConnectionValidator,
+};
 use std::collections::HashSet;
 use std::sync::Arc;
 use vpn_frame::server::{NetworkStore, NodeId, VpnStoreFactory};
@@ -27,9 +29,39 @@ impl VpnServerPnConnectionValidator {
 #[async_trait::async_trait]
 impl PnConnectionValidator for VpnServerPnConnectionValidator {
     async fn validate(&self, ctx: &PnConnectionValidateContext) -> P2pResult<ValidateResult> {
+        let network_id = self.validate_network(ctx).await?;
+        Ok(if network_id.is_some() {
+            ValidateResult::Accept
+        } else {
+            ValidateResult::Reject(format!(
+                "pn connection rejected by vpn server policy source={} target={}",
+                ctx.from, ctx.to
+            ))
+        })
+    }
+
+    async fn validate_with_context(
+        &self,
+        ctx: &PnConnectionValidateContext,
+    ) -> P2pResult<PnConnectionValidation> {
+        let network_id = self.validate_network(ctx).await?;
+        let result = if network_id.is_some() {
+            ValidateResult::Accept
+        } else {
+            ValidateResult::Reject(format!(
+                "pn connection rejected by vpn server policy source={} target={}",
+                ctx.from, ctx.to
+            ))
+        };
+        Ok(PnConnectionValidation::new(result, network_id))
+    }
+}
+
+impl VpnServerPnConnectionValidator {
+    async fn validate_network(&self, ctx: &PnConnectionValidateContext) -> P2pResult<Option<u64>> {
         let source_node_id = NodeId::from(ctx.from.as_slice());
         let target_node_id = NodeId::from(ctx.to.as_slice());
-        let allowed = self
+        let validation = self
             .vpn_server
             .validate_pn_connection_from_pn_node(
                 &self.local_pn_node_id,
@@ -45,17 +77,19 @@ impl PnConnectionValidator for VpnServerPnConnectionValidator {
                     err.msg()
                 )
             })?;
-        if allowed {
+        let network_id = validation.map(|validation| validation.network_id);
+        if let Some(network_id) = network_id {
             log::debug!(
-                "pn connection accepted by vpn server pn_node={} source={} target={} kind={:?} purpose={} control={}",
+                "pn connection accepted by vpn server pn_node={} source={} target={} network_id={} kind={:?} purpose={} control={}",
                 self.local_pn_node_id.to_base36(),
                 source_node_id.to_base36(),
                 target_node_id.to_base36(),
+                network_id,
                 ctx.kind,
                 ctx.purpose,
                 ctx.is_control
             );
-            Ok(ValidateResult::Accept)
+            Ok(Some(network_id))
         } else {
             log::warn!(
                 "pn connection rejected by vpn server pn_node={} source={} target={} kind={:?} purpose={} control={}",
@@ -66,10 +100,7 @@ impl PnConnectionValidator for VpnServerPnConnectionValidator {
                 ctx.purpose,
                 ctx.is_control
             );
-            Ok(ValidateResult::Reject(format!(
-                "pn connection rejected by vpn server policy source={} target={}",
-                ctx.from, ctx.to
-            )))
+            Ok(None)
         }
     }
 }
@@ -123,11 +154,15 @@ impl PnConnectionValidator for SqlitePnConnectionValidator {
             .map(|joined| joined.group_id)
             .collect::<HashSet<_>>();
 
-        let has_common_allowed_group = source_groups
+        let mut common_allowed_groups = source_groups
             .iter()
-            .any(|joined| joined.allow_join && allowed_target_groups.contains(&joined.group_id));
+            .filter(|joined| joined.allow_join && allowed_target_groups.contains(&joined.group_id))
+            .map(|joined| joined.group_id)
+            .collect::<Vec<_>>();
+        common_allowed_groups.sort_unstable();
+        common_allowed_groups.dedup();
 
-        if has_common_allowed_group {
+        if common_allowed_groups.first().is_some() {
             Ok(ValidateResult::Accept)
         } else {
             Ok(ValidateResult::Reject(format!(

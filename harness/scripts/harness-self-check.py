@@ -8,6 +8,7 @@ that the bootstrap kit expects every generated repository to contain.
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import sys
 from pathlib import Path
@@ -24,7 +25,6 @@ REQUIRED_RULES = (
     "unified-test-entry-rules.md",
     "acceptance-task-rules.md",
     "acceptance-review-rules.md",
-    "trigger-rules.md",
     "quality-gate-rules.md",
     "auto-pipeline-rules.md",
 )
@@ -32,15 +32,17 @@ REQUIRED_RULES = (
 REQUIRED_SCRIPTS = (
     "test-run.py",
     "schema-check.py",
+    "task-seq.py",
     "admission-check.py",
     "stage-scope-check.py",
     "harness-self-check.py",
     "doc-structure-check.py",
+    "architecture-doc-check.py",
     "testing-coverage-check.py",
+    "consumer-closure-check.py",
     "acceptance-report-check.py",
     "pipeline-plan-check.py",
     "check-all.py",
-    "edit-guard.py",
     "quality-check.py",
 )
 
@@ -89,6 +91,42 @@ def require_any(path: Path, patterns: tuple[str, ...], description: str) -> None
         fail(f"{path} missing required reference: {description}")
 
 
+def configured_module_suites(path: Path) -> dict[object, object]:
+    """Read the literal MODULE_SUITES registration without executing the runner."""
+    try:
+        tree = ast.parse(read_text(path), filename=str(path))
+    except SyntaxError as error:
+        fail(f"{path} is not valid Python: {error}")
+    for node in tree.body:
+        target = node.target if isinstance(node, ast.AnnAssign) else None
+        if isinstance(target, ast.Name) and target.id == "MODULE_SUITES":
+            try:
+                suites = ast.literal_eval(node.value)
+            except (ValueError, TypeError) as error:
+                fail(f"{path} MODULE_SUITES must be a literal mapping: {error}")
+            if not isinstance(suites, dict):
+                fail(f"{path} MODULE_SUITES must be a mapping")
+            return suites
+    fail(f"{path} does not define MODULE_SUITES")
+
+
+def require_configured_module_suites(path: Path) -> None:
+    suites = configured_module_suites(path)
+    if not suites:
+        fail(
+            f"{path} has no canonical MODULE_SUITES; adapt the template to "
+            "register each project module's explicit all suite"
+        )
+    for module, suite in suites.items():
+        if not isinstance(module, str) or not module:
+            fail(f"{path} has an invalid canonical module name: {module!r}")
+        if not isinstance(suite, dict):
+            fail(f"{path} module {module} suite must be a mapping")
+        all_commands = suite.get("all")
+        if not isinstance(all_commands, list) or not all_commands:
+            fail(f"{path} module {module} must define a non-empty canonical all suite")
+
+
 def check_root(root: Path) -> None:
     require_path(root / "AGENTS.md", directory=False)
     require_path(root / "test-run.bat", directory=False)
@@ -102,12 +140,24 @@ def check_root(root: Path) -> None:
     require_path(root / "harness" / "custom-rules", directory=True)
     require_path(root / "harness" / "scripts", directory=True)
     require_path(root / "harness" / "process_rules", directory=True)
-    require_path(root / "harness" / "hooks" / "pre-commit", directory=False)
-    require_path(root / "harness" / "ci" / "harness-checks.yml", directory=False)
     require_path(root / "harness" / "quality-gates.yaml", directory=False)
-    require_path(root / "harness" / "evidence" / "admission", directory=True)
+    check_version_evidence_dirs(root)
     check_test_results_ignored(root)
 
+
+def check_version_evidence_dirs(root: Path) -> None:
+    versions_dir = root / "docs" / "versions"
+    version_dirs = [path for path in versions_dir.iterdir() if path.is_dir()]
+    if not version_dirs:
+        fail("docs/versions must contain at least one version directory")
+    for version_dir in version_dirs:
+        require_path(version_dir / "modules" / "tasks.md", directory=False)
+        require_path(version_dir / "evidence" / "admission", directory=True)
+        require_path(version_dir / "evidence" / "stage-scope", directory=True)
+        require_path(
+            version_dir / "evidence" / "stage-scope-manifest-meta.template.json",
+            directory=False,
+        )
 
 def check_test_results_ignored(root: Path) -> None:
     """test-results/ holds generated run artifacts and must stay untracked."""
@@ -151,6 +201,11 @@ def check_scripts(root: Path) -> None:
     require_contains(
         root / "test-run.sh",
         ("uv", ".venv", "uv run", "--active", "python", "harness/scripts/test-run.py"),
+    )
+    require_configured_module_suites(scripts_dir / "test-run.py")
+    require_contains(
+        scripts_dir / "test-run.py",
+        ("contract_steps_from_testplan", "contract_kind", "evidence_input_sha256"),
     )
 
 

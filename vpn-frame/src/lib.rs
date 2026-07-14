@@ -1,9 +1,14 @@
 pub mod client;
+pub mod control_channel;
 pub mod errors;
+pub mod pn_server_info;
+pub mod proxy_node;
 mod sequence;
 pub mod server;
 mod vpn_protocol;
 
+pub use pn_server_info::*;
+pub use proxy_node::*;
 use serde::de::Visitor;
 use serde::{Deserializer, Serializer, de};
 pub use sfo_cmd_server as cmd_server;

@@ -38,10 +38,32 @@ sn:
 # 本机 PN 代理服务。
 pn:
   enabled: true
+  # 流量统计批量上报间隔，不参与代理在线判定。
   report_interval_secs: 5
+  # 独立心跳周期及控制面离线超时；timeout 必须大于 interval。
+  heartbeat_interval_secs: 5
+  heartbeat_timeout_secs: 15
 
-  # 可选：当 PN 节点部署在容器、NAT 或负载均衡后面时，配置进程监听端口
-  # 对外映射后的端口。控制节点会把这里的端口下发给客户端。
+  # 流量采样形成完整逻辑批次后立即唤醒上传器。以下限制只约束队列和传输，
+  # 不限制一次采样最终可发送的记录总数。
+  # 当前待发送批次驻留内存；优雅退出会在限定时间内排空，但进程崩溃不保证恢复。
+  traffic_upload:
+    records_per_command: 128
+    concurrent_commands: 4
+    backlog_batches: 64
+    retry_delay_ms: 250
+    shutdown_drain_secs: 5
+
+  # 可选：显式声明客户端可访问的外网 IP。配置后该地址具有最高优先级，
+  # 程序不再探测本机出口地址，控制节点也不会用连接观测 IP 覆盖它。
+  # advertised_ip: "203.0.113.20"
+
+  # 未配置 advertised_ip 时，是否尝试上报本机监听/出口地址。默认 true。
+  # 关闭后，独立代理节点由控制面使用连接观测 IP；同机代理若无可用地址则不会下发。
+  report_local_address: true
+
+  # 可选：配置进程监听端口对外映射后的端口。端口映射与 advertised_ip 独立：
+  # 配置某协议时使用映射端口，未配置时保留该协议的监听端口。
   # port_mapping:
   #   quic: 3624
   #   tcp: 3624
