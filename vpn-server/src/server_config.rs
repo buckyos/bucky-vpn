@@ -12,6 +12,7 @@ use vpn_frame::PnServerInfo;
 
 const DEFAULT_YAML_CONFIG: &str = "config.yaml";
 const LEGACY_TOML_CONFIG: &str = "config.toml";
+const DEFAULT_NODE_TRAFFIC_IDEMPOTENCY_RETENTION_SECS: u64 = 600;
 
 #[derive(Clone, Debug)]
 pub struct SnServerConfig {
@@ -106,6 +107,10 @@ pub fn build_server_config(
         .set_default("sn.enabled", true)?
         .set_default("pn.enabled", true)?
         .set_default("pn.report_interval_secs", 5)?
+        .set_default(
+            "pn.node_traffic_idempotency_retention_secs",
+            DEFAULT_NODE_TRAFFIC_IDEMPOTENCY_RETENTION_SECS as i64,
+        )?
         .set_default("pn.heartbeat_interval_secs", 5)?
         .set_default("pn.heartbeat_timeout_secs", 15)?;
 
@@ -264,6 +269,28 @@ pub fn get_pn_server_config(
         port_mapping: get_pn_port_mapping_config(config)?,
         report_local_address: config.get_bool("pn.report_local_address").unwrap_or(true),
     })
+}
+
+pub fn get_node_traffic_idempotency_retention_secs(
+    config: &config::Config,
+) -> Result<u64, config::ConfigError> {
+    let key = "pn.node_traffic_idempotency_retention_secs";
+    let value = config.get::<config::Value>(key)?;
+    let parsed = match value.kind {
+        config::ValueKind::I64(value) => u64::try_from(value).ok(),
+        config::ValueKind::I128(value) => u64::try_from(value).ok(),
+        config::ValueKind::U64(value) => Some(value),
+        config::ValueKind::U128(value) => u64::try_from(value).ok(),
+        config::ValueKind::String(value) => value.parse::<u64>().ok(),
+        _ => None,
+    };
+
+    match parsed {
+        Some(value) if value > 0 => Ok(value),
+        _ => Err(config::ConfigError::Message(format!(
+            "{key} must be a positive integer that fits in u64"
+        ))),
+    }
 }
 
 pub fn should_start_pn_server(sn_config: &SnServerConfig, pn_config: &PnServerConfig) -> bool {

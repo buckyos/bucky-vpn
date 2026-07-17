@@ -1,9 +1,7 @@
 use crate::sqlite_store_factory::{SqliteStoreFactory, VpnServerRef};
 use p2p_frame::error::{P2pErrorCode, P2pResult, p2p_err};
 use p2p_frame::networks::ValidateResult;
-use p2p_frame::pn::{
-    PnConnectionValidateContext, PnConnectionValidation, PnConnectionValidator,
-};
+use p2p_frame::pn::{PnConnectionValidateContext, PnConnectionValidator};
 use std::collections::HashSet;
 use std::sync::Arc;
 use vpn_frame::server::{NetworkStore, NodeId, VpnStoreFactory};
@@ -38,22 +36,6 @@ impl PnConnectionValidator for VpnServerPnConnectionValidator {
                 ctx.from, ctx.to
             ))
         })
-    }
-
-    async fn validate_with_context(
-        &self,
-        ctx: &PnConnectionValidateContext,
-    ) -> P2pResult<PnConnectionValidation> {
-        let network_id = self.validate_network(ctx).await?;
-        let result = if network_id.is_some() {
-            ValidateResult::Accept
-        } else {
-            ValidateResult::Reject(format!(
-                "pn connection rejected by vpn server policy source={} target={}",
-                ctx.from, ctx.to
-            ))
-        };
-        Ok(PnConnectionValidation::new(result, network_id))
     }
 }
 

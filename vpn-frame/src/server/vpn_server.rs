@@ -603,6 +603,21 @@ where
             .await
     }
 
+    /// Applies per-node traffic reported by the identified proxy node.
+    ///
+    /// Process-local reporters use the same authorization, assignment, record
+    /// validation, and persistence path as reports received over the control
+    /// channel.
+    pub async fn report_node_traffic_from_pn_node(
+        &self,
+        pn_node_id: &NodeId,
+        reports: Vec<crate::NodeTrafficReport>,
+    ) -> VpnResult<Vec<crate::NodeTrafficReportResp>> {
+        self.pn_control_server
+            .report_node_traffic(pn_node_id, reports)
+            .await
+    }
+
     pub async fn get_peer_ip_list(&self, peer_id: &PeerId) -> VpnResult<Vec<IpAddr>> {
         self.cmd_server.get_peer_wan_ip(peer_id).await
     }

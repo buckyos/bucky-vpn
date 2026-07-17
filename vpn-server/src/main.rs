@@ -4,9 +4,9 @@ use crate::pn_server_info::with_pn_server_name;
 use crate::pn_server_manager::PnServerManager;
 use crate::pn_traffic_service::PnTrafficService;
 use crate::server_config::{
-    build_server_config, endpoints_to_pn_server, get_pn_server_config,
-    get_pn_traffic_upload_config, get_server_name_config, get_sn_admin_config, get_sn_http_config,
-    get_sn_jwt_config, get_sn_server_config,
+    build_server_config, endpoints_to_pn_server, get_node_traffic_idempotency_retention_secs,
+    get_pn_server_config, get_pn_traffic_upload_config, get_server_name_config,
+    get_sn_admin_config, get_sn_http_config, get_sn_jwt_config, get_sn_server_config,
     is_standalone_proxy_node, resolve_service_endpoints, select_default_config_file,
     should_start_pn_server, validate_server_mode,
 };
@@ -42,6 +42,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use vpn_frame::errors::VpnResult;
 use vpn_frame::server::{NodeId, VpnServer, VpnStoreFactory};
 
 mod api;
@@ -184,6 +185,27 @@ async fn start_standalone_proxy_ttp_runtime(
     ))
 }
 
+pub(crate) async fn drain_startup_expired_node_traffic_reports(
+    factory: &SqliteStoreFactory,
+) -> VpnResult<u64> {
+    const CLEANUP_BATCH_SIZE: usize = 1024;
+
+    let Some(cutoff_ms) = factory.expiration_cutoff_ms()? else {
+        return Ok(0);
+    };
+    let mut total_deleted = 0;
+    loop {
+        let deleted = factory
+            .cleanup_expired_node_traffic_reports(cutoff_ms, CLEANUP_BATCH_SIZE)
+            .await?;
+        total_deleted += deleted;
+        if deleted < CLEANUP_BATCH_SIZE as u64 {
+            return Ok(total_deleted);
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let data_folder = std::env::current_dir().unwrap();
@@ -210,6 +232,21 @@ async fn main() {
     let sn_server_config = get_sn_server_config(&config);
     let pn_config = get_pn_server_config(&config).unwrap();
     validate_server_mode(&sn_server_config, &pn_config).unwrap();
+    let node_traffic_idempotency_retention_secs =
+        get_node_traffic_idempotency_retention_secs(&config).unwrap();
+    let node_traffic_idempotency_retention =
+        std::time::Duration::from_secs(node_traffic_idempotency_retention_secs);
+    let node_traffic_speed_ttl_secs = pn_config
+        .report_interval_secs
+        .checked_mul(3)
+        .unwrap_or_else(|| {
+            panic!(
+                "pn.report_interval_secs={} cannot produce a safe node traffic speed ttl",
+                pn_config.report_interval_secs
+            )
+        });
+    let node_traffic_speed_ttl =
+        std::time::Duration::from_secs(node_traffic_speed_ttl_secs);
     let pn_traffic_upload_config = get_pn_traffic_upload_config(&config).unwrap();
     let sn_http_config = if sn_server_config.enabled {
         Some(get_sn_http_config(&config).unwrap())
@@ -336,11 +373,26 @@ async fn main() {
         let user_store = SqliteUserStore::new(pool.clone());
         user_store.init_user_store().await.unwrap();
 
-        let store_factory = Arc::new(SqliteStoreFactory::from_pool(pool));
+        let store_factory = Arc::new(
+            SqliteStoreFactory::from_pool_with_node_traffic_settings(
+                pool,
+                node_traffic_idempotency_retention,
+                node_traffic_speed_ttl,
+            ),
+        );
         {
             let mut store = store_factory.get_vpn_store().await.unwrap();
             store.init_db().await.unwrap();
         }
+        drain_startup_expired_node_traffic_reports(store_factory.as_ref())
+            .await
+            .unwrap_or_else(|err| {
+                panic!(
+                    "startup cleanup of expired pn node traffic reports failed: code={:?} msg={}",
+                    err.code(),
+                    err.msg()
+                )
+            });
 
         let pn_server_selector = Arc::new(PnServerManager::new_with_store_and_remote_ttl(
             pn_servers,
@@ -431,6 +483,20 @@ async fn main() {
             };
         let pn_server =
             PnServer::new_with_connection_validator(pn_ttp_server.clone().unwrap(), pn_validator);
+        const MAX_USER_TRAFFIC_RETENTION_SECS: u64 = 30 * 24 * 60 * 60;
+        let traffic_retention_secs = pn_config
+            .report_interval_secs
+            .checked_mul(2)
+            .filter(|retention| *retention <= MAX_USER_TRAFFIC_RETENTION_SECS)
+            .unwrap_or_else(|| {
+                panic!(
+                    "pn.report_interval_secs={} cannot produce a safe user traffic retention within 30 days",
+                    pn_config.report_interval_secs
+                )
+            });
+        pn_server.set_user_traffic_retention(std::time::Duration::from_secs(
+            traffic_retention_secs,
+        ));
         pn_server.start().await.unwrap();
         pn_server_runtime = Some(pn_server.clone());
         let traffic_service = if let Some((store_factory, _, _, _)) = control_runtime.as_ref() {
@@ -438,7 +504,7 @@ async fn main() {
         } else {
             PnTrafficService::new_without_store()
         };
-        traffic_service.set_proxy_connection_source(pn_server.clone());
+        traffic_service.set_node_traffic_source(pn_server.clone());
         traffic_service.set_proxy_upload_config(pn_traffic_upload_config);
         if let Some(client) = remote_control_client {
             traffic_service.set_remote_reporter(VpnCmdPnTrafficReporter::new(
@@ -475,6 +541,7 @@ async fn main() {
             PnTrafficService::new_without_store()
         }
     };
+    traffic_service.start_node_traffic_cleanup();
 
     if let Some((_, user_manager, vpn_server, pn_server_selector)) = control_runtime {
         let sn_http_config = sn_http_config.expect("sn http config is parsed when sn is enabled");
@@ -512,31 +579,22 @@ async fn main() {
         pn_traffic_upload_config.shutdown_drain_secs,
     );
     let drain_deadline = std::time::Instant::now() + drain_timeout;
-    let relay_quiesced = if let Some(pn_server) = pn_server_runtime.as_ref() {
-        pn_server
-            .shutdown(drain_deadline.saturating_duration_since(std::time::Instant::now()))
-            .await
-    } else {
-        true
-    };
     let shutdown_status = traffic_service
-        .shutdown_proxy_traffic(
+        .shutdown_node_traffic(
             drain_deadline.saturating_duration_since(std::time::Instant::now()),
         )
         .await;
-    if !relay_quiesced || !shutdown_status.is_success() {
-        let active_relays = pn_server_runtime
-            .as_ref()
-            .map(|pn_server| pn_server.active_relay_count())
-            .unwrap_or_default();
+    if let Some(pn_server) = pn_server_runtime.as_ref() {
+        pn_server.stop();
+    }
+    if !shutdown_status.is_success() {
         log::warn!(
-            "proxy traffic graceful drain incomplete relay_quiesced={} active_relays={} collector_exited={} final_collection_succeeded={} final_collection_error={:?} uploader_exited={} queued_batches={} queued_records={} oldest_batch_id={:?} terminal_rejected_records={} crash_recovery=in-memory-only",
-            relay_quiesced,
-            active_relays,
+            "node traffic graceful drain incomplete collector_exited={} final_collection_succeeded={} final_collection_error={:?} uploader_exited={} cleanup_exited={} queued_batches={} queued_records={} oldest_batch_id={:?} terminal_rejected_records={} crash_recovery=in-memory-only",
             shutdown_status.collector_exited,
             shutdown_status.final_collection_succeeded,
             shutdown_status.final_collection_error,
             shutdown_status.uploader_exited,
+            shutdown_status.cleanup_exited,
             shutdown_status.queue.queued_batches,
             shutdown_status.queue.queued_records,
             shutdown_status.queue.oldest_batch_id,

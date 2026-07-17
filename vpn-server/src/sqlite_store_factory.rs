@@ -29,74 +29,89 @@ pub struct SqliteVpnStore {
     conn: SqlConnection,
     transaction_state: SqliteTransactionState,
     traffic_speed_cache: Arc<Mutex<TrafficSpeedCache>>,
+    node_traffic_idempotency_retention: Duration,
+    node_traffic_control_clock: Arc<dyn NodeTrafficControlClock>,
 }
 
-const PROXY_TRAFFIC_SPEED_TTL: Duration = Duration::from_secs(15);
+pub const DEFAULT_NODE_TRAFFIC_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(10 * 60);
+pub const NODE_TRAFFIC_REPORT_CLEANUP_BATCH_SIZE: usize = 1024;
+pub const DEFAULT_NODE_TRAFFIC_SPEED_TTL: Duration = Duration::from_secs(15);
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct TrafficSpeedKey {
-    network_id: NetworkId,
-    node_a: NodeId,
-    node_b: NodeId,
+pub(crate) trait NodeTrafficControlClock: Send + Sync {
+    fn now_unix_ms(&self) -> VpnResult<u64>;
+}
+
+struct SystemNodeTrafficControlClock;
+
+impl NodeTrafficControlClock for SystemNodeTrafficControlClock {
+    fn now_unix_ms(&self) -> VpnResult<u64> {
+        let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| {
+            vpn_err!(
+                VpnErrorCode::InvalidParam,
+                "system clock is before the Unix epoch"
+            )
+        })?;
+        u64::try_from(elapsed.as_millis()).map_err(|_| {
+            vpn_err!(
+                VpnErrorCode::InvalidParam,
+                "system clock exceeds the node traffic timestamp range"
+            )
+        })
+    }
+}
+
+fn system_node_traffic_control_clock() -> Arc<dyn NodeTrafficControlClock> {
+    Arc::new(SystemNodeTrafficControlClock)
 }
 
 #[derive(Clone, Copy)]
 struct TrafficSpeedEntry {
-    node_a_to_b: u64,
-    node_b_to_a: u64,
+    tx_speed: u64,
+    rx_speed: u64,
     ended_at_ms: u64,
     expires_at: Instant,
 }
 
-#[derive(Default)]
 struct TrafficSpeedCache {
-    pairs: HashMap<TrafficSpeedKey, TrafficSpeedEntry>,
+    nodes: HashMap<NodeId, TrafficSpeedEntry>,
+    configured_ttl: Duration,
+}
+
+impl Default for TrafficSpeedCache {
+    fn default() -> Self {
+        Self::new(DEFAULT_NODE_TRAFFIC_SPEED_TTL)
+    }
 }
 
 impl TrafficSpeedCache {
-    fn retain_live(&mut self) {
-        let now = Instant::now();
-        self.pairs.retain(|_, entry| entry.expires_at > now);
+    fn new(configured_ttl: Duration) -> Self {
+        Self {
+            nodes: HashMap::new(),
+            configured_ttl,
+        }
     }
 
-    fn update(&mut self, report: &ProxyTrafficReport) {
+    fn retain_live(&mut self) {
+        let now = Instant::now();
+        self.nodes.retain(|_, entry| entry.expires_at > now);
+    }
+
+    fn update(&mut self, report: &NodeTrafficReport) {
         self.retain_live();
-        let sample = &report.traffic_sample;
-        let forward = sample.source_id.as_slice() <= sample.dest_id.as_slice();
-        let (node_a, node_b, node_a_to_b, node_b_to_a) = if forward {
-            (
-                sample.source_id.clone(),
-                sample.dest_id.clone(),
-                sample.source_to_dest.speed_bytes_per_sec,
-                sample.dest_to_source.speed_bytes_per_sec,
-            )
-        } else {
-            (
-                sample.dest_id.clone(),
-                sample.source_id.clone(),
-                sample.dest_to_source.speed_bytes_per_sec,
-                sample.source_to_dest.speed_bytes_per_sec,
-            )
-        };
-        let key = TrafficSpeedKey {
-            network_id: sample.network_id,
-            node_a,
-            node_b,
-        };
         if self
-            .pairs
-            .get(&key)
+            .nodes
+            .get(&report.delta.node_id)
             .is_some_and(|entry| entry.ended_at_ms > report.ended_at_ms)
         {
             return;
         }
-        self.pairs.insert(
-            key,
+        self.nodes.insert(
+            report.delta.node_id.clone(),
             TrafficSpeedEntry {
-                node_a_to_b,
-                node_b_to_a,
+                tx_speed: report.delta.tx_speed,
+                rx_speed: report.delta.rx_speed,
                 ended_at_ms: report.ended_at_ms,
-                expires_at: Instant::now() + PROXY_TRAFFIC_SPEED_TTL,
+                expires_at: Instant::now() + self.configured_ttl,
             },
         );
     }
@@ -199,18 +214,33 @@ impl SqliteVpnStore {
             conn,
             transaction_state: SqliteTransactionState::Idle,
             traffic_speed_cache: Arc::new(Mutex::new(TrafficSpeedCache::default())),
+            node_traffic_idempotency_retention: DEFAULT_NODE_TRAFFIC_IDEMPOTENCY_RETENTION,
+            node_traffic_control_clock: system_node_traffic_control_clock(),
         }
     }
 
     fn new_with_traffic_speed_cache(
         conn: SqlConnection,
         traffic_speed_cache: Arc<Mutex<TrafficSpeedCache>>,
+        node_traffic_idempotency_retention: Duration,
+        node_traffic_control_clock: Arc<dyn NodeTrafficControlClock>,
     ) -> Self {
         Self {
             conn,
             transaction_state: SqliteTransactionState::Idle,
             traffic_speed_cache,
+            node_traffic_idempotency_retention,
+            node_traffic_control_clock,
         }
+    }
+
+    fn node_traffic_idempotency_retention_ms(&self) -> VpnResult<u64> {
+        u64::try_from(self.node_traffic_idempotency_retention.as_millis()).map_err(|_| {
+            vpn_err!(
+                VpnErrorCode::InvalidParam,
+                "node traffic idempotency retention exceeds millisecond range"
+            )
+        })
     }
 
     async fn finish_transaction<R>(&mut self, operation: VpnResult<R>) -> VpnResult<R> {
@@ -248,7 +278,6 @@ impl SqliteVpnStore {
             .execute_sql(sql_query(sql))
             .await
             .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
-
         let sql = r#"CREATE TABLE IF NOT EXISTS pn_node_traffic_report (
             pn_node_id varchar(45) NOT NULL,
             report_id TEXT NOT NULL,
@@ -257,6 +286,12 @@ impl SqliteVpnStore {
             applied_at_ms integer NOT NULL,
             PRIMARY KEY (pn_node_id, report_id)
         )"#;
+        self.conn
+            .execute_sql(sql_query(sql))
+            .await
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        let sql = r#"CREATE INDEX IF NOT EXISTS pn_node_traffic_report_applied_at_ms
+            ON pn_node_traffic_report(applied_at_ms)"#;
         self.conn
             .execute_sql(sql_query(sql))
             .await
@@ -496,6 +531,46 @@ impl SqliteVpnStore {
         Ok(node_ids)
     }
 
+    pub async fn cleanup_expired_node_traffic_reports(
+        &mut self,
+        cutoff_ms: u64,
+        limit: usize,
+    ) -> VpnResult<u64> {
+        if limit == 0 || limit > NODE_TRAFFIC_REPORT_CLEANUP_BATCH_SIZE {
+            return Err(vpn_err!(
+                VpnErrorCode::InvalidParam,
+                "node traffic report cleanup limit must be between 1 and {}",
+                NODE_TRAFFIC_REPORT_CLEANUP_BATCH_SIZE
+            ));
+        }
+        let cutoff_ms = sqlite_i64(cutoff_ms, "node traffic cleanup cutoff")?;
+        let limit = i64::try_from(limit).map_err(|_| {
+            vpn_err!(
+                VpnErrorCode::InvalidParam,
+                "node traffic report cleanup limit exceeds sqlite integer range"
+            )
+        })?;
+
+        self.begin_transaction().await?;
+        let result: VpnResult<u64> = async {
+            let sql = r#"DELETE FROM pn_node_traffic_report
+                WHERE rowid IN (
+                    SELECT rowid FROM pn_node_traffic_report
+                    WHERE applied_at_ms <= ?
+                    ORDER BY applied_at_ms, rowid
+                    LIMIT ?
+                )"#;
+            let result = self
+                .conn
+                .execute_sql(sql_query(sql).bind(cutoff_ms).bind(limit))
+                .await
+                .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+            Ok(result.rows_affected())
+        }
+        .await;
+        self.finish_transaction(result).await
+    }
+
     pub async fn get_persisted_node_traffic(
         &mut self,
         node_id: &NodeId,
@@ -562,28 +637,22 @@ impl SqliteVpnStore {
         &mut self,
         group_id: &NetworkGroupId,
     ) -> VpnResult<PersistedTrafficStats> {
-        let sql = r#"SELECT tx_bytes, rx_bytes FROM pn_group_traffic_stat WHERE group_id = ?"#;
-        match self
+        let sql = r#"SELECT
+                COALESCE(SUM(stats.tx_bytes), 0) AS tx_bytes,
+                COALESCE(SUM(stats.rx_bytes), 0) AS rx_bytes
+            FROM pn_node_traffic_stat stats
+            INNER JOIN (
+                SELECT DISTINCT node_id FROM joined_node WHERE group_id = ?
+            ) owned_nodes ON owned_nodes.node_id = stats.node_id"#;
+        let row = self
             .conn
             .query_one(sql_query(sql).bind(*group_id as i64))
             .await
-        {
-            Ok(row) => Ok(PersistedTrafficStats {
-                tx_bytes: row.get::<i64, _>("tx_bytes") as u64,
-                rx_bytes: row.get::<i64, _>("rx_bytes") as u64,
-            }),
-            Err(err) => {
-                if err.code() == SqlErrorCode::NotFound {
-                    Ok(PersistedTrafficStats::default())
-                } else {
-                    Err(vpn_err!(
-                        VpnErrorCode::IoError,
-                        "query group traffic {} failed",
-                        group_id
-                    ))
-                }
-            }
-        }
+            .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+        Ok(PersistedTrafficStats {
+            tx_bytes: row.get::<i64, _>("tx_bytes") as u64,
+            rx_bytes: row.get::<i64, _>("rx_bytes") as u64,
+        })
     }
 
     pub async fn add_persisted_group_traffic(
@@ -1014,16 +1083,14 @@ impl PnStore for SqliteVpnStore {
         }
         let started_at_ms = sqlite_i64(report.started_at_ms, "node report start timestamp")?;
         let ended_at_ms = sqlite_i64(report.ended_at_ms, "node report end timestamp")?;
-        let applied_at_ms = sqlite_i64(
-            Self::now_secs().checked_mul(1000).ok_or_else(|| {
-                vpn_err!(VpnErrorCode::InvalidParam, "node report applied timestamp overflow")
-            })?,
-            "node report applied timestamp",
-        )?;
+        let applied_at_ms = self.node_traffic_control_clock.now_unix_ms()?;
+        let retention_ms = self.node_traffic_idempotency_retention_ms()?;
+        let cutoff_ms = applied_at_ms.checked_sub(retention_ms);
+        let applied_at_ms = sqlite_i64(applied_at_ms, "node report applied timestamp")?;
 
         self.begin_transaction().await?;
         let result: VpnResult<ProxyTrafficReportApplyResult> = async {
-            let duplicate_sql = r#"SELECT report_id FROM pn_node_traffic_report
+            let duplicate_sql = r#"SELECT applied_at_ms FROM pn_node_traffic_report
                 WHERE pn_node_id = ? AND report_id = ?"#;
             match self
                 .conn
@@ -1034,7 +1101,23 @@ impl PnStore for SqliteVpnStore {
                 )
                 .await
             {
-                Ok(_) => return Ok(ProxyTrafficReportApplyResult::Duplicate),
+                Ok(row) => {
+                    let previous_applied_at_ms: i64 = row.get("applied_at_ms");
+                    if cutoff_ms.is_none_or(|cutoff_ms| previous_applied_at_ms > cutoff_ms as i64) {
+                        return Ok(ProxyTrafficReportApplyResult::Duplicate);
+                    }
+
+                    let delete_sql = r#"DELETE FROM pn_node_traffic_report
+                        WHERE pn_node_id = ? AND report_id = ?"#;
+                    self.conn
+                        .execute_sql(
+                            sql_query(delete_sql)
+                                .bind(node_id_db_key(pn_node_id))
+                                .bind(report.report_id.0.as_str()),
+                        )
+                        .await
+                        .map_err(into_vpn_err!(VpnErrorCode::IoError))?;
+                }
                 Err(err) if err.code() == SqlErrorCode::NotFound => {}
                 Err(_) => {
                     return Err(vpn_err!(
@@ -1067,15 +1150,18 @@ impl PnStore for SqliteVpnStore {
             };
             self.add_persisted_node_traffic(&delta.node_id, persisted)
                 .await?;
-            for joined in self.get_joined_network_group(&delta.node_id).await? {
-                self.add_persisted_group_traffic(&joined.group_id, persisted)
-                    .await?;
-            }
             Ok(ProxyTrafficReportApplyResult::Applied)
         }
         .await;
 
-        self.finish_transaction(result).await
+        let result = self.finish_transaction(result).await?;
+        if matches!(
+            result,
+            ProxyTrafficReportApplyResult::Applied | ProxyTrafficReportApplyResult::Duplicate
+        ) {
+            self.traffic_speed_cache.lock().unwrap().update(report);
+        }
+        Ok(result)
     }
 
     async fn add_pn_traffic_delta(
@@ -1175,14 +1261,10 @@ impl PnStore for SqliteVpnStore {
             self.insert_proxy_traffic_report(pn_node_id, report).await?;
             let sample = &report.traffic_sample;
             self.add_proxy_traffic_sample(sample).await?;
-            self.add_proxy_traffic_to_legacy_stats(sample).await?;
             Ok(ProxyTrafficReportApplyResult::Applied)
         }
         .await;
         let result = self.finish_transaction(result).await?;
-        if result == ProxyTrafficReportApplyResult::Applied {
-            self.traffic_speed_cache.lock().unwrap().update(report);
-        }
         Ok(ProxyTrafficReportResp {
                     report_id: report.report_id.clone(),
                     result,
@@ -1974,10 +2056,36 @@ ORDER BY network.id"#;
 pub struct SqliteStoreFactory {
     pool: SqlPool,
     traffic_speed_cache: Arc<Mutex<TrafficSpeedCache>>,
+    node_traffic_idempotency_retention: Duration,
+    node_traffic_control_clock: Arc<dyn NodeTrafficControlClock>,
 }
 
 impl SqliteStoreFactory {
     pub async fn create(db_path: &str) -> VpnResult<Self> {
+        Self::create_with_node_traffic_idempotency_retention(
+            db_path,
+            DEFAULT_NODE_TRAFFIC_IDEMPOTENCY_RETENTION,
+        )
+        .await
+    }
+
+    pub async fn create_with_node_traffic_idempotency_retention(
+        db_path: &str,
+        node_traffic_idempotency_retention: Duration,
+    ) -> VpnResult<Self> {
+        Self::create_with_node_traffic_settings(
+            db_path,
+            node_traffic_idempotency_retention,
+            DEFAULT_NODE_TRAFFIC_SPEED_TTL,
+        )
+        .await
+    }
+
+    pub async fn create_with_node_traffic_settings(
+        db_path: &str,
+        node_traffic_idempotency_retention: Duration,
+        node_traffic_speed_ttl: Duration,
+    ) -> VpnResult<Self> {
         let pool = SqlPool::open(db_path, 300, Some(SqliteJournalMode::Wal))
             .await
             .map_err(into_vpn_err!(
@@ -1987,47 +2095,122 @@ impl SqliteStoreFactory {
             ))?;
         Ok(Self {
             pool,
-            traffic_speed_cache: Arc::new(Mutex::new(TrafficSpeedCache::default())),
+            traffic_speed_cache: Arc::new(Mutex::new(TrafficSpeedCache::new(
+                node_traffic_speed_ttl,
+            ))),
+            node_traffic_idempotency_retention,
+            node_traffic_control_clock: system_node_traffic_control_clock(),
         })
     }
 
     pub fn from_pool(pool: SqlPool) -> Self {
+        Self::from_pool_with_node_traffic_idempotency_retention(
+            pool,
+            DEFAULT_NODE_TRAFFIC_IDEMPOTENCY_RETENTION,
+        )
+    }
+
+    pub fn from_pool_with_node_traffic_idempotency_retention(
+        pool: SqlPool,
+        node_traffic_idempotency_retention: Duration,
+    ) -> Self {
+        Self::from_pool_with_node_traffic_settings(
+            pool,
+            node_traffic_idempotency_retention,
+            DEFAULT_NODE_TRAFFIC_SPEED_TTL,
+        )
+    }
+
+    pub fn from_pool_with_node_traffic_settings(
+        pool: SqlPool,
+        node_traffic_idempotency_retention: Duration,
+        node_traffic_speed_ttl: Duration,
+    ) -> Self {
+        Self::from_pool_with_node_traffic_settings_and_clock(
+            pool,
+            node_traffic_idempotency_retention,
+            node_traffic_speed_ttl,
+            system_node_traffic_control_clock(),
+        )
+    }
+
+    pub(crate) fn from_pool_with_node_traffic_settings_and_clock(
+        pool: SqlPool,
+        node_traffic_idempotency_retention: Duration,
+        node_traffic_speed_ttl: Duration,
+        node_traffic_control_clock: Arc<dyn NodeTrafficControlClock>,
+    ) -> Self {
         Self {
             pool,
-            traffic_speed_cache: Arc::new(Mutex::new(TrafficSpeedCache::default())),
+            traffic_speed_cache: Arc::new(Mutex::new(TrafficSpeedCache::new(
+                node_traffic_speed_ttl,
+            ))),
+            node_traffic_idempotency_retention,
+            node_traffic_control_clock,
         }
+    }
+
+    pub fn node_traffic_idempotency_retention(&self) -> Duration {
+        self.node_traffic_idempotency_retention
+    }
+
+    pub fn expiration_cutoff_ms(&self) -> VpnResult<Option<u64>> {
+        let now_ms = self.node_traffic_control_clock.now_unix_ms()?;
+        Ok(now_ms.checked_sub(u64::try_from(
+            self.node_traffic_idempotency_retention.as_millis(),
+        )
+        .map_err(|_| {
+            vpn_err!(
+                VpnErrorCode::InvalidParam,
+                "node traffic idempotency retention exceeds millisecond range"
+            )
+        })?))
+    }
+
+    pub async fn cleanup_expired_node_traffic_reports(
+        &self,
+        cutoff_ms: u64,
+        limit: usize,
+    ) -> VpnResult<u64> {
+        let mut store = SqliteVpnStore::new_with_traffic_speed_cache(
+            self.pool
+                .get_conn()
+                .await
+                .map_err(into_vpn_err!(VpnErrorCode::IoError))?,
+            self.traffic_speed_cache.clone(),
+            self.node_traffic_idempotency_retention,
+            self.node_traffic_control_clock.clone(),
+        );
+        store
+            .cleanup_expired_node_traffic_reports(cutoff_ms, limit)
+            .await
     }
 
     pub fn get_node_traffic_speed(&self, node_id: &NodeId) -> PersistedTrafficStats {
         let mut cache = self.traffic_speed_cache.lock().unwrap();
         cache.retain_live();
-        cache.pairs.iter().fold(
-            PersistedTrafficStats::default(),
-            |mut total, (key, entry)| {
-                if &key.node_a == node_id {
-                    total.tx_bytes = total.tx_bytes.saturating_add(entry.node_a_to_b);
-                    total.rx_bytes = total.rx_bytes.saturating_add(entry.node_b_to_a);
-                } else if &key.node_b == node_id {
-                    total.tx_bytes = total.tx_bytes.saturating_add(entry.node_b_to_a);
-                    total.rx_bytes = total.rx_bytes.saturating_add(entry.node_a_to_b);
-                }
-                total
+        cache.nodes.get(node_id).map_or_else(
+            PersistedTrafficStats::default,
+            |entry| PersistedTrafficStats {
+                tx_bytes: entry.tx_speed,
+                rx_bytes: entry.rx_speed,
             },
         )
     }
 
-    pub fn get_network_traffic_speed(&self, network_ids: &HashSet<NetworkId>) -> u64 {
+    pub fn get_group_traffic_speed(&self, node_ids: &[NodeId]) -> PersistedTrafficStats {
         let mut cache = self.traffic_speed_cache.lock().unwrap();
         cache.retain_live();
-        cache
-            .pairs
-            .iter()
-            .filter(|(key, _)| network_ids.contains(&key.network_id))
-            .fold(0u64, |total, (_, entry)| {
+        node_ids.iter().fold(
+            PersistedTrafficStats::default(),
+            |mut total, node_id| {
+                if let Some(entry) = cache.nodes.get(node_id) {
+                    total.tx_bytes = total.tx_bytes.saturating_add(entry.tx_speed);
+                    total.rx_bytes = total.rx_bytes.saturating_add(entry.rx_speed);
+                }
                 total
-                    .saturating_add(entry.node_a_to_b)
-                    .saturating_add(entry.node_b_to_a)
-            })
+            },
+        )
     }
 }
 
@@ -2040,6 +2223,8 @@ impl VpnStoreFactory<SqliteVpnStore> for SqliteStoreFactory {
                 .await
                 .map_err(into_vpn_err!(VpnErrorCode::IoError))?,
             self.traffic_speed_cache.clone(),
+            self.node_traffic_idempotency_retention,
+            self.node_traffic_control_clock.clone(),
         )))
     }
 }
@@ -2434,17 +2619,13 @@ mod tests {
         assert_eq!(total.rx_bytes, 80);
 
         let source_stats = store.get_persisted_node_traffic(&source_id).await.unwrap();
-        assert_eq!(source_stats.tx_bytes, 120);
-        assert_eq!(source_stats.rx_bytes, 80);
+        assert_eq!(source_stats, PersistedTrafficStats::default());
         let group_stats = store.get_persisted_group_traffic(&group_id).await.unwrap();
-        assert_eq!(group_stats.tx_bytes, 200);
-        assert_eq!(group_stats.rx_bytes, 200);
+        assert_eq!(group_stats, PersistedTrafficStats::default());
 
         {
             let cache = store.traffic_speed_cache.lock().unwrap();
-            let speed = cache.pairs.values().next().unwrap();
-            assert_eq!(speed.node_a_to_b, 24);
-            assert_eq!(speed.node_b_to_a, 16);
+            assert!(cache.nodes.is_empty());
         }
 
         let mut duplicate_report = report.clone();
@@ -2465,9 +2646,7 @@ mod tests {
 
         {
             let cache = store.traffic_speed_cache.lock().unwrap();
-            let speed = cache.pairs.values().next().unwrap();
-            assert_eq!(speed.node_a_to_b, 24);
-            assert_eq!(speed.node_b_to_a, 16);
+            assert!(cache.nodes.is_empty());
         }
 
         let total = store
@@ -2477,12 +2656,6 @@ mod tests {
         assert_eq!(total.tx_bytes, 120);
         assert_eq!(total.rx_bytes, 80);
 
-        {
-            let mut cache = store.traffic_speed_cache.lock().unwrap();
-            cache.pairs.values_mut().next().unwrap().expires_at = Instant::now();
-            cache.retain_live();
-            assert!(cache.pairs.is_empty());
-        }
     }
 
     #[tokio::test]
@@ -2517,11 +2690,13 @@ mod tests {
         let report = NodeTrafficReport {
             report_id: NodeTrafficReportId("node-record-rollback".to_string()),
             started_at_ms: 100,
-            ended_at_ms: 200,
+            ended_at_ms: 60_100,
             delta: NodeTrafficDelta {
                 node_id: first.clone(),
                 tx_bytes: 10,
                 rx_bytes: 20,
+                tx_speed: 3,
+                rx_speed: 4,
             },
         };
         let trigger = format!(
@@ -2551,6 +2726,7 @@ mod tests {
                 .unwrap(),
             ProxyTrafficReportApplyResult::Applied
         );
+        store.traffic_speed_cache.lock().unwrap().nodes.clear();
         assert_eq!(
             store
                 .apply_node_traffic_report(&pn_node_id, &report)
@@ -2565,5 +2741,18 @@ mod tests {
                 rx_bytes: 20,
             }
         );
+        let speed = store.traffic_speed_cache.lock().unwrap().nodes[&first];
+        assert_eq!(speed.tx_speed, 3);
+        assert_eq!(speed.rx_speed, 4);
+        assert!(
+            speed.expires_at.saturating_duration_since(Instant::now())
+                >= Duration::from_secs(170)
+        );
+        {
+            let mut cache = store.traffic_speed_cache.lock().unwrap();
+            cache.nodes.get_mut(&first).unwrap().expires_at = Instant::now();
+            cache.retain_live();
+            assert!(!cache.nodes.contains_key(&first));
+        }
     }
 }
