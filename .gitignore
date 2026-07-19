@@ -1,5 +1,6 @@
 /target
 .idea
 __pycache__/
+.harness/
 test-results/
 test_data

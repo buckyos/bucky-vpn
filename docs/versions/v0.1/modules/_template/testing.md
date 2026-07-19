@@ -1,15 +1,11 @@
 ---
-module: example-module
-task_name: 001-example-task
-submodule: 001-example-task
-version: v0.1
+task_manifest: task.yaml
 status: draft
-approved_by:
-approved_at:
-approved_content_sha256:
 ---
 
 # [Module Name] Testing
+
+Risk profile: ./risk-profile.yaml
 
 > This optional file records post-implementation test design. Generate test cases from `proposal.md`, `design.md`, and the delivered code, then keep this file aligned with the actual test implementation.
 
@@ -22,7 +18,7 @@ approved_content_sha256:
 
 ## Unified Test Entry
 - Machine-readable task plan: `docs/versions/<version>/modules/<module>/<task-name>/testplan.yaml`
-- Task all: `uv run --active python ./harness/scripts/test-run.py <module>/<task-name> all`
+- Task all: `UV_CACHE_DIR=.harness/uv-cache uv run --active python ./harness/scripts/test-run.py <module>/<task-name> all`
 - Single-task boundary: do not run package/module scopes, `all all`, root shortcuts, or quality gates
 - Registration: every generated or changed automated test is reachable through the unified entrypoint.
 
@@ -107,7 +103,7 @@ approved_content_sha256:
 - [ ] `testplan.yaml` exists for completed testing work, unless a repo-local versioned exception explicitly permits missing machine-readable test metadata and records reason, owner, risk, and acceptance impact
 - [ ] Generated tests are registered with `harness/scripts/test-run.py`
 - [ ] New unit tests live in dedicated test files, test directories, or test-only crates/packages; no new inline test bodies were added to production source files
-- [ ] `uv run --active python ./harness/scripts/test-run.py <module>/<task-name> all` reaches only this task's plan
+- [ ] `UV_CACHE_DIR=.harness/uv-cache uv run --active python ./harness/scripts/test-run.py <module>/<task-name> all` reaches only this task's plan
 - [ ] This task did not directly select package/module runtime suites, `all all`, root shortcuts, or quality gates; any broad compile-only command was a required task-local consumer-closure step
 - [ ] Breaking/migration-required APIs and crate-root/build-surface changes include the required task-local contract checks and a complete repository consumer closure
 - [ ] Module-level tests cover key boundary behavior and failure paths
@@ -122,9 +118,3 @@ approved_content_sha256:
 - [ ] Every validation path maps to a concrete behavior, risk, or success criterion
 - [ ] Any `manual` or `disabled` layer has the same reason in `testing.md` and `testplan.yaml`
 - [ ] Relevant automated tests pass
-
-## Approval Record
-<!-- Fill only when the user explicitly approves this document. Agents MUST NOT fill this section or set `status: approved` on their own initiative. `approver` must match front matter `approved_by`; `user_statement` must quote the user's approval instruction verbatim. The same edit must record front matter `approved_content_sha256` (generate via `schema-check.py --print-approval-hash <this-file>`); any later content edit invalidates approved evidence and MUST NOT be repaired by refreshing the hash. Use a sibling amendment/fix task for approved-document corrections. Auto-pipeline approvals use front matter plus `pipeline/plan.md` launch evidence instead of this section. -->
-- approver:
-- approval_date:
-- user_statement: ""

@@ -11,7 +11,7 @@ bucky-raw-codec = {version = "0.1", features = ["derive"]}
 p2p-frame = {git = "https://github.com/buckyos/bucky-p2p.git", features = ["x509"]}
 sfo-account = { version = "0.1", features = ["login"]}
 vpn-frame = { path = "../vpn-frame"}
-sfo-sql = { path = "../vendor/sfo-sql", version = "0.3.3", features = ["sqlite"]}
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 sfo-log = "0.1.3"
 clap = "4.5.31"
 config = "0.15.8"

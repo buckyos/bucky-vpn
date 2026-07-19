@@ -10,7 +10,7 @@
 # still run inside their owning tasks.
 
 if command -v uv >/dev/null 2>&1; then
-    uv run --active python ./harness/scripts/check-all.py
+    UV_CACHE_DIR=.harness/uv-cache uv run --active python ./harness/scripts/check-all.py
 else
     python3 ./harness/scripts/check-all.py 2>/dev/null || python ./harness/scripts/check-all.py
 fi

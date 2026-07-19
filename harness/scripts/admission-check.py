@@ -11,7 +11,7 @@ coverage quotes that the checker re-verifies against the current documents,
 so stale or fabricated evidence fails closed.
 
 On success the checker writes a machine-readable admission stamp
-(`docs/versions/<version>/evidence/admission/<evidence-id>.<module>[.<submodule>][.<target-module>].stamp.json`)
+(`.harness/evidence/<version>/admission/<evidence-id>.<module>[.<submodule>][.<target-module>].stamp.json`)
 recording the bound document hashes and the admitted design Scope Paths.
 Later stages reuse the stamp while its bound inputs remain unchanged.
 `--verify-only` is reserved for explicit audits or relevant-input changes.
@@ -26,6 +26,8 @@ import json
 import re
 import sys
 from pathlib import Path
+
+from task_manifest import TaskManifestError, parse_task_manifest
 
 
 FORBIDDEN_BROAD_IDS = {"all", "any", "bugfix", "change", "cleanup", "misc", "module", "refactor", "task"}
@@ -170,15 +172,29 @@ def require_approval_provenance(root: Path, path: Path, text: str, data: dict[st
 def require_approved(root: Path, path: Path, module: str, version: str, submodule: str | None = None) -> None:
     text = read_text(path)
     data = front_matter(text, path)
-    if data.get("module") != module:
-        fail(f"{path} module mismatch: expected {module}, got {data.get('module', '<missing>')}")
-    if data.get("version") != version:
-        fail(f"{path} version mismatch: expected {version}, got {data.get('version', '<missing>')}")
+    if data.get("task_manifest"):
+        if data["task_manifest"] != "task.yaml":
+            fail(f"{path} task_manifest must be task.yaml")
+        try:
+            manifest = parse_task_manifest(path.parent / "task.yaml")
+        except TaskManifestError as error:
+            fail(str(error))
+        identity = {
+            "module": manifest.get("packet_module"),
+            "version": manifest.get("version"),
+            "task_name": manifest.get("task_name"),
+        }
+    else:
+        identity = data
+    if identity.get("module") != module:
+        fail(f"{path} module mismatch: expected {module}, got {identity.get('module', '<missing>')}")
+    if identity.get("version") != version:
+        fail(f"{path} version mismatch: expected {version}, got {identity.get('version', '<missing>')}")
     if submodule:
         validate_task_name(submodule, "--submodule")
-        if data.get("task_name") != submodule:
-            fail(f"{path} task_name mismatch: expected {submodule}, got {data.get('task_name', '<missing>')}")
-    if submodule and data.get("submodule") not in {None, "", submodule}:
+        if identity.get("task_name") != submodule:
+            fail(f"{path} task_name mismatch: expected {submodule}, got {identity.get('task_name', '<missing>')}")
+    if not data.get("task_manifest") and submodule and data.get("submodule") not in {None, "", submodule}:
         fail(f"{path} submodule mismatch: expected {submodule}, got {data.get('submodule')}")
     if data.get("status") != "approved":
         fail(f"{path} is not approved")
@@ -722,12 +738,12 @@ def main() -> int:
     evidence_path = Path(args.evidence_file)
     if not evidence_path.is_absolute():
         evidence_path = Path(args.root) / evidence_path
-    expected_evidence_dir = root / "docs" / "versions" / args.version / "evidence" / "admission"
+    expected_evidence_dir = root / ".harness" / "evidence" / args.version / "admission"
     try:
         if evidence_path.parent.resolve() != expected_evidence_dir.resolve():
             fail(
                 "--evidence-file must be under "
-                f"docs/versions/{args.version}/evidence/admission/ for this version"
+                f".harness/evidence/{args.version}/admission/ for this version"
             )
     except OSError as error:
         fail(f"cannot resolve evidence directory for {evidence_path}: {error}")

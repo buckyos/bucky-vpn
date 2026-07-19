@@ -11,6 +11,8 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 export UV_PROJECT_ENVIRONMENT=".venv"
+export UV_CACHE_DIR="$ROOT_DIR/.harness/uv-cache"
+mkdir -p "$UV_CACHE_DIR"
 VENV_PYTHON=".venv/bin/python"
 
 if [ ! -x "$VENV_PYTHON" ]; then

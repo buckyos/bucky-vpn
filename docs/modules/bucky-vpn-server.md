@@ -20,7 +20,7 @@ VPN 服务端 Rust 应用，负责把账户体系、SQLite 持久化、P2P 基�
 - `p2p-frame`
 - `sfo-account`
 - `sfo-http`
-- `sfo-sql`
+- `sqlx`（仅启用 Tokio runtime 与 SQLite 所需特性，由服务端直接拥有连接池和事务生命周期）
 - `vpn-server/Cargo.toml` 中声明的其余装配依赖
 
 ## 边界

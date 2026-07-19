@@ -10,6 +10,7 @@ use crate::server_config::{
     is_standalone_proxy_node, resolve_service_endpoints, select_default_config_file,
     should_start_pn_server, validate_server_mode,
 };
+use crate::sqlx_store::open_sqlite_pool;
 use crate::sqlite_store_factory::{P2pSnCmdServer, SqliteStoreFactory};
 use crate::user_store::{SqliteUserStore, User};
 use crate::pn_control_client::{
@@ -37,7 +38,7 @@ use sfo_http::openapi::utoipa;
 use sfo_http::openapi::utoipa::OpenApi;
 use sfo_http::tide_server::TideHttpServer;
 use sfo_reuseport::{ServerRuntime, ServerRuntimeConfig};
-use sfo_sql::sqlite::{SqlPool, SqliteJournalMode};
+use sqlx::sqlite::SqliteJournalMode;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -53,6 +54,7 @@ mod pn_server_info;
 mod pn_server_manager;
 mod pn_traffic_service;
 mod server_config;
+mod sqlx_store;
 mod sqlite_store_factory;
 mod user_store;
 
@@ -366,7 +368,7 @@ async fn main() {
             .as_ref()
             .expect("sn jwt config is parsed when sn is enabled");
         let db_path = data_dir.join("vpn.db").to_string_lossy().to_string();
-        let pool = SqlPool::open(db_path.as_str(), 5, Some(SqliteJournalMode::Wal))
+        let pool = open_sqlite_pool(db_path.as_str(), 5, Some(SqliteJournalMode::Wal))
             .await
             .unwrap();
 

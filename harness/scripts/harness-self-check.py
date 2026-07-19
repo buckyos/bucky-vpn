@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import ast
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,20 +21,34 @@ REQUIRED_RULES = (
     "design-doc-rules.md",
     "testing-doc-rules.md",
     "test-design-rules.md",
-    "implementation-admission-rules.md",
+    "implementation-rules.md",
     "schema-validation-rules.md",
     "unified-test-entry-rules.md",
     "acceptance-task-rules.md",
     "acceptance-review-rules.md",
     "quality-gate-rules.md",
     "auto-pipeline-rules.md",
+    "triggers/contract-protocol.md",
+    "triggers/data-schema.md",
+    "triggers/security.md",
+    "triggers/runtime-integration.md",
+    "triggers/build-config-deployment.md",
+    "triggers/ui-workflow.md",
+    "triggers/harness-process.md",
 )
 
 REQUIRED_SCRIPTS = (
     "test-run.py",
+    "context.py",
+    "harness-check.py",
+    "lifecycle-check.py",
+    "task-transition.py",
+    "task_manifest.py",
     "schema-check.py",
     "task-seq.py",
-    "admission-check.py",
+    "task-index.py",
+    "risk-profile-check.py",
+    "baseline-snapshot.py",
     "stage-scope-check.py",
     "harness-self-check.py",
     "doc-structure-check.py",
@@ -41,6 +56,8 @@ REQUIRED_SCRIPTS = (
     "testing-coverage-check.py",
     "consumer-closure-check.py",
     "acceptance-report-check.py",
+    "completion-report-check.py",
+    "lower-tier-check.py",
     "pipeline-plan-check.py",
     "check-all.py",
     "quality-check.py",
@@ -133,6 +150,8 @@ def check_root(root: Path) -> None:
     require_path(root / "test-run.sh", directory=False)
     require_path(root / "docs", directory=True)
     require_path(root / "docs" / "architecture", directory=True)
+    require_path(root / "docs" / "changes", directory=True)
+    require_path(root / "docs" / "changes" / "_template.md", directory=False)
     require_path(root / "docs" / "modules", directory=True)
     require_path(root / "docs" / "versions", directory=True)
     require_path(root / "harness", directory=True)
@@ -140,47 +159,118 @@ def check_root(root: Path) -> None:
     require_path(root / "harness" / "custom-rules", directory=True)
     require_path(root / "harness" / "scripts", directory=True)
     require_path(root / "harness" / "process_rules", directory=True)
+    require_path(root / "harness" / "templates" / "evidence", directory=True)
+    require_path(
+        root / "harness" / "templates" / "evidence" / "stage-scope-manifest-meta.json",
+        directory=False,
+    )
+    require_path(root / "harness" / "templates" / "pipeline", directory=True)
+    require_path(
+        root / "harness" / "templates" / "pipeline" / "state.json",
+        directory=False,
+    )
     require_path(root / "harness" / "quality-gates.yaml", directory=False)
-    check_version_evidence_dirs(root)
-    check_test_results_ignored(root)
+    require_path(root / ".harness", directory=True)
+    check_version_scaffold(root)
+    check_generated_output_ignored(root)
+    check_no_legacy_runtime_locations(root)
 
 
-def check_version_evidence_dirs(root: Path) -> None:
+def check_version_scaffold(root: Path) -> None:
     versions_dir = root / "docs" / "versions"
     version_dirs = [path for path in versions_dir.iterdir() if path.is_dir()]
     if not version_dirs:
         fail("docs/versions must contain at least one version directory")
     for version_dir in version_dirs:
-        require_path(version_dir / "modules" / "tasks.md", directory=False)
-        require_path(version_dir / "evidence" / "admission", directory=True)
-        require_path(version_dir / "evidence" / "stage-scope", directory=True)
-        require_path(
-            version_dir / "evidence" / "stage-scope-manifest-meta.template.json",
-            directory=False,
+        tasks_index = version_dir / "modules" / "tasks.json"
+        require_path(tasks_index, directory=False)
+        task_index = root / "harness" / "scripts" / "task-index.py"
+        completed = subprocess.run(
+            [sys.executable, str(task_index), "--root", str(root), "validate", "--version", version_dir.name],
+            text=True,
+            capture_output=True,
         )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
+            fail(f"unfinished-task index validation failed: {detail}")
+        task_template = version_dir / "modules" / "_template" / "task.yaml"
+        profile_template = version_dir / "modules" / "_template" / "risk-profile.yaml"
+        require_path(task_template, directory=False)
+        require_path(profile_template, directory=False)
+        require_contains(
+            task_template,
+            ("workflow_tier: pending", "risk_profile: risk-profile.yaml"),
+        )
+        if re.search(r"(?m)^\s+triggers:\s*", read_text(task_template)):
+            fail(f"{task_template} duplicates task risk triggers; use only risk-profile.yaml")
+        profile = read_text(profile_template)
+        for category in ("contract", "data", "security", "runtime", "build", "ui", "harness"):
+            if len(re.findall(rf"(?m)^  {category}:\s*$", profile)) != 1:
+                fail(f"{profile_template} must contain exactly one {category} risk category")
 
-def check_test_results_ignored(root: Path) -> None:
-    """test-results/ holds generated run artifacts and must stay untracked."""
+
+def check_generated_output_ignored(root: Path) -> None:
+    """All generated Harness runtime state must stay untracked."""
     gitignore = root / ".gitignore"
     if not gitignore.is_file():
-        fail("missing .gitignore: the test-results/ run artifact directory must be git-ignored")
+        fail("missing .gitignore: .harness/ must be git-ignored")
     entries = {
         line.strip().lstrip("/").rstrip("/")
         for line in read_text(gitignore).splitlines()
     }
-    if "test-results" not in entries:
-        fail(".gitignore must contain a test-results/ entry; run artifacts are generated output")
+    missing = [entry for entry in (".harness",) if entry not in entries]
+    if missing:
+        fail(
+            ".gitignore must ignore generated Harness output: "
+            + ", ".join(f"{entry}/" for entry in missing)
+        )
+
+
+def check_no_legacy_runtime_locations(root: Path) -> None:
+    """Reject runtime state outside the project-local `.harness/` tree."""
+    legacy: list[Path] = []
+    if (root / "test-results").exists():
+        legacy.append(root / "test-results")
+    versions = root / "docs" / "versions"
+    if versions.is_dir():
+        for version_dir in versions.iterdir():
+            if not version_dir.is_dir():
+                continue
+            if (version_dir / "evidence").exists():
+                legacy.append(version_dir / "evidence")
+            modules = version_dir / "modules"
+            if modules.is_dir():
+                legacy.extend(modules.glob("**/pipeline/state.json"))
+    if legacy:
+        fail(
+            "Harness runtime state must live under .harness/: "
+            + ", ".join(str(path) for path in sorted(legacy))
+        )
 
 
 def check_rules(root: Path) -> None:
     rules_dir = root / "harness" / "rules"
+    require_path(rules_dir / "index.yaml", directory=False)
     for name in REQUIRED_RULES:
         require_path(rules_dir / name, directory=False)
 
     custom_dir = root / "harness" / "custom-rules"
-    for path in custom_dir.glob("*.md"):
-        if path.name in REQUIRED_RULES:
+    reserved_names = {Path(name).name for name in REQUIRED_RULES}
+    for path in custom_dir.rglob("*.md"):
+        if path.name in reserved_names:
             fail(f"skill-managed rule appears under harness/custom-rules: {path}")
+
+
+def check_rule_index(root: Path) -> None:
+    context = root / "harness" / "scripts" / "context.py"
+    completed = subprocess.run(
+        [sys.executable, str(context), "--root", str(root), "--validate-index"],
+        text=True,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
+        fail(f"rule index validation failed: {detail}")
 
 
 def check_scripts(root: Path) -> None:
@@ -192,7 +282,10 @@ def check_scripts(root: Path) -> None:
         if "raise SystemExit(main())" not in text:
             warn(f"{path} does not expose the standard main() exit pattern")
 
-    require_contains(root / "test-run.bat", ("uv", ".venv", "uv run", "--active", "python"))
+    require_contains(
+        root / "test-run.bat",
+        ("uv", ".venv", "uv run", "--active", "python", "UV_CACHE_DIR", ".harness\\uv-cache"),
+    )
     require_any(
         root / "test-run.bat",
         ("harness/scripts/test-run.py", "harness\\scripts\\test-run.py"),
@@ -200,12 +293,37 @@ def check_scripts(root: Path) -> None:
     )
     require_contains(
         root / "test-run.sh",
-        ("uv", ".venv", "uv run", "--active", "python", "harness/scripts/test-run.py"),
+        (
+            "uv",
+            ".venv",
+            "uv run",
+            "--active",
+            "python",
+            "harness/scripts/test-run.py",
+            "UV_CACHE_DIR",
+            ".harness/uv-cache",
+            "mkdir -p",
+        ),
     )
     require_configured_module_suites(scripts_dir / "test-run.py")
     require_contains(
         scripts_dir / "test-run.py",
-        ("contract_steps_from_testplan", "contract_kind", "evidence_input_sha256"),
+        ("contract_steps_from_testplan", "contract_kind", "evidence_inputs"),
+    )
+    require_contains(
+        scripts_dir / "baseline-snapshot.py",
+        (
+            "working-tree-content-baseline",
+            "modified_tracked_paths",
+            "untracked_paths",
+            "EXCLUDED_ROOTS",
+            "capture_hybrid",
+            "diff_hybrid",
+        ),
+    )
+    require_contains(
+        scripts_dir / "harness-check.py",
+        ("baseline_pre_edit_command", "baseline_completion_command"),
     )
 
 
@@ -223,8 +341,16 @@ def check_agents_references(root: Path) -> None:
         agents,
         (
             "harness/rules/task-entry-gate-rules.md",
+            "harness/rules/index.yaml",
+            "harness/scripts/context.py",
+            "Harness rules never restrict reading or writing project files",
+            "router output as recommended starting context",
+            "## Harness Step Agent Mapping",
+            "## Rule Ownership",
+            "harness/scripts/harness-check.py",
+            "## Workflow Tiers",
+            "docs/changes/<change>.md",
             "harness/scripts/schema-check.py",
-            "harness/scripts/admission-check.py",
             "harness/scripts/stage-scope-check.py",
         ),
     )
@@ -267,6 +393,7 @@ def main() -> int:
     check_root(root)
     check_rules(root)
     check_scripts(root)
+    check_rule_index(root)
     check_process_templates(root)
     check_agents_references(root)
     if not args.skip_reference_check:

@@ -1,0 +1,23 @@
+schema_version: 1
+rules:
+  - id: project-trigger-based-validation
+    file: harness/custom-rules/trigger-based-validation-rules.md
+    activation: trigger
+    stages: [implementation, testing, acceptance]
+    modes: [manual, auto-pipeline]
+    triggers: [api, build, config, contract, governance, harness, protocol, release, serialization, ui]
+    path_patterns: ["AGENTS.md", "harness/**", "docs/architecture/repository-workflow.md", "docs/versions/*/modules/repo-governance/**", "vpn-frame/**", "vpn_web/lib/api.dart", "vpn_web/lib/api.g.dart", "build_*.sh", "build_win.bat"]
+  - id: project-cyfs-gateway-config-spec
+    file: harness/custom-rules/cyfs-gateway-config-spec-rules.md
+    activation: trigger
+    stages: [proposal, design, implementation, testing, acceptance]
+    modes: [manual, auto-pipeline]
+    triggers: [config, cyfs-gateway, process-chain]
+    path_patterns: ["docs/architecture/cyfs-gateway-config-domain.md", "harness/process_rules/cyfs-gateway-config-task.md", "harness/checklists/cyfs-gateway-config-review-checklist.md"]
+  - id: project-vpn-web-no-new-tests
+    file: harness/custom-rules/vpn-web-no-new-tests-rule.md
+    activation: trigger
+    stages: [implementation, testing, acceptance]
+    modes: [manual, auto-pipeline]
+    triggers: [frontend, ui, vpn-web]
+    path_patterns: ["vpn_web/**"]
