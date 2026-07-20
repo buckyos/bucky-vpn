@@ -61,21 +61,37 @@ Map<String, dynamic> _$PnServerAddressToJson(PnServerAddress instance) =>
       'port': instance.port,
     };
 
+PnServerPortMapping _$PnServerPortMappingFromJson(Map<String, dynamic> json) =>
+    PnServerPortMapping(
+      quic: (json['quic'] as num?)?.toInt(),
+      tcp: (json['tcp'] as num?)?.toInt(),
+    );
+
+Map<String, dynamic> _$PnServerPortMappingToJson(
+        PnServerPortMapping instance) =>
+    <String, dynamic>{
+      'quic': instance.quic,
+      'tcp': instance.tcp,
+    };
+
 PnServerInfo _$PnServerInfoFromJson(Map<String, dynamic> json) => PnServerInfo(
       id: json['id'] as String,
-      ip: json['ip'] as String,
-      port: (json['port'] as num).toInt(),
-      addresses: (json['addresses'] as List<dynamic>?)
+      name: json['name'] as String?,
+      endpoints: (json['endpoints'] as List<dynamic>?)
           ?.map((e) => PnServerAddress.fromJson(e as Map<String, dynamic>))
           .toList(),
+      portMapping: json['port_mapping'] == null
+          ? null
+          : PnServerPortMapping.fromJson(
+              json['port_mapping'] as Map<String, dynamic>),
     );
 
 Map<String, dynamic> _$PnServerInfoToJson(PnServerInfo instance) =>
     <String, dynamic>{
       'id': instance.id,
-      'ip': instance.ip,
-      'port': instance.port,
-      'addresses': instance.addresses,
+      'name': instance.name,
+      'endpoints': instance.endpoints,
+      'port_mapping': instance.portMapping,
     };
 
 ProxyNode _$ProxyNodeFromJson(Map<String, dynamic> json) => ProxyNode(

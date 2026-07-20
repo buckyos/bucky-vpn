@@ -395,8 +395,6 @@ def main() -> int:
     required_docs = ["proposal.md"] + (["design.md"] if design_required else [])
     if args.require_approved and automatic_design:
         fail("--require-approved applies only to manual-flow proposal/design documents")
-    if args.require_approved and stage == "proposal":
-        fail("--require-approved is not valid while task.yaml stage is proposal")
     for name in required_docs:
         validate_doc(
             root,

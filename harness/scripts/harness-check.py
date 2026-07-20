@@ -672,7 +672,10 @@ def build_commands(root: Path, manifest: Path, task: dict[str, object], profile:
     if stage != "acceptance":
         commands.append(command_prefix(root, "risk-profile-check.py") + ["--task", str(manifest)])
     if stage == "proposal":
-        commands.extend([approved_schema, doc_structure])
+        proposal_schema = (
+            schema if stage_uses_auto_pipeline(task, "design") else approved_schema
+        )
+        commands.extend([proposal_schema, doc_structure])
     elif stage == "design":
         commands.append(schema)
         if not stage_uses_auto_pipeline(task, "design"):

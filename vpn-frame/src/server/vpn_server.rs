@@ -5,8 +5,8 @@ use crate::server::{
 };
 use crate::{
     ClientProxyNodeInfo, GetVpnInfoReq, GetVpnInfoResp, JoinNetworkGroupReq, JoinNetworkGroupResp,
-    NodeNetworkPnInfo, NodeVpnInfo, PnServerInfo, QueryNodeReq, QueryNodeResp, VpnCmdCode,
-    VPN_CMD_VERSION, VpnCmdHeader, VpnTunnelId, decode_pn_server_info,
+    NodeNetworkPnInfo, NodeVpnInfo, PnServerInfo, QueryNodeReq, QueryNodeResp, VPN_CMD_VERSION,
+    VpnCmdCode, VpnCmdHeader, VpnTunnelId, decode_pn_server_info,
 };
 use async_trait::async_trait;
 use bucky_raw_codec::{RawConvertTo, RawFrom};
@@ -165,6 +165,25 @@ impl OnlineNodesState {
             }
         }
     }
+}
+
+fn active_node_version(
+    online_nodes: &OnlineNodesState,
+    node_id: &NodeId,
+) -> Option<Option<String>> {
+    let node = online_nodes.get_node(node_id)?;
+    if node.is_expire() {
+        None
+    } else {
+        Some(node.version.clone())
+    }
+}
+
+fn online_state_with_ip_result(
+    version: Option<String>,
+    ip_result: VpnResult<Vec<IpAddr>>,
+) -> (Option<String>, Vec<IpAddr>) {
+    (version, ip_result.unwrap_or_default())
 }
 
 pub struct VpnServer<
@@ -433,7 +452,6 @@ where
                 }
             },
         );
-
     }
 
     async fn handle_join_network_group_req(
@@ -628,26 +646,14 @@ where
     ) -> Option<(Option<String>, Vec<IpAddr>)> {
         let version = {
             let online_nodes = self.online_nodes.lock().unwrap();
-            if let Some(node) = online_nodes.get_node(node_id) {
-                if node.is_expire() {
-                    return None;
-                }
-                node.version.clone()
-            } else {
-                return None;
-            }
+            active_node_version(&online_nodes, node_id)?
         };
 
-        let ips = self
+        let ip_result = self
             .cmd_server
             .get_peer_wan_ip(&PeerId::from(node_id.as_slice()))
-            .await
-            .unwrap_or(vec![]);
-        if ips.is_empty() {
-            None
-        } else {
-            Some((version, ips))
-        }
+            .await;
+        Some(online_state_with_ip_result(version, ip_result))
     }
 }
 
@@ -681,5 +687,59 @@ where
         if let Some(handle) = handle_lock.take() {
             handle.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OnlineNode, OnlineNodesState, active_node_version, online_state_with_ip_result};
+    use crate::errors::{VpnErrorCode, vpn_err};
+    use crate::server::NodeId;
+    use chrono::{TimeDelta, Utc};
+
+    fn node_id(seed: u8) -> NodeId {
+        NodeId::from(vec![seed; 32].as_slice())
+    }
+
+    #[test]
+    fn active_node_version_requires_fresh_online_entry() {
+        let fresh_id = node_id(1);
+        let expired_id = node_id(2);
+        let missing_id = node_id(3);
+        let mut online_nodes = OnlineNodesState::new();
+        online_nodes.update_online_node(&fresh_id, Some("1.0.0".to_string()));
+        online_nodes.online_nodes1.insert(
+            expired_id.clone(),
+            OnlineNode::new(
+                Some("0.9.0".to_string()),
+                Utc::now() - TimeDelta::seconds(121),
+            ),
+        );
+
+        assert_eq!(
+            active_node_version(&online_nodes, &fresh_id),
+            Some(Some("1.0.0".to_string()))
+        );
+        assert_eq!(active_node_version(&online_nodes, &expired_id), None);
+        assert_eq!(active_node_version(&online_nodes, &missing_id), None);
+    }
+
+    #[test]
+    fn online_state_keeps_empty_ip_list() {
+        assert_eq!(
+            online_state_with_ip_result(Some("1.0.0".to_string()), Ok(vec![])),
+            (Some("1.0.0".to_string()), vec![])
+        );
+    }
+
+    #[test]
+    fn online_state_tolerates_ip_lookup_failure() {
+        assert_eq!(
+            online_state_with_ip_result(
+                Some("1.0.0".to_string()),
+                Err(vpn_err!(VpnErrorCode::IoError, "IP lookup failed")),
+            ),
+            (Some("1.0.0".to_string()), vec![])
+        );
     }
 }

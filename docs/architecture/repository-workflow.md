@@ -18,6 +18,8 @@
 - Implementation：只负责代码和测试代码实现。必须在 `proposal.md`、`design.md`、`testing.md` 都已存在、审批完成且已覆盖当前改动后才允许进入
 - Acceptance：只负责审计证据链并输出独立评审报告，不在 acceptance 阶段直接修代码
 
+显式从 Proposal 启动自动流水线、且 Design 是第一个自动阶段时，用户启动声明同时确认绑定的 Proposal。Proposal 完成仍执行 schema、结构、风险、流水线计划和阶段范围检查，但不会附加只适用于手工 Proposal/Design 文档的 `schema-check.py --require-approved`。未进入该自动 Design 边界的手工 Proposal 继续强制使用 `--require-approved`。
+
 ## 验证面
 - 面向人的文档：
   - `proposal.md`

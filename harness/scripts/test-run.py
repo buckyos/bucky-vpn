@@ -48,7 +48,11 @@ CONTRACT_ASSERTIONS = {
 # `module all` and `all all` use only each module's explicit `all` suite.
 MODULE_SUITES: dict[str, dict[str, list[list[str]]]] = {
     "repo-governance": {
-        "unit": [["python3", "./harness/scripts/context.py", "--validate-index"]],
+        "unit": [
+            ["python3", "./harness/scripts/context.py", "--validate-index"],
+            ["python3", "./harness/tests/test_schema_check_proposal_approval.py"],
+            ["python3", "./harness/tests/test_auto_pipeline_proposal_transition.py"],
+        ],
         "dv": [["python3", "./harness/scripts/harness-self-check.py", "--root", "."]],
         "integration": [["python3", "./harness/scripts/check-all.py", "--root", "."]],
         "all": [["python3", "./harness/scripts/check-all.py", "--root", "."]],

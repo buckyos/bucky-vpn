@@ -57,14 +57,23 @@ def sha256_file(path: Path) -> str:
 
 
 def task_binding(task: dict[str, object]) -> str:
-    """Hash stable lifecycle identity while deliberately excluding current stage."""
+    """Hash stable lifecycle identity, excluding legal launch/evidence mutations."""
     fields = (
-        "workflow_tier", "version", "packet_module", "task_name", "mode",
-        "auto_pipeline_start_stage", "proposal", "design", "testing",
-        "testplan", "acceptance_report", "pipeline_plan", "risk_profile",
-        "completion_report", "change_record", "lifecycle_state", "changes",
+        "schema_version", "workflow_tier", "version", "packet_module", "task_name",
+        "proposal", "design", "testing", "testplan", "acceptance_report",
+        "risk_profile", "completion_report", "change_record", "lifecycle_state",
     )
     payload = {field: task.get(field) for field in fields}
+    changes = task.get("changes")
+    assert isinstance(changes, list)
+    payload["changes"] = [
+        {
+            "id": change.get("id"),
+            "target_module": change.get("target_module"),
+        }
+        for change in changes
+        if isinstance(change, dict)
+    ]
     encoded = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
@@ -278,6 +287,34 @@ def clear_from(task_path: Path, task: dict[str, object], stage: str) -> None:
     write_state(state_path(task_path, task), state)
 
 
+def expected_receipt_inputs(
+    root: Path, task_path: Path, task: dict[str, object], stage: str
+) -> dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): sha256_file(path)
+        for path in artifact_inputs(root, task_path, task, stage)
+    }
+
+
+def verify_receipt_evidence(
+    root: Path,
+    task_path: Path,
+    task: dict[str, object],
+    stage: str,
+    receipt: dict[str, object],
+) -> None:
+    if receipt.get("inputs") != expected_receipt_inputs(root, task_path, task, stage):
+        fail(f"high-risk stage receipt inputs are missing or stale: {stage}")
+    if stage == "testing":
+        value = receipt.get("test_run")
+        digest = receipt.get("test_run_sha256")
+        if not isinstance(value, str) or not isinstance(digest, str):
+            fail("testing receipt is missing its task test-run binding")
+        artifact = safe_repo_path(root, value, "testing receipt test_run")
+        if not artifact.is_file() or sha256_file(artifact) != digest:
+            fail("testing receipt task test-run artifact is missing or stale")
+
+
 def verify_receipts(root: Path, task_path: Path, task: dict[str, object], required: tuple[str, ...]) -> None:
     if not required:
         return
@@ -291,20 +328,7 @@ def verify_receipts(root: Path, task_path: Path, task: dict[str, object], requir
             fail(f"high-risk stage has no completion receipt: {stage}")
         if receipt.get("task_binding_sha256") != binding:
             fail(f"high-risk stage receipt has stale task binding: {stage}")
-        expected_inputs = {
-            path.relative_to(root).as_posix(): sha256_file(path)
-            for path in artifact_inputs(root, task_path, task, stage)
-        }
-        if receipt.get("inputs") != expected_inputs:
-            fail(f"high-risk stage receipt inputs are missing or stale: {stage}")
-        if stage == "testing":
-            value = receipt.get("test_run")
-            digest = receipt.get("test_run_sha256")
-            if not isinstance(value, str) or not isinstance(digest, str):
-                fail("testing receipt is missing its task test-run binding")
-            artifact = safe_repo_path(root, value, "testing receipt test_run")
-            if not artifact.is_file() or sha256_file(artifact) != digest:
-                fail("testing receipt task test-run artifact is missing or stale")
+        verify_receipt_evidence(root, task_path, task, stage, receipt)
 
 
 def sibling_script(name: str) -> Path:
@@ -332,6 +356,30 @@ def required_manual_stages(task: dict[str, object], *, before: str | None = None
     )
 
 
+def refresh_manual_bindings(
+    root: Path, task_path: Path, task: dict[str, object]
+) -> tuple[str, ...]:
+    if task.get("mode") != "auto-pipeline":
+        fail("--refresh-manual-bindings applies only to auto-pipeline tasks")
+    run_pipeline_check(root, task_path, task, complete=False)
+    required = required_manual_stages(task)
+    state = load_state(task_path, task, required=True)
+    stages = state["stages"]
+    assert isinstance(stages, dict)
+    receipts: list[dict[str, object]] = []
+    for stage in required:
+        receipt = stages.get(stage)
+        if not isinstance(receipt, dict) or receipt.get("status") != "complete":
+            fail(f"high-risk stage has no completion receipt: {stage}")
+        verify_receipt_evidence(root, task_path, task, stage, receipt)
+        receipts.append(receipt)
+    binding = task_binding(task)
+    for receipt in receipts:
+        receipt["task_binding_sha256"] = binding
+    write_state(state_path(task_path, task), state)
+    return required
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
@@ -339,6 +387,7 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--require-prior", choices=STAGES)
     mode.add_argument("--require-complete", action="store_true")
+    mode.add_argument("--refresh-manual-bindings", action="store_true")
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
@@ -351,7 +400,13 @@ def main() -> int:
     except ValueError:
         fail(f"task manifest resolves outside repository: {task_path}")
     task = validate_task(task_path)
-    if args.require_prior:
+    if args.refresh_manual_bindings:
+        refreshed = refresh_manual_bindings(root, task_path, task)
+        print(
+            "lifecycle-check: refreshed manual receipt bindings: "
+            + ", ".join(refreshed)
+        )
+    elif args.require_prior:
         verify_receipts(
             root, task_path, task,
             required_manual_stages(task, before=args.require_prior),

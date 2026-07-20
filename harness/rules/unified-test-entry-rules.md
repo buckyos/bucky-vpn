@@ -32,6 +32,7 @@
 - The root shortcut MUST NOT bypass the unified test entrypoint.
 - The unified test interface MUST be able to run every project test that is part of the harness evidence chain.
 - Bootstrap and harness refresh work MUST replace the empty example `MODULE_SUITES` mapping with explicit registrations for the target repository. Each registered module MUST define a non-empty canonical `all` suite; scaffold self-check MUST fail when no canonical module suite is registered.
+- `<module> all` and `all all` MUST compose every command registered under that module's `unit`, `dv`, `integration`, and explicit `all` suites, de-duplicating identical argv. Adding a level-specific regression therefore cannot leave the canonical `all` entrypoint unaware of it.
 - A testing task is not complete until every new or changed test implementation is registered with, or otherwise reachable through, the unified test interface.
 - Every task-local `testplan.yaml` MUST reference `task_manifest: task.yaml`; the runner derives its registration as `<module>/<task-name>` from the canonical packet path, and it MUST NOT attach the plan to the bare `<module>` scope.
 - Package/module suites are mandatory maintenance commands independent of task plans; they MUST never be selected by single-task execution.

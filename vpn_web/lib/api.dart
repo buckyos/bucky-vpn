@@ -92,18 +92,34 @@ class PnServerAddress {
 }
 
 @JsonSerializable()
+class PnServerPortMapping {
+  int? quic;
+  int? tcp;
+
+  PnServerPortMapping({
+    this.quic,
+    this.tcp,
+  });
+
+  factory PnServerPortMapping.fromJson(Map<String, dynamic> json) =>
+      _$PnServerPortMappingFromJson(json);
+  Map<String, dynamic> toJson() => _$PnServerPortMappingToJson(this);
+}
+
+@JsonSerializable()
 class PnServerInfo {
   String id;
-  String ip;
-  int port;
-  List<PnServerAddress> addresses;
+  String? name;
+  List<PnServerAddress> endpoints;
+  @JsonKey(name: 'port_mapping')
+  PnServerPortMapping? portMapping;
 
   PnServerInfo({
     required this.id,
-    required this.ip,
-    required this.port,
-    List<PnServerAddress>? addresses,
-  }) : addresses = addresses ?? [];
+    this.name,
+    List<PnServerAddress>? endpoints,
+    this.portMapping,
+  }) : endpoints = endpoints ?? [];
 
   factory PnServerInfo.fromJson(Map<String, dynamic> json) =>
       _$PnServerInfoFromJson(json);
@@ -120,8 +136,7 @@ class PnServerInfo {
       }
     }
 
-    add(PnServerAddress(protocol: 'quic', ip: ip, port: port));
-    for (final address in addresses) {
+    for (final address in endpoints) {
       add(address);
     }
     return result;

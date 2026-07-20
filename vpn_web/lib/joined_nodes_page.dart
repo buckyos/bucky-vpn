@@ -277,7 +277,9 @@ class _JoinedNodesPageState extends State<JoinedNodesPage> {
                                 DataCell(
                                   Text(
                                     node.isOnline
-                                        ? (node.ipList?.join(', ') ?? 'online')
+                                        ? (node.ipList?.isNotEmpty == true
+                                            ? node.ipList!.join(', ')
+                                            : 'online')
                                         : 'offline',
                                     style: TextStyle(
                                       color: node.isOnline
