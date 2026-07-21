@@ -1,6 +1,8 @@
 use crate::client::vpn_client::VpnClient;
 use crate::errors::VpnResult;
-use crate::{VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv, VpnTunnelSend};
+use crate::{
+    VpnCmdPkgLen, VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv, VpnTunnelSend,
+};
 use async_trait::async_trait;
 use sfo_cmd_server::CmdTunnelMeta;
 use sfo_cmd_server::client::{CmdClient, CmdSend, SendGuard};
@@ -12,7 +14,7 @@ pub trait VpnClientFactory<
     M: CmdTunnelMeta,
     CS: CmdSend<M>,
     G: SendGuard<M, CS>,
-    T: CmdClient<u16, u8, M, CS, G>,
+    T: CmdClient<VpnCmdPkgLen, u8, M, CS, G>,
     R: VpnTunnelRecv,
     S: VpnTunnelSend,
     F: VpnTunnelFactory<R, S>,
@@ -26,7 +28,7 @@ pub struct VpnClientManager<
     M: CmdTunnelMeta,
     CS: CmdSend<M>,
     G: SendGuard<M, CS>,
-    T: CmdClient<u16, u8, M, CS, G>,
+    T: CmdClient<VpnCmdPkgLen, u8, M, CS, G>,
     R: VpnTunnelRecv,
     S: VpnTunnelSend,
     F: VpnTunnelFactory<R, S>,
@@ -41,7 +43,7 @@ impl<
     M: CmdTunnelMeta,
     CS: CmdSend<M>,
     G: SendGuard<M, CS>,
-    T: CmdClient<u16, u8, M, CS, G>,
+    T: CmdClient<VpnCmdPkgLen, u8, M, CS, G>,
     R: VpnTunnelRecv,
     S: VpnTunnelSend,
     F: VpnTunnelFactory<R, S>,

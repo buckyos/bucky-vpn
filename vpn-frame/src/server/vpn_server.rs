@@ -6,7 +6,7 @@ use crate::server::{
 use crate::{
     ClientProxyNodeInfo, GetVpnInfoReq, GetVpnInfoResp, JoinNetworkGroupReq, JoinNetworkGroupResp,
     NodeNetworkPnInfo, NodeVpnInfo, PnServerInfo, QueryNodeReq, QueryNodeResp, VPN_CMD_VERSION,
-    VpnCmdCode, VpnCmdHeader, VpnTunnelId, decode_pn_server_info,
+    VpnCmdCode, VpnCmdHeader, VpnCmdPkgLen, VpnTunnelId, decode_pn_server_info,
 };
 use async_trait::async_trait;
 use bucky_raw_codec::{RawConvertTo, RawFrom};
@@ -53,7 +53,7 @@ impl OnlineNode {
 }
 
 #[async_trait]
-pub trait VpnCmdServer: CmdServer<u16, u8> {
+pub trait VpnCmdServer: CmdServer<VpnCmdPkgLen, u8> {
     async fn get_peer_wan_ip(&self, peer_id: &PeerId) -> VpnResult<Vec<IpAddr>>;
 }
 
@@ -190,7 +190,7 @@ pub struct VpnServer<
     T: VpnCmdServer,
     S: VpnStore + PnStore,
     F: VpnStoreFactory<S>,
-    P: CmdServer<u16, u8> = T,
+    P: CmdServer<VpnCmdPkgLen, u8> = T,
 > {
     network_manager: Arc<NetworkManager<S, F>>,
     node_manager: Arc<NodeManager<S, F>>,
@@ -234,7 +234,7 @@ where
     T: VpnCmdServer,
     S: VpnStore + PnStore,
     F: VpnStoreFactory<S>,
-    P: CmdServer<u16, u8>,
+    P: CmdServer<VpnCmdPkgLen, u8>,
 {
     pub fn new_with_pn_control_cmd_server(
         cmd_server: Arc<T>,
@@ -680,7 +680,7 @@ where
     T: VpnCmdServer,
     S: VpnStore + PnStore,
     F: VpnStoreFactory<S>,
-    P: CmdServer<u16, u8>,
+    P: CmdServer<VpnCmdPkgLen, u8>,
 {
     fn drop(&mut self) {
         let mut handle_lock = self.offline_monitor_handle.lock().unwrap();

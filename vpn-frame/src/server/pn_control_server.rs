@@ -8,7 +8,7 @@ use crate::{
     ProxyTrafficReportApplyResult, ReportPnTrafficStatsReq, ReportPnTrafficStatsResp,
     ReportProxyHeartbeatReq, ReportProxyHeartbeatResp, ReportProxyTrafficReq,
     ReportProxyTrafficResp, VPN_CMD_VERSION, ValidatePnConnectionReq, ValidatePnConnectionResp,
-    VpnCmdCode,
+    VpnCmdCode, VpnCmdPkgLen,
 };
 use bucky_raw_codec::{RawConvertTo, RawEncode, RawFrom};
 use sfo_cmd_server::errors::{CmdErrorCode, CmdResult, cmd_err, into_cmd_err};
@@ -21,7 +21,7 @@ const MAX_TRAFFIC_REPORT_ID_LEN: usize = 256;
 
 pub struct PnControlServer<P, S, F>
 where
-    P: CmdServer<u16, u8>,
+    P: CmdServer<VpnCmdPkgLen, u8>,
     S: VpnStore + PnStore,
     F: VpnStoreFactory<S>,
 {
@@ -35,7 +35,7 @@ where
 
 impl<P, S, F> PnControlServer<P, S, F>
 where
-    P: CmdServer<u16, u8>,
+    P: CmdServer<VpnCmdPkgLen, u8>,
     S: VpnStore + PnStore,
     F: VpnStoreFactory<S>,
 {
@@ -755,7 +755,7 @@ mod tests {
         }
     }
 
-    type TestCmdServer = DefaultCmdServerService<(), TestRead, TestWrite, u16, u8>;
+    type TestCmdServer = DefaultCmdServerService<(), TestRead, TestWrite, VpnCmdPkgLen, u8>;
 
     #[derive(Default)]
     struct TestStoreState {
@@ -1003,13 +1003,19 @@ mod tests {
 
     #[test]
     fn changed_control_commands_reject_version_zero_before_decode() {
-        let old = crate::VpnCmdHeader::new(0, false, None, VpnCmdCode::ReportPnTrafficStats as u8, 0);
+        let old = crate::VpnCmdHeader::new(
+            0,
+            false,
+            None,
+            VpnCmdCode::ReportPnTrafficStats as u8,
+            VpnCmdPkgLen::new(0).unwrap(),
+        );
         let current = crate::VpnCmdHeader::new(
             VPN_CMD_VERSION,
             false,
             None,
             VpnCmdCode::ReportPnTrafficStats as u8,
-            0,
+            VpnCmdPkgLen::new(0).unwrap(),
         );
 
         assert!(require_version(&old).is_err());

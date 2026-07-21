@@ -11,7 +11,7 @@ use p2p_frame::ttp::{TtpClientRef, TtpConnector, TtpTarget};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use vpn_frame::PnServerInfo;
+use vpn_frame::{PnServerInfo, VpnCmdPkgLen};
 use vpn_frame::client::VpnServerClient;
 use vpn_frame::cmd_server::client::{
     ClassifiedClientSendGuard, ClassifiedCmdSend, ClassifiedCmdTunnel, ClassifiedCmdTunnelFactory,
@@ -26,14 +26,14 @@ use vpn_frame::errors::{VpnErrorCode, VpnResult, into_vpn_err};
 use vpn_frame::server::NodeId;
 
 pub type P2pControlCmdSend =
-    ClassifiedCmdSend<SnTunnelClassification, (), SnTunnelRead, SnTunnelWrite, u16, u8>;
+    ClassifiedCmdSend<SnTunnelClassification, (), SnTunnelRead, SnTunnelWrite, VpnCmdPkgLen, u8>;
 pub type P2pControlCmdSendGuard = ClassifiedClientSendGuard<
     SnTunnelClassification,
     (),
     SnTunnelRead,
     SnTunnelWrite,
     ControlCmdTunnelFactory,
-    u16,
+    VpnCmdPkgLen,
     u8,
 >;
 pub type ControlCmdClient = DefaultClassifiedCmdClient<
@@ -42,7 +42,7 @@ pub type ControlCmdClient = DefaultClassifiedCmdClient<
     SnTunnelRead,
     SnTunnelWrite,
     ControlCmdTunnelFactory,
-    u16,
+    VpnCmdPkgLen,
     u8,
 >;
 pub type VpnControlClient =

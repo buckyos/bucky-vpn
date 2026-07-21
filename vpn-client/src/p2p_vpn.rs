@@ -41,7 +41,7 @@ use vpn_frame::serialize_u64_as_string;
 use vpn_frame::server::{NetworkGroupId, NetworkId, NodeId};
 use vpn_frame::{
     ClientProxyNodeInfo, NodeVpnInfo, VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv,
-    VpnTunnelSend,
+    VpnCmdPkgLen, VpnTunnelSend,
 };
 
 pub struct P2pVpnTunnelRecv {
@@ -458,14 +458,14 @@ impl VpnTunnelListener<P2pVpnTunnelRecv, P2pVpnTunnelSend> for P2pVpnTunnelListe
 }
 
 pub type P2pCmdSend =
-    ClassifiedCmdSend<SnTunnelClassification, (), SnTunnelRead, SnTunnelWrite, u16, u8>;
+    ClassifiedCmdSend<SnTunnelClassification, (), SnTunnelRead, SnTunnelWrite, VpnCmdPkgLen, u8>;
 pub type P2pCmdSendGuard = ClassifiedClientSendGuard<
     SnTunnelClassification,
     (),
     SnTunnelRead,
     SnTunnelWrite,
     SnClientTunnelFactory,
-    u16,
+    VpnCmdPkgLen,
     u8,
 >;
 pub type P2pVpnClientRef = Arc<

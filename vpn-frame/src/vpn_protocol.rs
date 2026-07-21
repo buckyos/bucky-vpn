@@ -7,7 +7,7 @@ use crate::sequence::Sequence;
 use crate::server::{NetworkGroupId, NetworkId, NetworkMember, NodeId};
 use bucky_raw_codec::{RawDecode, RawEncode, RawFixedBytes};
 use serde::{Deserialize, Serialize};
-use sfo_cmd_server::CmdHeader;
+use sfo_cmd_server::{CmdHeader, U16};
 use std::net::IpAddr;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -86,7 +86,8 @@ impl TryFrom<u8> for VpnCmdCode {
     }
 }
 
-pub type VpnCmdHeader = CmdHeader<u16, u8>;
+pub type VpnCmdPkgLen = U16;
+pub type VpnCmdHeader = CmdHeader<VpnCmdPkgLen, u8>;
 pub type VpnTunnelId = sfo_cmd_server::TunnelId;
 pub const VPN_CMD_VERSION: u8 = 1;
 

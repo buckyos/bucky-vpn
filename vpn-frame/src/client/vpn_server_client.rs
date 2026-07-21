@@ -7,7 +7,7 @@ use crate::{
     ProxyTrafficReportResp, QueryNodeReq, QueryNodeResp, ReportPnTrafficStatsReq,
     ReportPnTrafficStatsResp, ReportProxyHeartbeatReq, ReportProxyHeartbeatResp,
     ReportProxyTrafficReq, ReportProxyTrafficResp, VPN_CMD_VERSION, ValidatePnConnectionReq,
-    ValidatePnConnectionResp, VpnCmdCode,
+    ValidatePnConnectionResp, VpnCmdCode, VpnCmdPkgLen,
 };
 use bucky_raw_codec::{RawConvertTo, RawFrom};
 use sfo_cmd_server::CmdTunnelMeta;
@@ -20,7 +20,7 @@ pub struct VpnServerClient<
     M: CmdTunnelMeta,
     S: CmdSend<M>,
     G: SendGuard<M, S>,
-    T: CmdClient<u16, u8, M, S, G>,
+    T: CmdClient<VpnCmdPkgLen, u8, M, S, G>,
 > {
     cmd_client: Arc<T>,
     version: u8,
@@ -29,7 +29,12 @@ pub struct VpnServerClient<
     _p: std::marker::PhantomData<Arc<Mutex<(M, S, G)>>>,
 }
 
-impl<M: CmdTunnelMeta, S: CmdSend<M>, G: SendGuard<M, S>, T: CmdClient<u16, u8, M, S, G>>
+impl<
+    M: CmdTunnelMeta,
+    S: CmdSend<M>,
+    G: SendGuard<M, S>,
+    T: CmdClient<VpnCmdPkgLen, u8, M, S, G>,
+>
     VpnServerClient<M, S, G, T>
 {
     pub fn new(cmd_client: Arc<T>, conn_timeout: Duration) -> Arc<Self> {

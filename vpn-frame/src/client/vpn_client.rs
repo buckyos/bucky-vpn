@@ -8,7 +8,8 @@ use crate::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
 use crate::server::{NetworkGroupId, NetworkId};
 use crate::{
     ClientProxyNodeInfo, NodeVpnInfo, PnServerInfo, PnServerInfoPayload, VpnCmdCode, VpnCmdHeader,
-    VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv, VpnTunnelSend, encode_pn_server_info,
+    VpnCmdPkgLen, VpnTunnelFactory, VpnTunnelListener, VpnTunnelRecv, VpnTunnelSend,
+    encode_pn_server_info,
 };
 use bucky_raw_codec::RawDecode;
 use sfo_cmd_server::CmdTunnelMeta;
@@ -74,7 +75,7 @@ struct ClientTunnelPkgRecv<
     M: CmdTunnelMeta,
     CS: CmdSend<M>,
     G: SendGuard<M, CS>,
-    T: CmdClient<u16, u8, M, CS, G>,
+    T: CmdClient<VpnCmdPkgLen, u8, M, CS, G>,
     R: VpnTunnelRecv,
     S: VpnTunnelSend,
     F: VpnTunnelFactory<R, S>,
@@ -87,7 +88,7 @@ impl<
     M: CmdTunnelMeta,
     CS: CmdSend<M>,
     G: SendGuard<M, CS>,
-    T: CmdClient<u16, u8, M, CS, G>,
+    T: CmdClient<VpnCmdPkgLen, u8, M, CS, G>,
     R: VpnTunnelRecv,
     S: VpnTunnelSend,
     F: VpnTunnelFactory<R, S>,
@@ -104,7 +105,7 @@ impl<
     M: CmdTunnelMeta,
     CS: CmdSend<M>,
     G: SendGuard<M, CS>,
-    T: CmdClient<u16, u8, M, CS, G>,
+    T: CmdClient<VpnCmdPkgLen, u8, M, CS, G>,
     R: VpnTunnelRecv,
     S: VpnTunnelSend,
     F: VpnTunnelFactory<R, S>,
@@ -139,7 +140,7 @@ pub struct VpnClient<
     M: CmdTunnelMeta,
     CS: CmdSend<M>,
     G: SendGuard<M, CS>,
-    T: CmdClient<u16, u8, M, CS, G>,
+    T: CmdClient<VpnCmdPkgLen, u8, M, CS, G>,
     R: VpnTunnelRecv,
     S: VpnTunnelSend,
     F: VpnTunnelFactory<R, S>,
@@ -162,7 +163,7 @@ impl<
     M: CmdTunnelMeta,
     CS: CmdSend<M>,
     G: SendGuard<M, CS>,
-    T: CmdClient<u16, u8, M, CS, G>,
+    T: CmdClient<VpnCmdPkgLen, u8, M, CS, G>,
     R: VpnTunnelRecv,
     S: VpnTunnelSend,
     F: VpnTunnelFactory<R, S>,
@@ -387,7 +388,7 @@ impl<
     M: CmdTunnelMeta,
     CS: CmdSend<M>,
     G: SendGuard<M, CS>,
-    T: CmdClient<u16, u8, M, CS, G>,
+    T: CmdClient<VpnCmdPkgLen, u8, M, CS, G>,
     R: VpnTunnelRecv,
     S: VpnTunnelSend,
     F: VpnTunnelFactory<R, S>,

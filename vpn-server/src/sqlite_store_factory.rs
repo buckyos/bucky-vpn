@@ -22,6 +22,7 @@ use vpn_frame::server::{
 use vpn_frame::{
     ClientProxyNodeInfo, NodeNetwork, NodeTrafficReport, PnServerInfo, ProxyTrafficReport,
     ProxyTrafficReportApplyResult, ProxyTrafficReportResp, UserRemainingTraffic,
+    VpnCmdPkgLen,
 };
 
 pub struct SqliteVpnStore {
@@ -2237,8 +2238,8 @@ impl P2pSnCmdServer {
 }
 
 #[async_trait::async_trait]
-impl CmdServer<u16, u8> for P2pSnCmdServer {
-    fn register_cmd_handler(&self, cmd: u8, handler: impl CmdHandler<u16, u8>) {
+impl CmdServer<VpnCmdPkgLen, u8> for P2pSnCmdServer {
+    fn register_cmd_handler(&self, cmd: u8, handler: impl CmdHandler<VpnCmdPkgLen, u8>) {
         self.sn_service
             .get_cmd_server()
             .register_cmd_handler(cmd, handler);

@@ -3,7 +3,7 @@ use crate::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
 use crate::server::NodeId;
 use crate::{
     NodeTrafficReport, NodeTrafficReportResp, PnServerInfo, ProxyNodeHeartbeat, ProxyNodeHeartbeatId,
-    ProxyTrafficReport, ProxyTrafficReportResp, ValidatedPnConnection,
+    ProxyTrafficReport, ProxyTrafficReportResp, ValidatedPnConnection, VpnCmdPkgLen,
 };
 use async_trait::async_trait;
 use sfo_cmd_server::client::{CmdClient, CmdSend, SendGuard};
@@ -38,7 +38,7 @@ where
     M: CmdTunnelMeta,
     S: CmdSend<M>,
     G: SendGuard<M, S>,
-    T: CmdClient<u16, u8, M, S, G>,
+    T: CmdClient<VpnCmdPkgLen, u8, M, S, G>,
 {
     async fn report_pn_traffic_stats(
         &self,
