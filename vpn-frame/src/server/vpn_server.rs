@@ -1,7 +1,7 @@
 use crate::errors::{VpnErrorCode, VpnResult, vpn_err};
 use crate::server::{
     NetworkGroupId, NetworkId, NetworkManager, NodeId, NodeManager, PnControlServer, PnStore,
-    VpnStore, VpnStoreFactory,
+    VpnControlCmdPkgLen, VpnStore, VpnStoreFactory,
 };
 use crate::{
     ClientProxyNodeInfo, GetVpnInfoReq, GetVpnInfoResp, JoinNetworkGroupReq, JoinNetworkGroupResp,
@@ -190,7 +190,7 @@ pub struct VpnServer<
     T: VpnCmdServer,
     S: VpnStore + PnStore,
     F: VpnStoreFactory<S>,
-    P: CmdServer<VpnCmdPkgLen, u8> = T,
+    P: CmdServer<VpnControlCmdPkgLen, u8>,
 > {
     network_manager: Arc<NetworkManager<S, F>>,
     node_manager: Arc<NodeManager<S, F>>,
@@ -200,41 +200,14 @@ pub struct VpnServer<
     online_nodes: Mutex<OnlineNodesState>,
     offline_monitor_handle: Mutex<Option<JoinHandle<()>>>,
 }
-pub type VpnServerRef<T, S, F, P = T> = Arc<VpnServer<T, S, F, P>>;
-
-impl<T: VpnCmdServer, S: VpnStore + PnStore, F: VpnStoreFactory<S>> VpnServer<T, S, F> {
-    pub fn new(cmd_server: Arc<T>, factory: Arc<F>) -> Arc<Self> {
-        Self::new_with_optional_pn_server_selector(cmd_server, factory, None)
-    }
-
-    pub fn new_with_pn_server_selector(
-        cmd_server: Arc<T>,
-        factory: Arc<F>,
-        pn_server_selector: Arc<dyn PnServerSelector>,
-    ) -> Arc<Self> {
-        Self::new_with_optional_pn_server_selector(cmd_server, factory, Some(pn_server_selector))
-    }
-
-    fn new_with_optional_pn_server_selector(
-        cmd_server: Arc<T>,
-        factory: Arc<F>,
-        pn_server_selector: Option<Arc<dyn PnServerSelector>>,
-    ) -> Arc<Self> {
-        Self::new_with_optional_pn_control_cmd_server(
-            cmd_server.clone(),
-            cmd_server,
-            factory,
-            pn_server_selector,
-        )
-    }
-}
+pub type VpnServerRef<T, S, F, P> = Arc<VpnServer<T, S, F, P>>;
 
 impl<T, S, F, P> VpnServer<T, S, F, P>
 where
     T: VpnCmdServer,
     S: VpnStore + PnStore,
     F: VpnStoreFactory<S>,
-    P: CmdServer<VpnCmdPkgLen, u8>,
+    P: CmdServer<VpnControlCmdPkgLen, u8>,
 {
     pub fn new_with_pn_control_cmd_server(
         cmd_server: Arc<T>,
@@ -680,7 +653,7 @@ where
     T: VpnCmdServer,
     S: VpnStore + PnStore,
     F: VpnStoreFactory<S>,
-    P: CmdServer<VpnCmdPkgLen, u8>,
+    P: CmdServer<VpnControlCmdPkgLen, u8>,
 {
     fn drop(&mut self) {
         let mut handle_lock = self.offline_monitor_handle.lock().unwrap();

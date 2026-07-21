@@ -1,14 +1,14 @@
 use crate::errors::{VpnErrorCode, VpnResult, vpn_err};
 use crate::server::{
-    JoinedNode, NetworkId, NetworkManager, NodeId, NodePnManager, PnServerSelector, PnStore, VpnStore,
-    VpnStoreFactory,
+    JoinedNode, NetworkId, NetworkManager, NodeId, NodePnManager, PnServerSelector, PnStore,
+    VPN_CONTROL_CMD_MAX_BYTES, VpnControlCmdHeader, VpnControlCmdPkgLen, VpnStore, VpnStoreFactory,
 };
 use crate::{
     NodeNetworkPnInfo, NodeTrafficReport, NodeTrafficReportResp, PnServerInfo, ProxyNodeHeartbeat,
     ProxyTrafficReportApplyResult, ReportPnTrafficStatsReq, ReportPnTrafficStatsResp,
     ReportProxyHeartbeatReq, ReportProxyHeartbeatResp, ReportProxyTrafficReq,
     ReportProxyTrafficResp, VPN_CMD_VERSION, ValidatePnConnectionReq, ValidatePnConnectionResp,
-    VpnCmdCode, VpnCmdPkgLen,
+    VpnCmdCode,
 };
 use bucky_raw_codec::{RawConvertTo, RawEncode, RawFrom};
 use sfo_cmd_server::errors::{CmdErrorCode, CmdResult, cmd_err, into_cmd_err};
@@ -16,12 +16,11 @@ use sfo_cmd_server::server::CmdServer;
 use sfo_cmd_server::{CmdBody, PeerId};
 use std::sync::{Arc, Once};
 
-const MAX_TRAFFIC_COMMAND_BYTES: usize = 1024 * 1024;
 const MAX_TRAFFIC_REPORT_ID_LEN: usize = 256;
 
 pub struct PnControlServer<P, S, F>
 where
-    P: CmdServer<VpnCmdPkgLen, u8>,
+    P: CmdServer<VpnControlCmdPkgLen, u8>,
     S: VpnStore + PnStore,
     F: VpnStoreFactory<S>,
 {
@@ -35,7 +34,7 @@ where
 
 impl<P, S, F> PnControlServer<P, S, F>
 where
-    P: CmdServer<VpnCmdPkgLen, u8>,
+    P: CmdServer<VpnControlCmdPkgLen, u8>,
     S: VpnStore + PnStore,
     F: VpnStoreFactory<S>,
 {
@@ -560,7 +559,7 @@ where
     }
 }
 
-fn require_version(header: &crate::VpnCmdHeader) -> CmdResult<()> {
+fn require_version(header: &VpnControlCmdHeader) -> CmdResult<()> {
     if header.version() != VPN_CMD_VERSION {
         return Err(cmd_err!(
             CmdErrorCode::InvalidParam,
@@ -582,12 +581,12 @@ fn proxy_traffic_error_result(error_code: VpnErrorCode) -> ProxyTrafficReportApp
 }
 
 fn require_traffic_command_size(size: usize) -> CmdResult<()> {
-    if size > MAX_TRAFFIC_COMMAND_BYTES {
+    if size > VPN_CONTROL_CMD_MAX_BYTES {
         return Err(cmd_err!(
             CmdErrorCode::InvalidParam,
             "traffic command body {} exceeds limit {}",
             size,
-            MAX_TRAFFIC_COMMAND_BYTES
+            VPN_CONTROL_CMD_MAX_BYTES
         ));
     }
     Ok(())
@@ -755,7 +754,7 @@ mod tests {
         }
     }
 
-    type TestCmdServer = DefaultCmdServerService<(), TestRead, TestWrite, VpnCmdPkgLen, u8>;
+    type TestCmdServer = DefaultCmdServerService<(), TestRead, TestWrite, VpnControlCmdPkgLen, u8>;
 
     #[derive(Default)]
     struct TestStoreState {
@@ -1003,23 +1002,76 @@ mod tests {
 
     #[test]
     fn changed_control_commands_reject_version_zero_before_decode() {
-        let old = crate::VpnCmdHeader::new(
+        let old = VpnControlCmdHeader::new(
             0,
             false,
             None,
             VpnCmdCode::ReportPnTrafficStats as u8,
-            VpnCmdPkgLen::new(0).unwrap(),
+            VpnControlCmdPkgLen::new(0).unwrap(),
         );
-        let current = crate::VpnCmdHeader::new(
+        let current = VpnControlCmdHeader::new(
             VPN_CMD_VERSION,
             false,
             None,
             VpnCmdCode::ReportPnTrafficStats as u8,
-            VpnCmdPkgLen::new(0).unwrap(),
+            VpnControlCmdPkgLen::new(0).unwrap(),
         );
 
         assert!(require_version(&old).is_err());
         assert!(require_version(&current).is_ok());
+    }
+
+    #[test]
+    fn control_command_length_is_three_bytes_and_capped_at_ten_mib() {
+        assert_eq!(
+            <VpnControlCmdPkgLen as bucky_raw_codec::RawFixedBytes>::raw_bytes(),
+            Some(3)
+        );
+        assert_eq!(VpnControlCmdPkgLen::MAX as usize, VPN_CONTROL_CMD_MAX_BYTES);
+        assert!(VpnControlCmdPkgLen::new(VPN_CONTROL_CMD_MAX_BYTES as u32).is_some());
+        assert!(VpnControlCmdPkgLen::new(VPN_CONTROL_CMD_MAX_BYTES as u32 + 1).is_none());
+    }
+
+    #[test]
+    fn traffic_command_limits_accept_the_estimated_safe_boundaries() {
+        assert!(require_traffic_command_size(VPN_CONTROL_CMD_MAX_BYTES).is_ok());
+        assert!(require_traffic_command_size(VPN_CONTROL_CMD_MAX_BYTES + 1).is_err());
+        assert!(require_record_count(crate::MAX_TRAFFIC_RECORDS_PER_COMMAND).is_ok());
+        assert!(require_record_count(crate::MAX_TRAFFIC_RECORDS_PER_COMMAND + 1).is_err());
+    }
+
+    #[test]
+    fn twenty_five_thousand_maximum_proxy_records_fit_under_ten_mib() {
+        let report = ProxyTrafficReport {
+            report_id: ProxyTrafficReportId("x".repeat(MAX_TRAFFIC_REPORT_ID_LEN)),
+            started_at_ms: 1,
+            ended_at_ms: 2,
+            traffic_sample: PnTrafficSample {
+                network_id: 1,
+                source_id: NodeId::from([1u8; 32].as_slice()),
+                dest_id: NodeId::from([2u8; 32].as_slice()),
+                source_to_dest: PnTrafficDirectionSample {
+                    bytes: 1,
+                    speed_bytes_per_sec: 2,
+                },
+                dest_to_source: PnTrafficDirectionSample {
+                    bytes: 3,
+                    speed_bytes_per_sec: 4,
+                },
+            },
+        };
+        assert_eq!(
+            bucky_raw_codec::RawEncode::raw_measure(&report, &None).unwrap(),
+            380
+        );
+
+        let request = ReportProxyTrafficReq {
+            seq: 1.into(),
+            reports: vec![report; crate::MAX_TRAFFIC_RECORDS_PER_COMMAND],
+        };
+        let request_bytes = bucky_raw_codec::RawEncode::raw_measure(&request, &None).unwrap();
+        assert_eq!(request_bytes, 9_500_008);
+        assert!(request_bytes <= VPN_CONTROL_CMD_MAX_BYTES);
     }
 
     #[tokio::test]

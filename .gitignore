@@ -4,3 +4,7 @@ __pycache__/
 .harness/
 test-results/
 test_data
+logs/
+dist/
+wintun-0.14.1/
+wintun-0.14.1.zip

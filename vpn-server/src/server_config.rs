@@ -60,7 +60,7 @@ pub struct PnTrafficUploadConfig {
 impl Default for PnTrafficUploadConfig {
     fn default() -> Self {
         Self {
-            records_per_command: 128,
+            records_per_command: vpn_frame::MAX_TRAFFIC_RECORDS_PER_COMMAND,
             concurrent_commands: 4,
             backlog_batches: 64,
             retry_delay_ms: 250,
@@ -699,6 +699,12 @@ mod tests {
         assert_eq!(pn_config.report_interval_secs, 5);
         assert_eq!(pn_config.heartbeat_interval_secs, 5);
         assert_eq!(pn_config.heartbeat_timeout_secs, 15);
+        assert_eq!(
+            get_pn_traffic_upload_config(&config)
+                .unwrap()
+                .records_per_command,
+            25_000
+        );
 
         let _ = fs::remove_dir_all(dir);
     }

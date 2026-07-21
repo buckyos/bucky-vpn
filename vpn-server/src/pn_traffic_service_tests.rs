@@ -382,22 +382,25 @@ async fn bounded_chunking_uploads_every_node_report_once() {
     let service = PnTrafficService::new_without_store();
     let reporter = FakeReporter::new(Vec::new());
     service.set_remote_reporter(reporter.clone());
-    let deltas = (0..257)
+    let deltas = (0..25_001)
         .map(|index| delta((index % 250) as u8, index + 1, 1, 2, 3))
         .collect();
     service.submit_node_batch(10, 20, deltas).unwrap();
 
     let responses = service.drain_upload_once().await.unwrap();
-    assert_eq!(responses.len(), 257);
+    assert_eq!(responses.len(), 25_001);
     let calls = reporter.calls.lock().unwrap();
-    assert_eq!(calls.len(), 3);
-    assert!(calls.iter().all(|call| call.len() <= 128));
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls.iter().map(Vec::len).collect::<Vec<_>>(),
+        vec![25_000, 1]
+    );
     let ids = calls
         .iter()
         .flatten()
         .map(|report| report.report_id.clone())
         .collect::<HashSet<_>>();
-    assert_eq!(ids.len(), 257);
+    assert_eq!(ids.len(), 25_001);
 }
 
 #[tokio::test]

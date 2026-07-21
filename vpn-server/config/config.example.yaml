@@ -48,7 +48,7 @@ pn:
   # 不限制一次采样最终可发送的记录总数。
   # 当前待发送批次驻留内存；优雅退出会在限定时间内排空，但进程崩溃不保证恢复。
   traffic_upload:
-    records_per_command: 128
+    records_per_command: 25000
     concurrent_commands: 4
     backlog_batches: 64
     retry_delay_ms: 250

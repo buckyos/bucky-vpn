@@ -11,8 +11,7 @@ use p2p_frame::ttp::{TtpClientRef, TtpConnector, TtpTarget};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use vpn_frame::{PnServerInfo, VpnCmdPkgLen};
-use vpn_frame::client::VpnServerClient;
+use vpn_frame::PnServerInfo;
 use vpn_frame::cmd_server::client::{
     ClassifiedClientSendGuard, ClassifiedCmdSend, ClassifiedCmdTunnel, ClassifiedCmdTunnelFactory,
     DefaultClassifiedCmdClient,
@@ -23,17 +22,23 @@ use vpn_frame::control_channel::{
     VpnControlClientOpsRef, into_control_client_ops,
 };
 use vpn_frame::errors::{VpnErrorCode, VpnResult, into_vpn_err};
-use vpn_frame::server::NodeId;
+use vpn_frame::server::{NodeId, VpnControlClient as FrameVpnControlClient, VpnControlCmdPkgLen};
 
-pub type P2pControlCmdSend =
-    ClassifiedCmdSend<SnTunnelClassification, (), SnTunnelRead, SnTunnelWrite, VpnCmdPkgLen, u8>;
+pub type P2pControlCmdSend = ClassifiedCmdSend<
+    SnTunnelClassification,
+    (),
+    SnTunnelRead,
+    SnTunnelWrite,
+    VpnControlCmdPkgLen,
+    u8,
+>;
 pub type P2pControlCmdSendGuard = ClassifiedClientSendGuard<
     SnTunnelClassification,
     (),
     SnTunnelRead,
     SnTunnelWrite,
     ControlCmdTunnelFactory,
-    VpnCmdPkgLen,
+    VpnControlCmdPkgLen,
     u8,
 >;
 pub type ControlCmdClient = DefaultClassifiedCmdClient<
@@ -42,11 +47,11 @@ pub type ControlCmdClient = DefaultClassifiedCmdClient<
     SnTunnelRead,
     SnTunnelWrite,
     ControlCmdTunnelFactory,
-    VpnCmdPkgLen,
+    VpnControlCmdPkgLen,
     u8,
 >;
 pub type VpnControlClient =
-    VpnServerClient<(), P2pControlCmdSend, P2pControlCmdSendGuard, ControlCmdClient>;
+    FrameVpnControlClient<(), P2pControlCmdSend, P2pControlCmdSendGuard, ControlCmdClient>;
 pub type VpnControlClientRef = Arc<VpnControlClient>;
 
 pub struct ControlCmdTunnelFactory {
@@ -146,7 +151,7 @@ pub async fn create_vpn_control_client(
         control_server.name.clone(),
         control_server.endpoint.clone(),
     );
-    Ok(VpnServerClient::new(
+    Ok(VpnControlClient::new(
         ControlCmdClient::new(factory, 1),
         conn_timeout,
     ))

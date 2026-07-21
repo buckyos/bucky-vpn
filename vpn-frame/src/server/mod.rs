@@ -6,6 +6,7 @@ mod pn_control_server;
 mod node_store;
 mod vpn_server;
 mod vpn_store;
+mod vpn_control_client;
 
 pub use network_manager::*;
 pub use network_store::*;
@@ -15,3 +16,4 @@ pub use pn_control_server::*;
 pub use node_store::*;
 pub use vpn_server::*;
 pub use vpn_store::*;
+pub use vpn_control_client::*;

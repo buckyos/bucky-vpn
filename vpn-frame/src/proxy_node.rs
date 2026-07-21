@@ -8,7 +8,7 @@ use std::collections::HashSet;
 pub type ReportedPnServerInfo = PnServerInfo;
 
 /// Receiver-compatible upper bound for records in one traffic command.
-pub const MAX_TRAFFIC_RECORDS_PER_COMMAND: usize = 256;
+pub const MAX_TRAFFIC_RECORDS_PER_COMMAND: usize = 25_000;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct ValidatedPnConnection {

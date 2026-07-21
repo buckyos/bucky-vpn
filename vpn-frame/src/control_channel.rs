@@ -1,14 +1,11 @@
-use crate::client::VpnServerClient;
 use crate::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
 use crate::server::NodeId;
 use crate::{
     NodeTrafficReport, NodeTrafficReportResp, PnServerInfo, ProxyNodeHeartbeat, ProxyNodeHeartbeatId,
-    ProxyTrafficReport, ProxyTrafficReportResp, ValidatedPnConnection, VpnCmdPkgLen,
+    ProxyTrafficReport, ProxyTrafficReportResp, ValidatedPnConnection,
 };
 use async_trait::async_trait;
-use sfo_cmd_server::client::{CmdClient, CmdSend, SendGuard};
 use sfo_cmd_server::errors::CmdResult;
-use sfo_cmd_server::CmdTunnelMeta;
 use std::sync::Arc;
 
 #[async_trait]
@@ -30,41 +27,6 @@ pub trait VpnControlClientOps: Send + Sync + 'static {
         from: NodeId,
         to: NodeId,
     ) -> VpnResult<Option<ValidatedPnConnection>>;
-}
-
-#[async_trait]
-impl<M, S, G, T> VpnControlClientOps for VpnServerClient<M, S, G, T>
-where
-    M: CmdTunnelMeta,
-    S: CmdSend<M>,
-    G: SendGuard<M, S>,
-    T: CmdClient<VpnCmdPkgLen, u8, M, S, G>,
-{
-    async fn report_pn_traffic_stats(
-        &self,
-        reports: Vec<NodeTrafficReport>,
-    ) -> VpnResult<Vec<NodeTrafficReportResp>> {
-        self.report_pn_traffic_stats(reports).await
-    }
-
-    async fn report_proxy_heartbeat(&self, heartbeat: ProxyNodeHeartbeat) -> VpnResult<()> {
-        self.report_proxy_heartbeat(heartbeat).await
-    }
-
-    async fn report_proxy_traffic(
-        &self,
-        reports: Vec<ProxyTrafficReport>,
-    ) -> VpnResult<Vec<ProxyTrafficReportResp>> {
-        self.report_proxy_traffic(reports).await
-    }
-
-    async fn validate_pn_connection(
-        &self,
-        from: NodeId,
-        to: NodeId,
-    ) -> VpnResult<Option<ValidatedPnConnection>> {
-        self.validate_pn_connection(from, to).await
-    }
 }
 
 pub type VpnControlClientOpsRef = Arc<dyn VpnControlClientOps>;

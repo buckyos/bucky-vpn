@@ -10,12 +10,12 @@ use p2p_frame::sn::types::{SnTunnelRead, SnTunnelWrite};
 use p2p_frame::ttp::{TtpPortListener, TtpServerRef, TtpStreamMeta};
 use std::sync::Arc;
 use vpn_frame::errors::{VpnErrorCode, VpnResult, into_vpn_err};
-use vpn_frame::VpnCmdPkgLen;
+use vpn_frame::server::VpnControlCmdPkgLen;
 
 const PROXY_CONTROL_SERVICE: &str = "vpn_proxy_control";
 
 pub type ProxyControlCmdService =
-    DefaultCmdServerService<(), SnTunnelRead, SnTunnelWrite, VpnCmdPkgLen, u8>;
+    DefaultCmdServerService<(), SnTunnelRead, SnTunnelWrite, VpnControlCmdPkgLen, u8>;
 pub type ProxyControlCmdServiceRef = Arc<ProxyControlCmdService>;
 
 pub fn proxy_control_purpose() -> p2p_frame::error::P2pResult<TunnelPurpose> {
