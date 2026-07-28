@@ -107,8 +107,8 @@ async fn run_daemon() {
                             Err(_) => {
                                 log::error!("get client failed");
                                 interval *= 2;
-                                if interval > 3600 {
-                                    interval = 3600;
+                                if interval > 60 {
+                                    interval = 60;
                                 }
                                 tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
                                 continue;
