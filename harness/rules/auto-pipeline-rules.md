@@ -81,8 +81,9 @@
   - deliver the smallest production code changes that satisfy the launch-confirmed proposal and design inputs
   - execute file-level implementation child tasks in the active design source's dependency order
 - Acceptance responsibility:
-  - review requirement problems and delivered implementation problems
-  - when pipeline-plan design mappings or testing documents exist, check whether implementation is consistent with them
+  - independently try to falsify the delivered behavior before selecting a conclusion
+  - review every required defect-discovery category, including design correctness and test adequacy
+  - treat pipeline status, receipts, passing tests, and document consistency as supporting evidence rather than correctness proof
   - use the task-packet `acceptance-report.md` as the canonical output
 
 ## Pipeline Planning Rule
@@ -155,29 +156,30 @@
 
 ## Acceptance Task Rule
 - Final acceptance MUST compare delivered results back to the launch-confirmed `proposal.md`.
-- Final acceptance MUST review requirement ambiguity, contradiction, incorrect boundaries, and missing required behavior.
-- Final acceptance MUST review implementation defects relevant to the requested behavior.
-- When pipeline-plan design mappings or testing documents exist, final acceptance MUST check implementation consistency with them.
+- Final acceptance MUST run as an independent child task and MUST NOT adopt implementation-child summaries or pipeline completion state as its conclusion.
+- Final acceptance MUST search for requirement, design, implementation, and validation defects across every category required by `acceptance-review-rules.md`.
+- When pipeline-plan design mappings or testing documents exist, final acceptance MUST inspect their correctness and adequacy as well as implementation consistency.
 - Final acceptance MUST apply `harness/rules/acceptance-review-rules.md`.
-- Acceptance MUST output findings, requirement review, implementation review, conditional document-consistency results, and an accepted/rejected/needs-changes conclusion in `acceptance-report.md`.
-- Acceptance MUST NOT generate acceptance rules, expected-result documents, command-evidence summaries, fixed correctness tables, or test-design-adequacy tables.
+- Acceptance MUST output findings, exact requirement coverage, the complete independent defect-discovery table, conditional document-consistency results, and only then an accepted/rejected/needs changes conclusion in `acceptance-report.md`.
+- Acceptance MUST NOT generate separate acceptance-rule, expected-result, or command-summary documents; required correctness and test-adequacy evidence stays in the report.
 
 ## Return Routing Rule
-- If acceptance fails, the pipeline MUST return work to the correct earlier stage instead of exiting.
-- If acceptance finds a proposal ambiguity, contradiction, incorrect requirement, or incorrect acceptance boundary, the pipeline MUST stop and ask the user to decide; it MUST NOT infer the intended proposal or create an automatic proposal return task.
+- Report conclusion `needs changes` is serialized as `acceptance.status: needs-changes` in runtime state. Report conclusion `accepted` or `rejected` is serialized unchanged.
+- A `needs changes` acceptance MUST return work to the correct earlier stage instead of exiting.
+- If acceptance finds a proposal ambiguity, contradiction, incorrect requirement, or incorrect acceptance boundary, it MUST first finish the canonical report with a blocking requirement finding and `rejected`, set runtime acceptance status to `rejected`, and then stop and ask the user to decide. It MUST NOT infer the intended proposal, create an automatic proposal return task, or append a return record for that rejected run.
 - Missing required behavior or implementation defects return to implementation.
-- If implementation satisfies the requirement but conflicts with an existing design or testing document, return the stale or incorrect document to its owning stage.
+- Design defects return to design, and missing or inadequate defect-detection coverage returns to testing.
+- If implementation satisfies the requirement but conflicts with an existing design or testing document, return the stale document to its owning stage.
 - If the same unresolved issue remains after more than 5 unsuccessful iterations, the pipeline MUST stop and report the issue to the user.
-- Mutable return history lives only in runtime `.harness/pipelines/<version>/<packet-module>/<task-name>/state.json` `return_records`: every failed acceptance run MUST append a return record (blocking issue id, owning stage, target task, reason, expected fix output), and the iteration count for an issue is the number of runtime return records with the same blocking issue id. `pipeline/plan.md` contains stable return-routing rules only; do not store mutable return records or counters there, or track them from memory or chat context.
+- Mutable return history lives only in runtime `.harness/pipelines/<version>/<packet-module>/<task-name>/state.json` `return_records`: every `needs changes` run MUST append a return record (blocking issue id, owning stage, target task, reason, expected fix output), and the iteration count for an issue is the number of runtime return records with the same blocking issue id. A `rejected` run records its report/status but appends no return record because no stage is reopened. `pipeline/plan.md` contains stable return-routing rules only; do not store mutable return records or counters there, or track them from memory or chat context.
 - `pipeline-plan-check.py --require-complete` MUST fail if final exit-condition checkboxes are not complete.
 
-Minimum return categories:
-- requirement issue requiring user decision and pipeline stop
+Minimum routable return categories:
+- design defect or design consistency issue
 - implementation issue
-- design consistency issue when a design source exists
-- testing-document consistency issue when a testing document exists
+- testing inadequacy or testing-document consistency issue
 
-For each failed acceptance run, record:
+For each `needs changes` acceptance run, record:
 - blocking issue id
 - owning stage
 - target task to reopen or recreate
@@ -190,6 +192,8 @@ For each failed acceptance run, record:
   - blocking issues are closed
   - required tests and evidence exist
   - final acceptance passes
+
+`task.yaml.stage` is the manual launch-stage cursor in auto-pipeline mode; it does not advance through automatic stages. Runtime `state.json` exclusively records automatic stage progression. Therefore task removal MUST ignore the manifest stage for auto-pipeline tasks and rely on a complete accepted runtime state plus the normal report and lifecycle checks.
 
 ## Guardrails
 - The pipeline MUST NOT skip planning and jump straight into implementation.

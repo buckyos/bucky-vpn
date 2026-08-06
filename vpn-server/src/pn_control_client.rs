@@ -231,7 +231,7 @@ impl VpnCmdPnConnectionValidator {
 }
 
 #[cfg(test)]
-#[path = "pn_control_client_tests.rs"]
+#[path = "../tests/unit/pn_control_client_tests.rs"]
 mod pn_control_client_tests;
 
 impl DeferredVpnCmdIncomingTunnelValidator {

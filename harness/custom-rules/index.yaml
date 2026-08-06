@@ -7,6 +7,14 @@ rules:
     modes: [manual, auto-pipeline]
     triggers: [api, build, config, contract, governance, harness, protocol, release, serialization, ui]
     path_patterns: ["AGENTS.md", "harness/**", "docs/architecture/repository-workflow.md", "docs/versions/*/modules/repo-governance/**", "vpn-frame/**", "vpn_web/lib/api.dart", "vpn_web/lib/api.g.dart", "build_*.sh", "build_win.bat"]
+  - id: project-test-file-location
+    file: harness/custom-rules/test-file-location-rule.md
+    activation: trigger
+    tiers: [high-risk, standard, trivial]
+    stages: [implementation, testing, acceptance]
+    modes: [manual, auto-pipeline]
+    triggers: [test, testing]
+    path_patterns: ["src/**", "*/src/**", "tests/**", "*/tests/**"]
   - id: project-cyfs-gateway-config-spec
     file: harness/custom-rules/cyfs-gateway-config-spec-rules.md
     activation: trigger

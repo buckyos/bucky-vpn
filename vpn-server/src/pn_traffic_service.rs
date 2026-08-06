@@ -826,5 +826,5 @@ fn validate_node_report_responses(
 }
 
 #[cfg(test)]
-#[path = "pn_traffic_service_tests.rs"]
+#[path = "../tests/unit/pn_traffic_service_tests.rs"]
 mod node_traffic_tests;

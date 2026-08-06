@@ -17,6 +17,67 @@ fn ip_version(packet: &[u8]) -> u8 {
     version
 }
 
+fn spawn_recv_task<S: PacketRecv>(
+    dev: Arc<AsyncDevice>,
+    network: NodeNetwork,
+    recv: Arc<S>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut buf = [0; 65535];
+        loop {
+            match dev.recv(&mut buf).await {
+                Ok(size) => {
+                    let packet = &buf[..size];
+                    match ip_version(packet) {
+                        4 => {
+                            if network.ip.is_some() {
+                                let mask = u32::MAX << (32 - network.mask);
+                                if let Some(ip_pkg) = Ipv4Packet::new(packet) {
+                                    let target = ip_pkg.get_destination();
+                                    if network.ip.as_ref().unwrap().ipv4().unwrap().to_bits()
+                                        & mask
+                                        != target.to_bits() & mask
+                                    {
+                                        continue;
+                                    }
+                                    if let Err(e) = recv.on_recv(IpAddr::V4(target), packet).await {
+                                        log::error!("failed to process packet: {:?}", e);
+                                    }
+                                }
+                            }
+                        }
+                        6 => {
+                            if network.ipv6.is_some() {
+                                let mask = u128::MAX << (128 - network.ipv6_mask);
+                                if let Some(ip_pkg) = Ipv6Packet::new(packet) {
+                                    let target = ip_pkg.get_destination();
+                                    if u128::from(
+                                        network.ipv6.as_ref().unwrap().ipv6().unwrap(),
+                                    ) & mask
+                                        != u128::from(target) & mask
+                                    {
+                                        continue;
+                                    }
+                                    if let Err(e) = recv.on_recv(IpAddr::V6(target), packet).await {
+                                        log::error!("failed to process packet: {:?}", e);
+                                    }
+                                }
+                            }
+                        }
+                        v => {
+                            log::error!("unsupported ethertype: {:?}", v);
+                        }
+                    }
+                }
+                Err(_e) => {
+                    log::error!("failed to receive packet");
+                    break;
+                }
+            }
+        }
+    })
+}
+
 pub struct DeviceSend {
     dev: Arc<AsyncDevice>,
 }
@@ -74,7 +135,7 @@ impl<S: PacketRecv> VpnDevice<S> {
         if self.network.ipv6.is_some() {
             config = config.ipv6(
                 self.network.ipv6.as_ref().unwrap().clone(),
-                self.network.mask,
+                self.network.ipv6_mask,
             );
         }
 
@@ -111,69 +172,18 @@ impl<S: PacketRecv> VpnDevice<S> {
     }
 
     pub fn start(&mut self, recv: Arc<S>) -> VpnResult<()> {
-        self.create_device()?;
-        let dev = self.dev.clone().unwrap();
-        let network = self.network.clone();
-        self.recv = Some(recv.clone());
-        let handle = tokio::spawn(async move {
-            let mut buf = [0; 65535];
-            loop {
-                match dev.recv(&mut buf).await {
-                    Ok(size) => {
-                        let packet = &buf[..size];
-                        match ip_version(&buf[..size]) {
-                            4 => {
-                                if network.ip.is_some() {
-                                    let mask = u32::MAX << (32 - network.mask);
-                                    if let Some(ip_pkg) = Ipv4Packet::new(packet) {
-                                        let target = ip_pkg.get_destination();
-                                        if network.ip.as_ref().unwrap().ipv4().unwrap().to_bits()
-                                            & mask
-                                            != target.to_bits() & mask
-                                        {
-                                            continue;
-                                        }
-                                        if let Err(e) =
-                                            recv.on_recv(IpAddr::V4(target), packet).await
-                                        {
-                                            log::error!("failed to process packet: {:?}", e);
-                                        }
-                                    }
-                                }
-                            }
-                            6 => {
-                                if network.ipv6.is_some() {
-                                    let mask = u128::MAX << (128 - network.ipv6_mask);
-                                    if let Some(ip_pkg) = Ipv6Packet::new(packet) {
-                                        let target = ip_pkg.get_destination();
-                                        if u128::from(
-                                            network.ipv6.as_ref().unwrap().ipv6().unwrap(),
-                                        ) & mask
-                                            != u128::from(target) & mask
-                                        {
-                                            continue;
-                                        }
-                                        if let Err(e) =
-                                            recv.on_recv(IpAddr::V6(target), packet).await
-                                        {
-                                            log::error!("failed to process packet: {:?}", e);
-                                        }
-                                    }
-                                }
-                            }
-                            v => {
-                                log::error!("unsupported ethertype: {:?}", v);
-                            }
-                        }
-                    }
-                    Err(_e) => {
-                        log::error!("failed to receive packet");
-                        break;
-                    }
-                }
-            }
-        });
-        self.handle = Some(handle);
+        self.recv = Some(recv);
+        if self.dev.is_none() {
+            self.create_device().map_err(|e| {
+                log::error!(
+                    "failed to create tun device for network {}: {:?}",
+                    self.network.id,
+                    e
+                );
+                e
+            })?;
+        }
+        self.restart_recv_task();
         Ok(())
     }
 
@@ -186,17 +196,71 @@ impl<S: PacketRecv> VpnDevice<S> {
             return Ok(());
         }
 
+        if let Some(recv) = self.recv.clone() {
+            return self.reconcile(network, recv);
+        }
+
+        let tun_changed = Self::tun_effective_changed(&self.network, &network);
         self.network = network;
+        if tun_changed {
+            self.stop_recv_task();
+            self.dev.take();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn reconcile(&mut self, network: NodeNetwork, recv: Arc<S>) -> VpnResult<()> {
+        let tun_changed = Self::tun_effective_changed(&self.network, &network);
+        let dispatch_changed = self.network.group_id != network.group_id;
+
+        // Save the desired snapshot and receive context before destructive work so a
+        // failed create remains managed and can be retried by the next refresh.
+        self.network = network;
+        self.recv = Some(recv);
+
+        if tun_changed || self.dev.is_none() {
+            self.stop_recv_task();
+            self.dev.take();
+            self.create_device().map_err(|e| {
+                log::error!(
+                    "failed to reconcile tun device for network {}: {:?}",
+                    self.network.id,
+                    e
+                );
+                e
+            })?;
+            self.restart_recv_task();
+        } else if dispatch_changed
+            || self
+                .handle
+                .as_ref()
+                .map_or(true, JoinHandle::is_finished)
+        {
+            self.restart_recv_task();
+        }
+
+        Ok(())
+    }
+
+    fn tun_effective_changed(current: &NodeNetwork, desired: &NodeNetwork) -> bool {
+        current.id != desired.id
+            || current.ip != desired.ip
+            || current.mask != desired.mask
+            || current.ipv6 != desired.ipv6
+            || current.ipv6_mask != desired.ipv6_mask
+    }
+
+    fn stop_recv_task(&mut self) {
         if let Some(handle) = self.handle.take() {
             handle.abort();
         }
+    }
 
-        self.dev.take();
-
-        if let Some(recv) = self.recv.take() {
-            self.start(recv)?;
+    fn restart_recv_task(&mut self) {
+        self.stop_recv_task();
+        if let (Some(dev), Some(recv)) = (self.dev.clone(), self.recv.clone()) {
+            self.handle = Some(spawn_recv_task(dev, self.network.clone(), recv));
         }
-        Ok(())
     }
 }
 

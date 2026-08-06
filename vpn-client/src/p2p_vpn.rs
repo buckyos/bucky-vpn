@@ -194,6 +194,25 @@ pub struct P2pVpnTunnelFactory {
     connected_pn_targets: StdMutex<HashMap<ClientProxyNodeInfo, Vec<TtpTarget>>>,
 }
 
+fn take_removed_pn_targets(
+    connected: &mut HashMap<ClientProxyNodeInfo, Vec<TtpTarget>>,
+    desired: &HashMap<ClientProxyNodeInfo, Vec<TtpTarget>>,
+) -> Vec<(ClientProxyNodeInfo, Vec<TtpTarget>)> {
+    let removed_pn_servers = connected
+        .keys()
+        .filter(|pn_server| !desired.contains_key(*pn_server))
+        .cloned()
+        .collect::<Vec<_>>();
+    removed_pn_servers
+        .into_iter()
+        .filter_map(|pn_server| {
+            connected
+                .remove(&pn_server)
+                .map(|targets| (pn_server, targets))
+        })
+        .collect()
+}
+
 impl P2pVpnTunnelFactory {
     pub fn new(
         stack: P2pStackRef,
@@ -297,21 +316,19 @@ impl P2pVpnTunnelFactory {
             std::mem::take(&mut *connected)
         };
 
-        for (pn_server, targets) in connected.iter() {
-            if !desired.contains_key(pn_server) {
-                let ttp_client = self.stack.sn_client().get_ttp_client();
-                for target in targets {
-                    if let Err(err) = ttp_client.remove_server(target) {
-                        log::warn!(
-                            "remove pn server {} {:?}://{}:{} failed: code={:?} msg={}",
-                            pn_server.proxy_id.to_base36(),
-                            target.remote_ep.protocol(),
-                            target.remote_ep.addr().ip(),
-                            target.remote_ep.addr().port(),
-                            err.code(),
-                            err.msg()
-                        );
-                    }
+        for (pn_server, targets) in take_removed_pn_targets(&mut connected, &desired) {
+            let ttp_client = self.stack.sn_client().get_ttp_client();
+            for target in &targets {
+                if let Err(err) = ttp_client.remove_server(target) {
+                    log::warn!(
+                        "remove pn server {} {:?}://{}:{} failed: code={:?} msg={}",
+                        pn_server.proxy_id.to_base36(),
+                        target.remote_ep.protocol(),
+                        target.remote_ep.addr().ip(),
+                        target.remote_ep.addr().port(),
+                        err.code(),
+                        err.msg()
+                    );
                 }
             }
         }
@@ -1041,4 +1058,5 @@ mod tests {
         assert!(resolver.routes.lock().unwrap().is_empty());
     }
 
+    include!("../tests/unit/p2p_vpn_pn_registry_tests.rs");
 }

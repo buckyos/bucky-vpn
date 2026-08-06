@@ -39,6 +39,7 @@
 - 领域 checklist：`harness/checklists/`
 - 协作模式与模块分级：`harness/human-rules/`
 - 高风险变更触发：`harness/custom-rules/trigger-based-validation-rules.md`
+- 独立测试文件目录：`harness/custom-rules/test-file-location-rule.md`；独立测试文件不得放入 `src` 或其子目录，必须放入与对应 `src` 同级的 `tests`
 
 ## 当前已初始化模块
 - `vpn-frame`：共享 VPN 协议与运行时库

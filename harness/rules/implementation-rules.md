@@ -24,6 +24,8 @@
 
 ## Execution Guardrails
 - Implement the minimum production change needed to satisfy the governing proposal/design and current request.
+- When the task contains GitHub issue information, treat the issue-described behavior and acceptance conditions as the primary execution target. Use proposal/design/process artifacts to help deliver that target, never as a reason to prioritize Harness housekeeping over required implementation or to accept a narrower outcome.
+- Recheck the current implementation direction against the issue after material discoveries or design deviations; spend the next useful step closing an issue requirement or validating it rather than polishing secondary process artifacts.
 - When the design lists multiple file-level modules, follow `## File-Level Implementation Sequence` in dependency order and create child tasks in that order when needed.
 - Each implementation child task starts with the relevant proposal/design excerpts, child design document, `change_id`, interfaces, and likely source files, and may inspect or change additional files as needed.
 - If actual impact differs materially from `Scope Paths`, update traceability evidence when useful.

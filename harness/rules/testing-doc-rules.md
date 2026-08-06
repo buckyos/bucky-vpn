@@ -29,6 +29,7 @@ This rule is part of the high-risk workflow. Trivial and standard tasks run prop
 
 ## Guardrails
 - Testing operationalizes approved proposal/design intent against delivered implementation.
+- When the task contains GitHub issue information, design and prioritize tests around the issue-described behavior, boundaries, and acceptance conditions. Process-document coverage is secondary and cannot substitute for evidence that the issue outcome works.
 - Optional testing docs use the approval authority in `harness/rules/task-entry-gate-rules.md` and metadata schema in `harness/rules/schema-validation-rules.md`.
 - Testing runs after implementation and MUST inspect proposal, design, and delivered code before designing cases.
 - Case depth, design-element derivation, lowest-level placement, test-file placement, and design-return conditions are owned by `harness/rules/test-design-rules.md`.

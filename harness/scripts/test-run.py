@@ -52,6 +52,7 @@ MODULE_SUITES: dict[str, dict[str, list[list[str]]]] = {
             ["python3", "./harness/scripts/context.py", "--validate-index"],
             ["python3", "./harness/tests/test_schema_check_proposal_approval.py"],
             ["python3", "./harness/tests/test_auto_pipeline_proposal_transition.py"],
+            ["python3", "./harness/tests/test_test_file_location_rule.py"],
         ],
         "dv": [["python3", "./harness/scripts/harness-self-check.py", "--root", "."]],
         "integration": [["python3", "./harness/scripts/check-all.py", "--root", "."]],

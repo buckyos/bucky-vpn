@@ -14,7 +14,7 @@ use crate::{
 use bucky_raw_codec::RawDecode;
 use sfo_cmd_server::CmdTunnelMeta;
 use sfo_cmd_server::client::{CmdClient, CmdSend, SendGuard};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -159,6 +159,20 @@ pub struct VpnClient<
     client_version: String,
 }
 
+fn is_unchanged_vpn_info_response(
+    is_first: bool,
+    server_version: u16,
+    cur_version: u16,
+    pn_info_version: u16,
+    cur_pn_info_version: u16,
+    vpn_infos_empty: bool,
+) -> bool {
+    !is_first
+        && server_version == cur_version
+        && pn_info_version == cur_pn_info_version
+        && vpn_infos_empty
+}
+
 impl<
     M: CmdTunnelMeta,
     CS: CmdSend<M>,
@@ -253,21 +267,18 @@ impl<
                     )
                     .await?
             };
-        if !self.is_first.load(Ordering::Relaxed)
-            && server_version == self.cur_version.load(Ordering::SeqCst)
-            && pn_info_version == self.cur_pn_info_version.load(Ordering::SeqCst)
-        {
+        if is_unchanged_vpn_info_response(
+            self.is_first.load(Ordering::Relaxed),
+            server_version,
+            self.cur_version.load(Ordering::SeqCst),
+            pn_info_version,
+            self.cur_pn_info_version.load(Ordering::SeqCst),
+            vpn_infos.is_empty(),
+        ) {
             return Ok(());
         }
         let vpn_infos = self.apply_cached_pn_servers(vpn_infos);
         self.tunnel_factory.on_vpn_info_received(&vpn_infos).await?;
-        self.is_first.store(false, Ordering::Relaxed);
-        let mut vpn_devices = {
-            let mut vpn_devices = self.vpn_devices.lock().unwrap();
-            let devices = vpn_devices.take().unwrap();
-            *vpn_devices = Some(HashMap::new());
-            devices
-        };
         let tunnel_manager = {
             let tunnel_manager = self.tunnel_manager.lock().unwrap();
             if tunnel_manager.is_none() {
@@ -275,56 +286,83 @@ impl<
             }
             tunnel_manager.as_ref().unwrap().clone()
         };
-        for vpn_info in vpn_infos {
-            let group_id = vpn_info.node_info.group_id;
-            let network_id = vpn_info.node_info.id;
-            let pn_server = vpn_info
-                .node_info
-                .pn_server
-                .as_ref()
-                .map(client_proxy_node_to_internal)
-                .transpose()?;
-            let members = vpn_info
-                .members
-                .iter()
-                .filter(|x| {
-                    vpn_info.node_info.ip.is_none()
-                        || x.ip != vpn_info.node_info.ip.as_ref().unwrap().to_string()
-                })
-                .map(|x| x.clone())
-                .collect::<Vec<_>>();
-            let vpn_device = vpn_devices.remove(&vpn_info.node_info.id);
-            if vpn_device.is_none() {
-                let mut vpn_device = VpnDevice::new(vpn_info.node_info.clone());
-                let packet_dispatcher = {
-                    let packet_dispatcher = self.packet_dispatcher.lock().unwrap();
-                    packet_dispatcher.as_ref().unwrap().clone()
-                };
-                if let Ok(_) = vpn_device.start(Arc::new(DevicePkgRecv::new(
-                    packet_dispatcher,
-                    vpn_info.node_info.group_id,
-                    vpn_info.node_info.id,
+        let packet_dispatcher = {
+            let packet_dispatcher = self.packet_dispatcher.lock().unwrap();
+            packet_dispatcher.as_ref().unwrap().clone()
+        };
+        let mut vpn_devices = {
+            let mut vpn_devices = self.vpn_devices.lock().unwrap();
+            let devices = vpn_devices.take().unwrap();
+            *vpn_devices = Some(HashMap::new());
+            devices
+        };
+        let mut active_networks = HashSet::with_capacity(vpn_infos.len());
+        let reconcile_result = (|| -> VpnResult<()> {
+            for vpn_info in vpn_infos {
+                let group_id = vpn_info.node_info.group_id;
+                let network_id = vpn_info.node_info.id;
+                let pn_server = vpn_info
+                    .node_info
+                    .pn_server
+                    .as_ref()
+                    .map(client_proxy_node_to_internal)
+                    .transpose()?;
+                let members = vpn_info
+                    .members
+                    .iter()
+                    .filter(|x| {
+                        vpn_info.node_info.ip.is_none()
+                            || x.ip != vpn_info.node_info.ip.as_ref().unwrap().to_string()
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let recv = Arc::new(DevicePkgRecv::new(
+                    packet_dispatcher.clone(),
+                    group_id,
+                    network_id,
                     vpn_info.node_info.mask,
                     vpn_info.node_info.ipv6_mask,
-                ))) {
-                    let mut vpn_devices = self.vpn_devices.lock().unwrap();
-                    vpn_devices.as_mut().unwrap().insert(network_id, vpn_device);
+                ));
+                let (mut vpn_device, was_existing) = match vpn_devices.remove(&network_id) {
+                    Some(vpn_device) => (vpn_device, true),
+                    None => (VpnDevice::new(vpn_info.node_info.clone()), false),
+                };
+                let device_result = if was_existing {
+                    vpn_device.reconcile(vpn_info.node_info, recv)
+                } else {
+                    vpn_device.start(recv)
+                };
+
+                // Always restore the managed entry before propagating an update
+                // failure so the next unchanged-version poll can retry it.
+                vpn_devices.insert(network_id, vpn_device);
+                if let Err(e) = device_result {
+                    log::error!(
+                        "failed to apply vpn device for network {}: {:?}",
+                        network_id,
+                        e
+                    );
+                    return Err(e);
                 }
-            } else {
-                let mut vpn_device = vpn_device.unwrap();
-                if let Ok(_) = vpn_device.update_device(vpn_info.node_info) {
-                    let mut vpn_devices = self.vpn_devices.lock().unwrap();
-                    vpn_devices.as_mut().unwrap().insert(network_id, vpn_device);
-                }
+
+                active_networks.insert(network_id);
+                tunnel_manager
+                    .get_router()
+                    .add_network(group_id, network_id, pn_server, members);
             }
 
-            tunnel_manager
-                .get_router()
-                .add_network(group_id, network_id, pn_server, members);
+            vpn_devices.retain(|network_id, _| active_networks.contains(network_id));
+            Ok(())
+        })();
+        {
+            let mut managed_devices = self.vpn_devices.lock().unwrap();
+            *managed_devices = Some(vpn_devices);
         }
+        reconcile_result?;
         self.cur_version.store(server_version, Ordering::SeqCst);
         self.cur_pn_info_version
             .store(pn_info_version, Ordering::SeqCst);
+        self.is_first.store(false, Ordering::Relaxed);
         Ok(())
     }
 
@@ -471,4 +509,6 @@ mod tests {
         assert!(cleared[0].node_info.pn_server.is_none());
         assert_eq!(cache.get(&100), Some(&None));
     }
+
+    include!("../../tests/unit/vpn_client_restart_tests.rs");
 }
