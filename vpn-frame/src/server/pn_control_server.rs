@@ -245,7 +245,7 @@ where
         &self,
         node_id: &NodeId,
         networks: Vec<NodeNetworkPnInfo>,
-    ) -> (u16, bool) {
+    ) -> (u32, bool) {
         self.node_pn_manager
             .update_node_pn_info(node_id, networks)
     }

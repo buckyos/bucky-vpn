@@ -108,7 +108,7 @@ pub struct JoinNetworkGroupResp {
 pub struct GetVpnInfoReq {
     pub seq: Sequence,
     pub info_version: Option<u16>,
-    pub pn_info_version: Option<u16>,
+    pub pn_info_version: Option<u32>,
     pub client_version: Option<String>,
 }
 
@@ -148,7 +148,7 @@ pub struct GetVpnInfoResp {
     pub seq: Sequence,
     pub result: u8,
     pub info_version: u16,
-    pub pn_info_version: u16,
+    pub pn_info_version: u32,
     pub vpn_list: Vec<NodeVpnInfo>,
 }
 

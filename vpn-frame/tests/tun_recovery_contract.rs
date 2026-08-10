@@ -171,7 +171,14 @@ fn response_versions_commit_only_after_complete_reconciliation() {
             "self.cur_pn_info_version",
             ".store(pn_info_version",
             "self.is_first.store(false",
+            "self.force_full_sync.store(false",
+            "vpn info versions committed: info_version={}, pn_info_version={}",
         ],
+    );
+    assert_eq!(
+        body.matches("vpn info versions committed:").count(),
+        1,
+        "the parseable version evidence must have one post-commit emission point"
     );
 }
 
@@ -179,14 +186,15 @@ fn response_versions_commit_only_after_complete_reconciliation() {
 fn zero_version_first_response_failure_keeps_the_next_request_full() {
     let constructor = function_body(VPN_CLIENT_SOURCE, "pub fn new_with_packet_dispatcher_config(");
     assert!(constructor.contains("cur_version: AtomicU16::new(0)"));
-    assert!(constructor.contains("cur_pn_info_version: AtomicU16::new(0)"));
+    assert!(constructor.contains("cur_pn_info_version: AtomicU32::new(0)"));
     assert!(constructor.contains("is_first: AtomicBool::new(true)"));
+    assert!(constructor.contains("force_full_sync: AtomicBool::new(false)"));
 
     let body = function_body(VPN_CLIENT_SOURCE, "async fn run_proc");
     assert_ordered(
         body,
         &[
-            "if self.is_first.load(Ordering::Relaxed)",
+            "let is_first = self.is_first.load(Ordering::Relaxed)",
             ".get_vpn_info(None, None",
             "let reconcile_result",
             "reconcile_result?;",
@@ -200,4 +208,31 @@ fn zero_version_first_response_failure_keeps_the_next_request_full() {
         1,
         "the first-sync marker must have one successful commit point"
     );
+}
+
+#[test]
+fn failed_same_second_incremental_apply_forces_a_full_retry() {
+    let body = function_body(VPN_CLIENT_SOURCE, "async fn run_proc");
+
+    assert!(body.contains("else if force_full_sync"));
+    assert!(body.contains("get_vpn_info(None, None, None)"));
+    assert_ordered(
+        body,
+        &[
+            "if is_unchanged_vpn_info_response",
+            "return Ok(());",
+            "self.force_full_sync.store(true",
+            "self.tunnel_factory.on_vpn_info_received(&vpn_infos).await?;",
+            "reconcile_result?;",
+            ".store(pn_info_version",
+            "self.force_full_sync.store(false",
+        ],
+    );
+}
+
+#[test]
+fn network_and_pn_version_atomic_widths_remain_intentionally_distinct() {
+    assert!(VPN_CLIENT_SOURCE.contains("cur_version: AtomicU16"));
+    assert!(VPN_CLIENT_SOURCE.contains("cur_pn_info_version: AtomicU32"));
+    assert!(!VPN_CLIENT_SOURCE.contains("cur_version: AtomicU32"));
 }

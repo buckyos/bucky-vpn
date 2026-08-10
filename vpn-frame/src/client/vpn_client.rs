@@ -16,7 +16,7 @@ use sfo_cmd_server::CmdTunnelMeta;
 use sfo_cmd_server::client::{CmdClient, CmdSend, SendGuard};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -154,8 +154,9 @@ pub struct VpnClient<
     run_handle: Mutex<Option<JoinHandle<()>>>,
     pn_server_cache: Mutex<HashMap<NetworkId, Option<ClientProxyNodeInfo>>>,
     cur_version: AtomicU16,
-    cur_pn_info_version: AtomicU16,
+    cur_pn_info_version: AtomicU32,
     is_first: AtomicBool,
+    force_full_sync: AtomicBool,
     client_version: String,
 }
 
@@ -163,8 +164,8 @@ fn is_unchanged_vpn_info_response(
     is_first: bool,
     server_version: u16,
     cur_version: u16,
-    pn_info_version: u16,
-    cur_pn_info_version: u16,
+    pn_info_version: u32,
+    cur_pn_info_version: u32,
     vpn_infos_empty: bool,
 ) -> bool {
     !is_first
@@ -215,8 +216,9 @@ impl<
             run_handle: Mutex::new(None),
             pn_server_cache: Mutex::new(HashMap::new()),
             cur_version: AtomicU16::new(0),
-            cur_pn_info_version: AtomicU16::new(0),
+            cur_pn_info_version: AtomicU32::new(0),
             is_first: AtomicBool::new(true),
+            force_full_sync: AtomicBool::new(false),
             client_version,
         });
         let tunnel_manager = TunnelManager::new(
@@ -251,22 +253,25 @@ impl<
     }
 
     async fn run_proc(self: &Arc<Self>) -> VpnResult<()> {
-        let ((server_version, pn_info_version), vpn_infos) =
-            if self.is_first.load(Ordering::Relaxed) {
-                let (versions, vpn_infos) = self
-                    .server_client
-                    .get_vpn_info(None, None, Some(self.client_version.clone()))
-                    .await?;
-                (versions, vpn_infos)
-            } else {
-                self.server_client
-                    .get_vpn_info(
-                        Some(self.cur_version.load(Ordering::SeqCst)),
-                        Some(self.cur_pn_info_version.load(Ordering::SeqCst)),
-                        None,
-                    )
-                    .await?
-            };
+        let is_first = self.is_first.load(Ordering::Relaxed);
+        let force_full_sync = self.force_full_sync.load(Ordering::Relaxed);
+        let ((server_version, pn_info_version), vpn_infos) = if is_first {
+            let (versions, vpn_infos) = self
+                .server_client
+                .get_vpn_info(None, None, Some(self.client_version.clone()))
+                .await?;
+            (versions, vpn_infos)
+        } else if force_full_sync {
+            self.server_client.get_vpn_info(None, None, None).await?
+        } else {
+            self.server_client
+                .get_vpn_info(
+                    Some(self.cur_version.load(Ordering::SeqCst)),
+                    Some(self.cur_pn_info_version.load(Ordering::SeqCst)),
+                    None,
+                )
+                .await?
+        };
         if is_unchanged_vpn_info_response(
             self.is_first.load(Ordering::Relaxed),
             server_version,
@@ -277,6 +282,7 @@ impl<
         ) {
             return Ok(());
         }
+        self.force_full_sync.store(true, Ordering::Relaxed);
         let vpn_infos = self.apply_cached_pn_servers(vpn_infos);
         self.tunnel_factory.on_vpn_info_received(&vpn_infos).await?;
         let tunnel_manager = {
@@ -363,6 +369,12 @@ impl<
         self.cur_pn_info_version
             .store(pn_info_version, Ordering::SeqCst);
         self.is_first.store(false, Ordering::Relaxed);
+        self.force_full_sync.store(false, Ordering::Relaxed);
+        log::info!(
+            "vpn info versions committed: info_version={}, pn_info_version={}",
+            server_version,
+            pn_info_version
+        );
         Ok(())
     }
 

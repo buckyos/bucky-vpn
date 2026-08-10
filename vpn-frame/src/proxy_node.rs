@@ -185,14 +185,14 @@ pub struct NodeNetworkPnInfo {
 #[derive(Debug, Clone, Eq, PartialEq, RawEncode, RawDecode)]
 pub struct NodePnInfoState {
     pub node_id: NodeId,
-    pub version: u16,
+    pub version: u32,
     pub networks: Vec<NodeNetworkPnInfo>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, RawEncode, RawDecode)]
 pub struct ClientProxyNodeAssignments {
     pub node_id: NodeId,
-    pub version: u16,
+    pub version: u32,
     pub networks: Vec<NodeNetworkPnInfo>,
 }
 

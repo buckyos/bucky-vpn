@@ -462,8 +462,8 @@ where
         &self,
         peer_id: PeerId,
         info_version: Option<u16>,
-        pn_info_version: Option<u16>,
-    ) -> VpnResult<((u16, u16), Vec<NodeVpnInfo>)> {
+        pn_info_version: Option<u32>,
+    ) -> VpnResult<((u16, u32), Vec<NodeVpnInfo>)> {
         let node_id = NodeId::from(peer_id.as_slice());
         let node = self.node_manager.get_node(&node_id).await?;
         if node.is_none() {

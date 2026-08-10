@@ -89,9 +89,9 @@ impl<
     pub async fn get_vpn_info(
         &self,
         cur_version: Option<u16>,
-        cur_pn_info_version: Option<u16>,
+        cur_pn_info_version: Option<u32>,
         client_version: Option<String>,
-    ) -> VpnResult<((u16, u16), Vec<NodeVpnInfo>)> {
+    ) -> VpnResult<((u16, u32), Vec<NodeVpnInfo>)> {
         let req = GetVpnInfoReq {
             seq: self.gen_seq.generate(),
             info_version: cur_version,
