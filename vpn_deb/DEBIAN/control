@@ -3,4 +3,5 @@ Version: 1.2
 Section: utils
 Priority: optional
 Architecture: amd64
+Maintainer: BuckyOS Developers <buckyos@users.noreply.github.com>
 Description: BuckyVPN install package

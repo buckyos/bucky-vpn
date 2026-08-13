@@ -1,12 +1,10 @@
 [package]
 name = "bucky-vpn"
-version = "1.0.0"
+version = "1.2.0"
 edition = "2024"
 build = "build.rs"
 
 [package.metadata.winres]
-FileVersion = "1.0.0"
-ProductVersion = "1.0.0"
 ProductName = "BuckyVPN"
 InternalName = "BuckyVPN"
 

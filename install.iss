@@ -1,5 +1,11 @@
 #define AppName "BuckyVPN"
-#define AppVersion "1.2.0"
+#ifndef AppVersion
+#error AppVersion must be provided by build_win.bat
+#else
+#if AppVersion == ""
+#error AppVersion provided by build_win.bat must not be empty
+#endif
+#endif
 
 [Setup]
 AppName={#AppName}

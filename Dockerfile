@@ -1,5 +1,9 @@
 FROM nginx:latest
 
+ARG VERSION
+LABEL org.opencontainers.image.source="https://github.com/buckyos/bucky-vpn"
+LABEL org.opencontainers.image.version="${VERSION}"
+
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY start.sh /start.sh
 RUN chmod +x /start.sh

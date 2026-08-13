@@ -1,0 +1,268 @@
+name: Build and release
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Resolve product version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.product-version.outputs.version }}
+      publish: ${{ steps.product-version.outputs.publish }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Read and validate vpn-client version
+        id: product-version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --format-version 1 | python3 -c '
+          import json
+          import re
+          import sys
+
+          packages = [item for item in json.load(sys.stdin)["packages"] if item["name"] == "bucky-vpn"]
+          if len(packages) != 1:
+              raise SystemExit("expected exactly one bucky-vpn package in cargo metadata")
+          version = packages[0]["version"]
+          if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None:
+              raise SystemExit(f"unsupported installer version: {version}")
+          print(version)
+          ')"
+
+          publish=false
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            if [[ "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+              echo "Release tag ${GITHUB_REF_NAME} does not match vpn-client version ${version}." >&2
+              exit 1
+            fi
+            if [[ "${GITHUB_REPOSITORY}" == "buckyos/bucky-vpn" ]]; then
+              publish=true
+            fi
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+
+  build-deb:
+    name: Build Debian package
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Linux packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Build Debian package
+        run: ./build_deb.sh
+
+      - name: Verify Debian package
+        run: test -f "dist/bucky-vpn_${{ needs.version.outputs.version }}_amd64.deb"
+
+      - name: Store Debian installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: installer-deb
+          path: dist/bucky-vpn_${{ needs.version.outputs.version }}_amd64.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  build-macos:
+    name: Build macOS package
+    needs: version
+    runs-on: macos-15-intel
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust targets
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      - name: Build macOS package
+        run: ./build_macos.sh
+
+      - name: Verify macOS package
+        run: test -f "dist/BuckyVPN-${{ needs.version.outputs.version }}.pkg"
+
+      - name: Store macOS installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: installer-macos
+          path: dist/BuckyVPN-${{ needs.version.outputs.version }}.pkg
+          if-no-files-found: error
+          retention-days: 14
+
+  build-windows:
+    name: Build Windows installer
+    needs: version
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Add Inno Setup to PATH
+        shell: pwsh
+        run: |
+          $innoSetup = "${env:ProgramFiles(x86)}\Inno Setup 6"
+          if (-not (Test-Path "$innoSetup\ISCC.exe")) {
+            throw "Inno Setup 6 is not installed on this runner."
+          }
+          $innoSetup | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build Windows installer
+        shell: cmd
+        run: build_win.bat
+
+      - name: Verify Windows installer
+        shell: pwsh
+        run: |
+          $installer = "dist\BuckyVPN_${{ needs.version.outputs.version }}_amd64_Setup.exe"
+          if (-not (Test-Path $installer)) {
+            throw "Expected Windows installer was not produced: $installer"
+          }
+
+      - name: Store Windows installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: installer-windows
+          path: dist/BuckyVPN_${{ needs.version.outputs.version }}_amd64_Setup.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  build-server:
+    name: Build server image
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Linux build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.32.8
+          cache: true
+
+      - name: Build and verify server image
+        run: |
+          ./build_server.sh
+          docker image inspect bucky-vpn-server:latest >/dev/null
+
+      - name: Export server image for release publication
+        if: needs.version.outputs.publish == 'true'
+        run: |
+          mkdir -p dist
+          docker save --output dist/bucky-vpn-server-image.tar bucky-vpn-server:latest
+
+      - name: Store server image for release publication
+        if: needs.version.outputs.publish == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: server-image
+          path: dist/bucky-vpn-server-image.tar
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish-server:
+    name: Publish server image to GHCR
+    if: needs.version.outputs.publish == 'true'
+    needs: [version, build-deb, build-macos, build-windows, build-server]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    steps:
+      - name: Download validated server image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: server-image
+          path: dist
+
+      - name: Load and tag server image
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker load --input dist/bucky-vpn-server-image.tar
+          version_image="ghcr.io/buckyos/bucky-vpn-server:${VERSION}"
+          latest_image="ghcr.io/buckyos/bucky-vpn-server:latest"
+          docker tag bucky-vpn-server:latest "$version_image"
+          docker tag bucky-vpn-server:latest "$latest_image"
+          test "$(docker image inspect --format '{{.Id}}' "$version_image")" = "$(docker image inspect --format '{{.Id}}' "$latest_image")"
+
+      - name: Log in to GHCR and publish image tags
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          echo "$GHCR_TOKEN" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+          version_image="ghcr.io/buckyos/bucky-vpn-server:${VERSION}"
+          latest_image="ghcr.io/buckyos/bucky-vpn-server:latest"
+          docker push "$version_image"
+          docker push "$latest_image"
+          version_digest="$(docker buildx imagetools inspect "$version_image" --format '{{.Manifest.Digest}}')"
+          latest_digest="$(docker buildx imagetools inspect "$latest_image" --format '{{.Manifest.Digest}}')"
+          test -n "$version_digest"
+          test "$version_digest" = "$latest_digest"
+
+  release:
+    name: Publish GitHub Release
+    if: needs.version.outputs.publish == 'true'
+    needs: [version, publish-server, build-deb, build-macos, build-windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download client installers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: installer-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(release-assets/*.deb release-assets/*.pkg release-assets/*.exe)
+          if [[ ${#assets[@]} -ne 3 ]]; then
+            echo "Expected exactly three client installer assets, found ${#assets[@]}." >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+            --verify-tag \
+            --generate-notes \
+            --title "Bucky VPN ${VERSION}"
