@@ -121,7 +121,21 @@ jobs:
 
       - name: Install NASM
         shell: pwsh
-        run: choco install nasm --version=2.16.3 --yes --no-progress
+        run: |
+          choco install nasm --version=2.16.3 --yes --no-progress
+
+          $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+          $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+          $env:Path = @($machinePath, $userPath, $env:Path) -join ";"
+
+          $nasm = Get-Command nasm.exe -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $nasm) {
+            throw "NASM installation completed, but nasm.exe was not found on the refreshed machine and user PATH."
+          }
+
+          Split-Path -Parent $nasm.Path |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Verify NASM
         shell: pwsh
