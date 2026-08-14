@@ -1,4 +1,4 @@
-/target
+target
 .idea
 __pycache__/
 .harness/
