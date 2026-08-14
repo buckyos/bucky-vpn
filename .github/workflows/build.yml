@@ -124,17 +124,13 @@ jobs:
         run: |
           choco install nasm --version=2.16.3 --yes --no-progress
 
-          $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-          $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-          $env:Path = @($machinePath, $userPath, $env:Path) -join ";"
-
-          $nasm = Get-Command nasm.exe -CommandType Application -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-          if (-not $nasm) {
-            throw "NASM installation completed, but nasm.exe was not found on the refreshed machine and user PATH."
+          $nasmDirectory = Join-Path $env:ProgramFiles "NASM"
+          $nasm = Join-Path $nasmDirectory "nasm.exe"
+          if (-not (Test-Path -LiteralPath $nasm -PathType Leaf)) {
+            throw "NASM installation completed, but the expected executable was not found: $nasm"
           }
 
-          Split-Path -Parent $nasm.Path |
+          $nasmDirectory |
             Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Verify NASM
@@ -188,7 +184,7 @@ jobs:
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: stable
-          flutter-version: 3.32.8
+          flutter-version: 3.35.6
           cache: true
 
       - name: Build and verify server image
