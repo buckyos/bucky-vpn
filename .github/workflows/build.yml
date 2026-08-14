@@ -2,10 +2,7 @@ name: Build and release
 
 on:
   push:
-    branches: [master]
     tags: ["v*"]
-  pull_request:
-    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -81,8 +78,8 @@ jobs:
       - name: Store Debian installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: installer-deb
           path: dist/bucky-vpn_${{ needs.version.outputs.version }}_amd64.deb
+          archive: false
           if-no-files-found: error
           retention-days: 14
 
@@ -106,8 +103,8 @@ jobs:
       - name: Store macOS installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: installer-macos
           path: dist/BuckyVPN-${{ needs.version.outputs.version }}.pkg
+          archive: false
           if-no-files-found: error
           retention-days: 14
 
@@ -161,8 +158,8 @@ jobs:
       - name: Store Windows installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: installer-windows
           path: dist/BuckyVPN_${{ needs.version.outputs.version }}_amd64_Setup.exe
+          archive: false
           if-no-files-found: error
           retention-days: 14
 
@@ -261,12 +258,23 @@ jobs:
       actions: read
       contents: write
     steps:
-      - name: Download client installers
+      - name: Download Debian installer
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: installer-*
+          name: bucky-vpn_${{ needs.version.outputs.version }}_amd64.deb
           path: release-assets
-          merge-multiple: true
+
+      - name: Download macOS installer
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: BuckyVPN-${{ needs.version.outputs.version }}.pkg
+          path: release-assets
+
+      - name: Download Windows installer
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: BuckyVPN_${{ needs.version.outputs.version }}_amd64_Setup.exe
+          path: release-assets
 
       - name: Create GitHub Release
         env:
