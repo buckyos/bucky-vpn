@@ -27,8 +27,8 @@ struct RemotePnServerState {
     reported: Option<PnServerInfo>,
     observed: Option<PnServerInfo>,
     current: PnServerInfo,
-    last_seen: Instant,
     last_heartbeat: Option<Instant>,
+    offline_logged: bool,
 }
 
 impl RemotePnServerState {
@@ -38,37 +38,37 @@ impl RemotePnServerState {
             current,
             reported: Some(reported),
             observed: None,
-            last_seen: now,
             last_heartbeat: Some(now),
+            offline_logged: false,
         }
     }
 
-    fn new_observed(observed: PnServerInfo, now: Instant) -> Self {
+    fn new_observed(observed: PnServerInfo) -> Self {
         let current = PnServerManager::merge_remote_pn_server(Some(&observed), None);
         Self {
             current,
             reported: None,
             observed: Some(observed),
-            last_seen: now,
             last_heartbeat: None,
+            offline_logged: false,
         }
     }
 
     fn update_reported(&mut self, reported: PnServerInfo, now: Instant) {
         self.reported = Some(reported);
-        self.refresh_current(now);
+        self.refresh_current();
         self.last_heartbeat = Some(now);
+        self.offline_logged = false;
     }
 
-    fn update_observed(&mut self, observed: PnServerInfo, now: Instant) {
+    fn update_observed(&mut self, observed: PnServerInfo) {
         self.observed = Some(observed);
-        self.refresh_current(now);
+        self.refresh_current();
     }
 
-    fn refresh_current(&mut self, now: Instant) {
+    fn refresh_current(&mut self) {
         self.current =
             PnServerManager::merge_remote_pn_server(self.observed.as_ref(), self.reported.as_ref());
-        self.last_seen = now;
     }
 }
 
@@ -145,20 +145,39 @@ impl PnServerManager {
         remote_pn_servers: &mut HashMap<String, RemotePnServerState>,
     ) {
         let now = Instant::now();
-        let remote_ttl = self.remote_ttl;
         remote_pn_servers.retain(|_, state| {
-            let live = now.duration_since(state.last_seen) <= remote_ttl;
-            if !live {
-                log_proxy_node_offline(&state.current, now.duration_since(state.last_seen));
-            }
-            live
+            let expired = self.mark_remote_state_offline_if_needed(state, now);
+            !expired || state.observed.is_some()
         });
+    }
+
+    fn mark_remote_state_offline_if_needed(
+        &self,
+        state: &mut RemotePnServerState,
+        now: Instant,
+    ) -> bool {
+        let Some(last_heartbeat) = state.last_heartbeat else {
+            return false;
+        };
+        let heartbeat_age = now.duration_since(last_heartbeat);
+        if heartbeat_age <= self.remote_ttl {
+            return false;
+        }
+        if !state.offline_logged {
+            log_proxy_node_offline(&state.current, heartbeat_age);
+            state.offline_logged = true;
+        }
+        true
     }
 
     fn remote_state_is_live(&self, state: &RemotePnServerState, now: Instant) -> bool {
         state
             .last_heartbeat
             .is_some_and(|last| now.duration_since(last) <= self.remote_ttl)
+    }
+
+    fn remote_state_is_usable(&self, state: &RemotePnServerState, now: Instant) -> bool {
+        self.remote_state_is_live(state, now) && Self::has_connectable_endpoint(&state.current)
     }
 
     fn live_remote_pn_servers(&self) -> Vec<PnServerInfo> {
@@ -361,74 +380,81 @@ impl PnServerManager {
         Ok(())
     }
 
-    fn update_reported_remote_heartbeat(&self, pn_server: PnServerInfo) -> PnServerInfo {
-        let now = Instant::now();
-        let mut remote_pn_servers = self.remote_pn_servers.lock().unwrap();
-        let id = pn_server.id.clone();
-        let previous_live_pn_server = remote_pn_servers.get(&id).and_then(|previous| {
-            let live = self.remote_state_is_live(previous, now);
-            if !live {
-                log_proxy_node_offline(&previous.current, now.duration_since(previous.last_seen));
+    fn update_heartbeat_with_observation(
+        &self,
+        pn_node_id: &NodeId,
+        heartbeat: &ProxyNodeHeartbeat,
+        observation: Option<&PnServerInfo>,
+    ) -> VpnResult<PnServerInfo> {
+        if let Some(observation) = observation {
+            if !Self::is_same_pn_node_id(observation, pn_node_id) {
+                return Err(vpn_frame::errors::vpn_err!(
+                    vpn_frame::errors::VpnErrorCode::InvalidParam,
+                    "observed proxy {} does not match heartbeat peer {}",
+                    observation.id,
+                    pn_node_id.to_base36()
+                ));
             }
-            live.then_some(previous.current.clone())
-        });
-        let previous_is_stale = remote_pn_servers
-            .get(&id)
-            .is_some_and(|previous| now.duration_since(previous.last_seen) > self.remote_ttl);
-        if previous_is_stale {
-            remote_pn_servers.remove(&id);
         }
-        let state = remote_pn_servers
-            .entry(id)
-            .and_modify(|state| state.update_reported(pn_server.clone(), now))
-            .or_insert_with(|| RemotePnServerState::new_reported(pn_server, now));
-        let current = state.current.clone();
-        match previous_live_pn_server {
-            Some(previous)
-                if Self::pn_server_endpoints(&previous) != Self::pn_server_endpoints(&current) =>
-            {
-                log_proxy_node_address_changed(&previous, &current);
-            }
-            Some(_) => {}
-            None => log_proxy_node_online(&current),
-        }
-        current
-    }
 
-    fn update_observed_remote_heartbeat(&self, pn_server: PnServerInfo) -> PnServerInfo {
         let now = Instant::now();
+        let id = heartbeat
+            .pn_server
+            .as_ref()
+            .map(|pn_server| pn_server.id.clone())
+            .or_else(|| observation.map(|pn_server| pn_server.id.clone()))
+            .unwrap_or_else(|| P2pId::from(pn_node_id.as_slice()).to_string());
         let mut remote_pn_servers = self.remote_pn_servers.lock().unwrap();
-        let id = pn_server.id.clone();
-        let previous_live_pn_server = remote_pn_servers.get(&id).and_then(|previous| {
-            let live = self.remote_state_is_live(previous, now);
-            if !live {
-                log_proxy_node_offline(&previous.current, now.duration_since(previous.last_seen));
-            }
-            live.then_some(previous.current.clone())
-        });
-        if previous_live_pn_server.is_none() {
-            remote_pn_servers.remove(&id);
-        }
-        let state = remote_pn_servers
-            .entry(id)
-            .and_modify(|state| state.update_observed(pn_server.clone(), now))
-            .or_insert_with(|| RemotePnServerState::new_observed(pn_server, now));
-        let current = state.current.clone();
-        match previous_live_pn_server {
-            Some(previous)
-                if Self::pn_server_endpoints(&previous) != Self::pn_server_endpoints(&current) =>
-            {
-                log_proxy_node_address_changed(&previous, &current);
-            }
-            Some(_) => {}
-            None => log_proxy_node_online(&current),
-        }
-        current
-    }
+        let (previous_usable, previous_pn_server) = remote_pn_servers
+            .get_mut(&id)
+            .map(|previous| {
+                self.mark_remote_state_offline_if_needed(previous, now);
+                (
+                    self.remote_state_is_usable(previous, now),
+                    previous.current.clone(),
+                )
+            })
+            .unwrap_or_else(|| (false, PnServerInfo::new(id.clone(), Vec::new())));
 
-    pub async fn report_observed_heartbeat(&self, pn_server: &PnServerInfo) -> VpnResult<()> {
-        let current = self.update_observed_remote_heartbeat(pn_server.clone());
-        self.persist_remote_heartbeat(&current).await
+        if !remote_pn_servers.contains_key(&id) {
+            let initial = if let Some(reported) = heartbeat.pn_server.as_ref() {
+                RemotePnServerState::new_reported(reported.clone(), now)
+            } else if let Some(observed) = observation {
+                RemotePnServerState::new_observed(observed.clone())
+            } else {
+                return Err(vpn_frame::errors::vpn_err!(
+                    vpn_frame::errors::VpnErrorCode::InvalidParam,
+                    "proxy heartbeat {} has no registered metadata",
+                    id
+                ));
+            };
+            remote_pn_servers.insert(id.clone(), initial);
+        }
+
+        let state = remote_pn_servers.get_mut(&id).unwrap();
+        if let Some(observed) = observation {
+            state.update_observed(observed.clone());
+        }
+        if let Some(reported) = heartbeat.pn_server.as_ref() {
+            state.update_reported(reported.clone(), now);
+        } else {
+            state.last_heartbeat = Some(now);
+            state.offline_logged = false;
+        }
+
+        let current = state.current.clone();
+        let current_usable = self.remote_state_is_usable(state, now);
+        if previous_usable && current_usable {
+            if Self::pn_server_endpoints(&previous_pn_server) != Self::pn_server_endpoints(&current)
+            {
+                log_proxy_node_address_changed(&previous_pn_server, &current);
+            }
+        } else if current_usable {
+            log_proxy_node_online(&current);
+        } else if previous_usable {
+            log_proxy_node_offline(&previous_pn_server, Duration::ZERO);
+        }
+        Ok(current)
     }
 
     pub fn is_live(&self, pn_server: &PnServerInfo) -> bool {
@@ -662,23 +688,17 @@ impl PnServerSelector for PnServerManager {
         pn_node_id: &NodeId,
         heartbeat: &ProxyNodeHeartbeat,
     ) -> VpnResult<()> {
-        let current = if let Some(pn_server) = heartbeat.pn_server.as_ref() {
-            self.update_reported_remote_heartbeat(pn_server.clone())
-        } else {
-            let now = Instant::now();
-            let id = P2pId::from(pn_node_id.as_slice()).to_string();
-            let mut remote_pn_servers = self.remote_pn_servers.lock().unwrap();
-            let state = remote_pn_servers.get_mut(&id).ok_or_else(|| {
-                vpn_frame::errors::vpn_err!(
-                    vpn_frame::errors::VpnErrorCode::InvalidParam,
-                    "proxy heartbeat {} has no registered metadata",
-                    id
-                )
-            })?;
-            state.last_seen = now;
-            state.last_heartbeat = Some(now);
-            state.current.clone()
-        };
+        let current = self.update_heartbeat_with_observation(pn_node_id, heartbeat, None)?;
+        self.persist_remote_heartbeat(&current).await
+    }
+
+    async fn report_heartbeat_with_observation(
+        &self,
+        pn_node_id: &NodeId,
+        heartbeat: &ProxyNodeHeartbeat,
+        observation: Option<&PnServerInfo>,
+    ) -> VpnResult<()> {
+        let current = self.update_heartbeat_with_observation(pn_node_id, heartbeat, observation)?;
         self.persist_remote_heartbeat(&current).await
     }
 }
@@ -742,6 +762,41 @@ mod tests {
             .unwrap();
     }
 
+    async fn heartbeat_with_observation(
+        selector: &PnServerManager,
+        pn_server: &PnServerInfo,
+        observation: &PnServerInfo,
+    ) {
+        let pn_node_id = NodeId::from_base36_or_base58(&pn_server.id)
+            .unwrap_or_else(|_| NodeId::from(vec![9u8; 32].as_slice()));
+        selector
+            .report_heartbeat_with_observation(
+                &pn_node_id,
+                &ProxyNodeHeartbeat {
+                    heartbeat_id: vpn_frame::ProxyNodeHeartbeatId("test-heartbeat".to_string()),
+                    pn_server: Some(pn_server.clone()),
+                },
+                Some(observation),
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn observed_heartbeat(selector: &PnServerManager, observation: &PnServerInfo) {
+        let pn_node_id = NodeId::from_base36_or_base58(&observation.id).unwrap();
+        selector
+            .report_heartbeat_with_observation(
+                &pn_node_id,
+                &ProxyNodeHeartbeat {
+                    heartbeat_id: vpn_frame::ProxyNodeHeartbeatId("test-heartbeat".to_string()),
+                    pn_server: None,
+                },
+                Some(observation),
+            )
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn reported_only_proxy_is_not_selectable() {
         let selector = PnServerManager::new_with_remote_ttl(Vec::new(), Duration::from_secs(30));
@@ -773,7 +828,12 @@ mod tests {
     #[tokio::test]
     async fn remote_proxy_observed_address_survives_reported_heartbeat() {
         let selector = PnServerManager::new_with_remote_ttl(Vec::new(), Duration::from_secs(30));
-        let observed_proxy = pn_server("remote-node-id", "127.0.0.1".parse().unwrap(), 4600);
+        let remote_node = NodeId::from(vec![7u8; 32].as_slice());
+        let observed_proxy = pn_server(
+            pn_server_id_for(&remote_node),
+            "127.0.0.1".parse().unwrap(),
+            4600,
+        );
         let reported_proxy = pn_server_with_payload(
             observed_proxy.id.clone(),
             PnServerInfoPayload::new_with_endpoint(PnServerEndpoint::new(
@@ -787,11 +847,7 @@ mod tests {
             })),
         );
 
-        selector
-            .report_observed_heartbeat(&observed_proxy)
-            .await
-            .unwrap();
-        heartbeat(&selector, &reported_proxy).await;
+        heartbeat_with_observation(&selector, &reported_proxy, &observed_proxy).await;
 
         let selected = selector.select(1).await.unwrap().unwrap();
         let selected_payload = payload(&selected);
@@ -809,8 +865,9 @@ mod tests {
     async fn remote_proxy_advertised_ip_overrides_observed_address() {
         let selector = PnServerManager::new_with_remote_ttl(Vec::new(), Duration::from_secs(30));
         let advertised_ip = "203.0.113.8".parse::<IpAddr>().unwrap();
+        let remote_node = NodeId::from(vec![7u8; 32].as_slice());
         let reported_proxy = pn_server_with_payload(
-            "remote-node-id",
+            pn_server_id_for(&remote_node),
             PnServerInfoPayload::new_with_endpoint(PnServerEndpoint::new(
                 "10.0.0.2".parse().unwrap(),
                 3624,
@@ -828,11 +885,7 @@ mod tests {
             56000,
         );
 
-        heartbeat(&selector, &reported_proxy).await;
-        selector
-            .report_observed_heartbeat(&observed_proxy)
-            .await
-            .unwrap();
+        heartbeat_with_observation(&selector, &reported_proxy, &observed_proxy).await;
 
         let selected = selector.select(1).await.unwrap().unwrap();
         let selected_payload = payload(&selected);
@@ -846,8 +899,9 @@ mod tests {
     #[tokio::test]
     async fn remote_proxy_suppressed_local_address_uses_observed_ip_and_mapped_ports() {
         let selector = PnServerManager::new_with_remote_ttl(Vec::new(), Duration::from_secs(30));
+        let remote_node = NodeId::from(vec![7u8; 32].as_slice());
         let reported_proxy = pn_server_with_payload(
-            "remote-node-id",
+            pn_server_id_for(&remote_node),
             PnServerInfoPayload::new_with_primary_address(
                 PnServerEndpoint::new_with_protocol(
                     PnServerEndpoint::PROTOCOL_QUIC,
@@ -867,11 +921,7 @@ mod tests {
             56000,
         );
 
-        heartbeat(&selector, &reported_proxy).await;
-        selector
-            .report_observed_heartbeat(&observed_proxy)
-            .await
-            .unwrap();
+        heartbeat_with_observation(&selector, &reported_proxy, &observed_proxy).await;
 
         let selected = selector.select(1).await.unwrap().unwrap();
         assert_eq!(
@@ -890,8 +940,9 @@ mod tests {
     #[tokio::test]
     async fn remote_proxy_without_port_mapping_is_selectable_with_reported_listen_port() {
         let selector = PnServerManager::new_with_remote_ttl(Vec::new(), Duration::from_secs(30));
+        let remote_node = NodeId::from(vec![7u8; 32].as_slice());
         let reported_proxy = pn_server_with_payload(
-            "remote-node-id",
+            pn_server_id_for(&remote_node),
             PnServerInfoPayload::new_with_primary_address(
                 PnServerEndpoint::new_with_protocol(
                     PnServerEndpoint::PROTOCOL_QUIC,
@@ -910,12 +961,7 @@ mod tests {
             56000,
         );
 
-        selector
-            .report_observed_heartbeat(&observed_proxy)
-            .await
-            .unwrap();
-        heartbeat(&selector, &reported_proxy).await;
-        heartbeat(&selector, &reported_proxy).await;
+        heartbeat_with_observation(&selector, &reported_proxy, &observed_proxy).await;
 
         let selected = selector.select(1).await.unwrap().unwrap();
         assert_eq!(
@@ -949,7 +995,12 @@ mod tests {
             store_factory.clone(),
             Duration::from_secs(30),
         );
-        let observed_proxy = pn_server("remote-node-id", "127.0.0.1".parse().unwrap(), 4600);
+        let remote_node = NodeId::from(vec![7u8; 32].as_slice());
+        let observed_proxy = pn_server(
+            pn_server_id_for(&remote_node),
+            "127.0.0.1".parse().unwrap(),
+            4600,
+        );
         let reported_proxy = pn_server_with_payload(
             observed_proxy.id.clone(),
             PnServerInfoPayload::new_with_endpoint(PnServerEndpoint::new(
@@ -963,11 +1014,7 @@ mod tests {
             })),
         );
 
-        selector
-            .report_observed_heartbeat(&observed_proxy)
-            .await
-            .unwrap();
-        heartbeat(&selector, &reported_proxy).await;
+        heartbeat_with_observation(&selector, &reported_proxy, &observed_proxy).await;
 
         let nodes = selector.list_proxy_nodes().await.unwrap();
         assert_eq!(nodes.len(), 1);
@@ -1144,31 +1191,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn observed_only_proxy_is_offline_and_not_selectable() {
+    async fn observed_only_addressless_proxy_is_not_selectable() {
         let selector = PnServerManager::new_with_remote_ttl(Vec::new(), Duration::from_secs(30));
-        let observed_proxy = pn_server("remote-node-id", "198.51.100.7".parse().unwrap(), 56000);
+        let remote_node = NodeId::from(vec![7u8; 32].as_slice());
+        let observed_proxy = pn_server(
+            pn_server_id_for(&remote_node),
+            "198.51.100.7".parse().unwrap(),
+            56000,
+        );
 
-        selector
-            .report_observed_heartbeat(&observed_proxy)
-            .await
-            .unwrap();
+        observed_heartbeat(&selector, &observed_proxy).await;
 
-        assert!(!selector.is_live(&observed_proxy));
         assert_eq!(selector.select(1).await.unwrap(), None);
     }
 
     #[tokio::test]
     async fn dedicated_heartbeat_controls_remote_online_state() {
         let selector = PnServerManager::new_with_remote_ttl(Vec::new(), Duration::from_millis(5));
-        let remote_proxy = pn_server("remote-node-id", "127.0.0.1".parse().unwrap(), 4600);
+        let remote_node = NodeId::from(vec![7u8; 32].as_slice());
+        let remote_proxy = pn_server(
+            pn_server_id_for(&remote_node),
+            "127.0.0.1".parse().unwrap(),
+            4600,
+        );
 
-        selector
-            .report_observed_heartbeat(&remote_proxy)
-            .await
-            .unwrap();
-        assert!(!selector.is_live(&remote_proxy));
-
-        heartbeat(&selector, &remote_proxy).await;
+        observed_heartbeat(&selector, &remote_proxy).await;
         assert!(selector.is_live(&remote_proxy));
 
         tokio::time::sleep(Duration::from_millis(15)).await;
@@ -1178,8 +1225,9 @@ mod tests {
     #[tokio::test]
     async fn observed_source_port_change_does_not_change_client_endpoint() {
         let selector = PnServerManager::new_with_remote_ttl(Vec::new(), Duration::from_secs(30));
+        let remote_node = NodeId::from(vec![7u8; 32].as_slice());
         let reported_proxy = pn_server_with_payload(
-            "remote-node-id",
+            pn_server_id_for(&remote_node),
             PnServerInfoPayload::new_with_endpoint(PnServerEndpoint::new(
                 "10.0.0.2".parse().unwrap(),
                 3624,
@@ -1200,17 +1248,10 @@ mod tests {
             57000,
         );
 
-        selector
-            .report_observed_heartbeat(&first_observed)
-            .await
-            .unwrap();
-        heartbeat(&selector, &reported_proxy).await;
+        heartbeat_with_observation(&selector, &reported_proxy, &first_observed).await;
         let first = selector.select(1).await.unwrap().unwrap();
 
-        selector
-            .report_observed_heartbeat(&second_observed)
-            .await
-            .unwrap();
+        heartbeat_with_observation(&selector, &reported_proxy, &second_observed).await;
         let second = selector.select(1).await.unwrap().unwrap();
 
         assert_eq!(payload(&first).endpoints, payload(&second).endpoints);
@@ -1223,3 +1264,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/pn_observed_address_recovery_tests.rs"]
+mod pn_observed_address_recovery_tests;

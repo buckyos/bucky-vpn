@@ -13,7 +13,7 @@ use bucky_raw_codec::{RawConvertTo, RawFrom};
 use chrono::{DateTime, TimeDelta, Utc};
 use sfo_cmd_server::errors::{CmdErrorCode, cmd_err, into_cmd_err};
 use sfo_cmd_server::server::CmdServer;
-use sfo_cmd_server::{CmdBody, PeerId};
+use sfo_cmd_server::{CmdBody, PeerId, TunnelId};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::ops::Add;
@@ -58,6 +58,15 @@ pub trait VpnCmdServer: CmdServer<VpnCmdPkgLen, u8> {
 }
 
 #[async_trait]
+pub trait PnControlTunnelObserver: Send + Sync + 'static {
+    async fn observe(
+        &self,
+        pn_node_id: &NodeId,
+        tunnel_id: TunnelId,
+    ) -> VpnResult<Option<PnServerInfo>>;
+}
+
+#[async_trait]
 pub trait PnServerSelector: Send + Sync + 'static {
     async fn is_valid(&self, pn_server: &PnServerInfo) -> VpnResult<bool>;
     async fn select(&self, network_id: NetworkId) -> VpnResult<Option<PnServerInfo>>;
@@ -88,6 +97,15 @@ pub trait PnServerSelector: Send + Sync + 'static {
         _heartbeat: &crate::ProxyNodeHeartbeat,
     ) -> VpnResult<()> {
         Ok(())
+    }
+
+    async fn report_heartbeat_with_observation(
+        &self,
+        pn_node_id: &NodeId,
+        heartbeat: &crate::ProxyNodeHeartbeat,
+        _observation: Option<&PnServerInfo>,
+    ) -> VpnResult<()> {
+        self.report_heartbeat(pn_node_id, heartbeat).await
     }
 }
 
@@ -220,6 +238,23 @@ where
             pn_cmd_server,
             factory,
             Some(pn_server_selector),
+            None,
+        )
+    }
+
+    pub fn new_with_pn_control_cmd_server_and_observer(
+        cmd_server: Arc<T>,
+        pn_cmd_server: Arc<P>,
+        factory: Arc<F>,
+        pn_server_selector: Arc<dyn PnServerSelector>,
+        pn_control_tunnel_observer: Arc<dyn PnControlTunnelObserver>,
+    ) -> Arc<Self> {
+        Self::new_with_optional_pn_control_cmd_server(
+            cmd_server,
+            pn_cmd_server,
+            factory,
+            Some(pn_server_selector),
+            Some(pn_control_tunnel_observer),
         )
     }
 
@@ -228,14 +263,16 @@ where
         pn_cmd_server: Arc<P>,
         factory: Arc<F>,
         pn_server_selector: Option<Arc<dyn PnServerSelector>>,
+        pn_control_tunnel_observer: Option<Arc<dyn PnControlTunnelObserver>>,
     ) -> Arc<Self> {
         let node_manager = NodeManager::new(factory.clone());
         let network_manager = NetworkManager::new(factory.clone(), node_manager.clone());
-        let pn_control_server = PnControlServer::new(
+        let pn_control_server = PnControlServer::new_with_tunnel_observer(
             pn_cmd_server,
             factory.clone(),
             network_manager.clone(),
             pn_server_selector,
+            pn_control_tunnel_observer,
         );
         Arc::new(Self {
             network_manager,

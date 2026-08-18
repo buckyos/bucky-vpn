@@ -8,3 +8,7 @@ logs/
 dist/
 wintun-0.14.1/
 wintun-0.14.1.zip
+vpn.db
+vpn.db-shm
+vpn.db-wal
+.codex

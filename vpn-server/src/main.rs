@@ -18,7 +18,8 @@ use crate::pn_control_client::{
     VpnCmdPnTrafficReporter, create_vpn_control_client,
 };
 use crate::pn_control_server::{
-    create_proxy_control_cmd_service, register_proxy_control_cmd_listener,
+    create_proxy_control_cmd_service, create_proxy_control_tunnel_observer,
+    register_proxy_control_cmd_listener,
 };
 use base58::ToBase58;
 use bucky_raw_codec::{RawConvertTo, RawDecode, RawEncode, RawFrom};
@@ -404,11 +405,14 @@ async fn main() {
         pn_server_selector.start_remote_liveness_monitor();
         let cmd_server = Arc::new(P2pSnCmdServer::new(sn_service.clone()));
         let proxy_control_cmd_service = create_proxy_control_cmd_service();
-        let vpn_server = VpnServer::new_with_pn_control_cmd_server(
+        let proxy_control_tunnel_observer =
+            create_proxy_control_tunnel_observer(proxy_control_cmd_service.clone());
+        let vpn_server = VpnServer::new_with_pn_control_cmd_server_and_observer(
             cmd_server,
             proxy_control_cmd_service.clone(),
             store_factory.clone(),
             pn_server_selector.clone(),
+            proxy_control_tunnel_observer,
         );
         let network_manager = vpn_server.network_manager().clone();
 
@@ -451,12 +455,9 @@ async fn main() {
             DefaultAccountManager::new(user_store, sn_jwt_config.key.clone().into_bytes());
 
         vpn_server.start();
-        if let Err(err) = register_proxy_control_cmd_listener(
-            sn_service.ttp_server(),
-            proxy_control_cmd_service,
-            pn_server_selector.clone(),
-        )
-        .await
+        if let Err(err) =
+            register_proxy_control_cmd_listener(sn_service.ttp_server(), proxy_control_cmd_service)
+                .await
         {
             log::error!(
                 "start proxy control listener failed: code={:?} msg={}",

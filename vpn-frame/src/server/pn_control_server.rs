@@ -1,7 +1,8 @@
 use crate::errors::{VpnErrorCode, VpnResult, vpn_err};
 use crate::server::{
-    JoinedNode, NetworkId, NetworkManager, NodeId, NodePnManager, PnServerSelector, PnStore,
-    VPN_CONTROL_CMD_MAX_BYTES, VpnControlCmdHeader, VpnControlCmdPkgLen, VpnStore, VpnStoreFactory,
+    JoinedNode, NetworkId, NetworkManager, NodeId, NodePnManager, PnControlTunnelObserver,
+    PnServerSelector, PnStore, VPN_CONTROL_CMD_MAX_BYTES, VpnControlCmdHeader, VpnControlCmdPkgLen,
+    VpnStore, VpnStoreFactory,
 };
 use crate::{
     NodeNetworkPnInfo, NodeTrafficReport, NodeTrafficReportResp, PnServerInfo, ProxyNodeHeartbeat,
@@ -13,7 +14,7 @@ use crate::{
 use bucky_raw_codec::{RawConvertTo, RawEncode, RawFrom};
 use sfo_cmd_server::errors::{CmdErrorCode, CmdResult, cmd_err, into_cmd_err};
 use sfo_cmd_server::server::CmdServer;
-use sfo_cmd_server::{CmdBody, PeerId};
+use sfo_cmd_server::{CmdBody, PeerId, TunnelId};
 use std::sync::{Arc, Once};
 
 const MAX_TRAFFIC_REPORT_ID_LEN: usize = 256;
@@ -28,6 +29,7 @@ where
     store_factory: Arc<F>,
     network_manager: Arc<NetworkManager<S, F>>,
     pn_server_selector: Option<Arc<dyn PnServerSelector>>,
+    pn_control_tunnel_observer: Option<Arc<dyn PnControlTunnelObserver>>,
     node_pn_manager: Arc<NodePnManager>,
     start_once: Once,
 }
@@ -44,11 +46,28 @@ where
         network_manager: Arc<NetworkManager<S, F>>,
         pn_server_selector: Option<Arc<dyn PnServerSelector>>,
     ) -> Arc<Self> {
+        Self::new_with_tunnel_observer(
+            pn_cmd_server,
+            store_factory,
+            network_manager,
+            pn_server_selector,
+            None,
+        )
+    }
+
+    pub fn new_with_tunnel_observer(
+        pn_cmd_server: Arc<P>,
+        store_factory: Arc<F>,
+        network_manager: Arc<NetworkManager<S, F>>,
+        pn_server_selector: Option<Arc<dyn PnServerSelector>>,
+        pn_control_tunnel_observer: Option<Arc<dyn PnControlTunnelObserver>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             pn_cmd_server,
             store_factory,
             network_manager,
             pn_server_selector,
+            pn_control_tunnel_observer,
             node_pn_manager: NodePnManager::new(),
             start_once: Once::new(),
         })
@@ -104,7 +123,7 @@ where
         let this = self.clone();
         self.pn_cmd_server.register_cmd_handler(
             VpnCmdCode::ReportProxyHeartbeat as u8,
-            move |_local_id: PeerId, peer_id: PeerId, _tunnel_id, header, mut body: CmdBody| {
+            move |_local_id: PeerId, peer_id: PeerId, tunnel_id, header, mut body: CmdBody| {
                 let this = this.clone();
                 async move {
                     require_version(&header)?;
@@ -114,8 +133,11 @@ where
                         .map_err(into_cmd_err!(CmdErrorCode::RawCodecError))?;
                     let seq = req.seq;
                     let peer_node_id = NodeId::from(peer_id.as_slice());
+                    let observation = this
+                        .observe_proxy_control_tunnel(&peer_node_id, tunnel_id)
+                        .await;
                     let resp = match this
-                        .report_proxy_heartbeat(&peer_node_id, &req.heartbeat)
+                        .report_proxy_heartbeat(&peer_node_id, &req.heartbeat, observation.as_ref())
                         .await
                     {
                         Ok(()) => ReportProxyHeartbeatResp { seq, result: 0 },
@@ -313,6 +335,7 @@ where
         &self,
         peer_id: &NodeId,
         heartbeat: &ProxyNodeHeartbeat,
+        observation: Option<&PnServerInfo>,
     ) -> VpnResult<()> {
         let selector = self.pn_server_selector.as_ref().ok_or_else(|| {
             vpn_err!(
@@ -330,7 +353,30 @@ where
                 ));
             }
         }
-        selector.report_heartbeat(peer_id, heartbeat).await
+        selector
+            .report_heartbeat_with_observation(peer_id, heartbeat, observation)
+            .await
+    }
+
+    async fn observe_proxy_control_tunnel(
+        &self,
+        peer_id: &NodeId,
+        tunnel_id: TunnelId,
+    ) -> Option<PnServerInfo> {
+        let observer = self.pn_control_tunnel_observer.as_ref()?;
+        match observer.observe(peer_id, tunnel_id).await {
+            Ok(observation) => observation,
+            Err(err) => {
+                log::warn!(
+                    "observe proxy control tunnel failed peer={} tunnel={:?} code={:?} msg={}",
+                    peer_id.to_base36(),
+                    tunnel_id,
+                    err.code(),
+                    err.msg()
+                );
+                None
+            }
+        }
     }
 
     /// Shared application path for wire and process-local proxy traffic reports.
@@ -902,6 +948,7 @@ mod tests {
         allowed: AtomicBool,
         selected: Mutex<Option<PnServerInfo>>,
         heartbeat_count: AtomicUsize,
+        heartbeat_observations: Mutex<Vec<Option<PnServerInfo>>>,
     }
 
     impl TestSelector {
@@ -910,6 +957,7 @@ mod tests {
                 allowed: AtomicBool::new(allowed),
                 selected: Mutex::new(selected),
                 heartbeat_count: AtomicUsize::new(0),
+                heartbeat_observations: Mutex::new(Vec::new()),
             })
         }
     }
@@ -946,6 +994,40 @@ mod tests {
             self.heartbeat_count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
+
+        async fn report_heartbeat_with_observation(
+            &self,
+            _pn_node_id: &NodeId,
+            _heartbeat: &ProxyNodeHeartbeat,
+            observation: Option<&PnServerInfo>,
+        ) -> VpnResult<()> {
+            self.heartbeat_count.fetch_add(1, Ordering::SeqCst);
+            self.heartbeat_observations
+                .lock()
+                .unwrap()
+                .push(observation.cloned());
+            Ok(())
+        }
+    }
+
+    struct TestTunnelObserver {
+        observation: PnServerInfo,
+        calls: Mutex<Vec<(NodeId, TunnelId)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PnControlTunnelObserver for TestTunnelObserver {
+        async fn observe(
+            &self,
+            pn_node_id: &NodeId,
+            tunnel_id: TunnelId,
+        ) -> VpnResult<Option<PnServerInfo>> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((pn_node_id.clone(), tunnel_id));
+            Ok(Some(self.observation.clone()))
+        }
     }
 
     type TestControlServer = PnControlServer<TestCmdServer, TestStore, TestStoreFactory>;
@@ -958,6 +1040,23 @@ mod tests {
         let node_manager = crate::server::NodeManager::new(factory.clone());
         let network_manager = NetworkManager::new(factory.clone(), node_manager);
         PnControlServer::new(TestCmdServer::new(), factory, network_manager, Some(selector))
+    }
+
+    fn test_control_with_observer(
+        store: TestStore,
+        selector: Arc<TestSelector>,
+        observer: Arc<dyn PnControlTunnelObserver>,
+    ) -> Arc<TestControlServer> {
+        let factory = Arc::new(TestStoreFactory { store });
+        let node_manager = crate::server::NodeManager::new(factory.clone());
+        let network_manager = NetworkManager::new(factory.clone(), node_manager);
+        PnControlServer::new_with_tunnel_observer(
+            TestCmdServer::new(),
+            factory,
+            network_manager,
+            Some(selector),
+            Some(observer),
+        )
     }
 
     fn node(byte: u8) -> NodeId {
@@ -1087,12 +1186,52 @@ mod tests {
         };
 
         control
-            .report_proxy_heartbeat(&proxy, &heartbeat)
+            .report_proxy_heartbeat(&proxy, &heartbeat, None)
             .await
             .unwrap();
 
         assert_eq!(store.state.lock().unwrap().node_traffic_writes, 0);
         assert_eq!(selector.heartbeat_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn heartbeat_observes_and_forwards_the_exact_command_tunnel() {
+        let proxy = node(9);
+        let reported = pn_info(&proxy);
+        let observation = PnServerInfo::new(proxy.to_base36(), vec![1, 2, 3]);
+        let observer = Arc::new(TestTunnelObserver {
+            observation: observation.clone(),
+            calls: Mutex::new(Vec::new()),
+        });
+        let selector = TestSelector::new(false, Some(reported.clone()));
+        let control =
+            test_control_with_observer(TestStore::default(), selector.clone(), observer.clone());
+        let tunnel_id = TunnelId::from(42);
+
+        let current_observation = control
+            .observe_proxy_control_tunnel(&proxy, tunnel_id)
+            .await
+            .unwrap();
+        control
+            .report_proxy_heartbeat(
+                &proxy,
+                &ProxyNodeHeartbeat {
+                    heartbeat_id: ProxyNodeHeartbeatId("reonline".to_string()),
+                    pn_server: Some(reported),
+                },
+                Some(&current_observation),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            observer.calls.lock().unwrap().as_slice(),
+            &[(proxy, tunnel_id)]
+        );
+        assert_eq!(
+            selector.heartbeat_observations.lock().unwrap().as_slice(),
+            &[Some(observation)]
+        );
     }
 
     #[tokio::test]
