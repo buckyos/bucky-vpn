@@ -5,7 +5,8 @@
 #   bucky-vpn-server --config config.yaml
 #
 # VPN_ 前缀的环境变量可以覆盖配置项，例如：
-# VPN_NAME、VPN_SN_ADMIN_NAME、VPN_SN_ADMIN_PASSWORD、VPN_SN_JWT_KEY、VPN_DATA_DIR。
+# VPN_NAME、VPN_PN_TRANSPORT、VPN_SN_ADMIN_NAME、VPN_SN_ADMIN_PASSWORD、
+# VPN_SN_JWT_KEY、VPN_DATA_DIR。
 
 # 本机 P2P identity 证书名，也是作为 PN 代理节点上报给控制节点的名字。
 # 修改该值后，服务端会保留已有私钥并重签生成带新名字的证书。
@@ -38,6 +39,13 @@ sn:
 # 本机 PN 代理服务。
 pn:
   enabled: true
+
+  # PN 传输模式：tcp 仅启用 TCP，quic 仅启用 QUIC，dual 同时启用两者。
+  # 未配置时默认 dual，也可以通过 VPN_PN_TRANSPORT 覆盖。
+  # tcp 和 quic 仅适用于独立 PN（sn.enabled: false）；同进程 SN+PN 必须使用 dual。
+  # dual 模式同时监听并发布 QUIC/TCP，但连接控制节点时使用 QUIC。
+  transport: "dual"
+
   # 流量统计批量上报间隔，不参与代理在线判定。
   report_interval_secs: 5
   # 独立心跳周期及控制面离线超时；timeout 必须大于 interval。
@@ -63,7 +71,8 @@ pn:
   report_local_address: true
 
   # 可选：配置进程监听端口对外映射后的端口。端口映射与 advertised_ip 独立：
-  # 配置某协议时使用映射端口，未配置时保留该协议的监听端口。
+  # 配置某协议时使用映射端口，未配置时保留该协议的监听端口；只发布
+  # pn.transport 已启用协议的映射，tcp/quic 单协议模式会忽略另一协议的映射。
   # port_mapping:
   #   quic: 3624
   #   tcp: 3624

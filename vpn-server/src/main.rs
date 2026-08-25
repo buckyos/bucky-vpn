@@ -309,17 +309,27 @@ async fn main() {
     let control_identity = local_identity.clone();
     let local_id = local_identity.get_id();
     let local_id_string = local_id.to_string();
+    let primary_endpoint = eps
+        .first()
+        .expect("service endpoint resolution must return at least one endpoint");
     let pn_route_hint = pn_config
         .control_server
         .as_ref()
-        .map(|control_server| &control_server.endpoint);
+        .and_then(|control_server| control_server.endpoints.first());
+    let pn_port_mapping = if standalone_proxy_node {
+        pn_config
+            .transport
+            .filter_port_mapping(&pn_config.port_mapping)
+    } else {
+        pn_config.port_mapping.clone()
+    };
     let local_pn_server = endpoints_to_pn_server(
         &local_id_string,
-        &sn_endpoint,
+        primary_endpoint,
         &eps,
         pn_route_hint,
         pn_config.advertised_ip,
-        &pn_config.port_mapping,
+        &pn_port_mapping,
         pn_config.report_local_address,
     );
     let local_pn_server = with_pn_server_name(local_pn_server, server_name.clone()).unwrap();

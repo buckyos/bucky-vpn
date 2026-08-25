@@ -21,7 +21,7 @@ use vpn_frame::control_channel::{
     VpnCmdPnConnectionValidatorCore, VpnCmdPnTrafficReporter as CoreVpnCmdPnTrafficReporter,
     VpnControlClientOpsRef, into_control_client_ops,
 };
-use vpn_frame::errors::{VpnErrorCode, VpnResult, into_vpn_err};
+use vpn_frame::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
 use vpn_frame::server::{NodeId, VpnControlClient as FrameVpnControlClient, VpnControlCmdPkgLen};
 
 pub type P2pControlCmdSend = ClassifiedCmdSend<
@@ -145,11 +145,17 @@ pub async fn create_vpn_control_client(
 ) -> VpnResult<VpnControlClientRef> {
     let control_id =
         P2pId::from_str(&control_server.id).map_err(into_vpn_err!(VpnErrorCode::InvalidParam))?;
+    let control_endpoint = control_server.endpoints.first().copied().ok_or_else(|| {
+        vpn_err!(
+            VpnErrorCode::InvalidParam,
+            "pn control server must contain at least one endpoint"
+        )
+    })?;
     let factory = ControlCmdTunnelFactory::new(
         ttp_client,
         control_id,
         control_server.name.clone(),
-        control_server.endpoint.clone(),
+        control_endpoint,
     );
     Ok(VpnControlClient::new(
         ControlCmdClient::new(factory, 1),

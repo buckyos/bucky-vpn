@@ -39,6 +39,7 @@ pub struct SnJwtConfig {
 #[derive(Clone, Debug)]
 pub struct PnServerConfig {
     pub enabled: bool,
+    pub transport: PnTransportMode,
     pub control_server: Option<PnControlServerConfig>,
     pub report_interval_secs: u64,
     pub heartbeat_interval_secs: u64,
@@ -46,6 +47,59 @@ pub struct PnServerConfig {
     pub advertised_ip: Option<IpAddr>,
     pub port_mapping: PnPortMappingConfig,
     pub report_local_address: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PnTransportMode {
+    Tcp,
+    Quic,
+    #[default]
+    Dual,
+}
+
+impl PnTransportMode {
+    pub fn endpoints(self, addr: SocketAddr) -> Vec<P2pEndpoint> {
+        match self {
+            Self::Tcp => vec![P2pEndpoint::from((Protocol::Tcp, addr))],
+            Self::Quic => vec![P2pEndpoint::from((Protocol::Quic, addr))],
+            Self::Dual => vec![
+                P2pEndpoint::from((Protocol::Quic, addr)),
+                P2pEndpoint::from((Protocol::Tcp, addr)),
+            ],
+        }
+    }
+
+    pub fn filter_port_mapping(
+        self,
+        mapping: &PnPortMappingConfig,
+    ) -> PnPortMappingConfig {
+        match self {
+            Self::Tcp => PnPortMappingConfig {
+                quic: None,
+                tcp: mapping.tcp,
+            },
+            Self::Quic => PnPortMappingConfig {
+                quic: mapping.quic,
+                tcp: None,
+            },
+            Self::Dual => mapping.clone(),
+        }
+    }
+}
+
+impl FromStr for PnTransportMode {
+    type Err = config::ConfigError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "tcp" => Ok(Self::Tcp),
+            "quic" => Ok(Self::Quic),
+            "dual" => Ok(Self::Dual),
+            _ => Err(config::ConfigError::Message(format!(
+                "pn.transport must be one of tcp, quic, or dual, got {value:?}"
+            ))),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -79,7 +133,7 @@ pub struct PnPortMappingConfig {
 pub struct PnControlServerConfig {
     pub id: String,
     pub name: Option<String>,
-    pub endpoint: P2pEndpoint,
+    pub endpoints: Vec<P2pEndpoint>,
 }
 
 pub fn select_default_config_file(current_dir: &Path) -> PathBuf {
@@ -106,6 +160,7 @@ pub fn build_server_config(
         .set_default("http.port", 3445)?
         .set_default("sn.enabled", true)?
         .set_default("pn.enabled", true)?
+        .set_default("pn.transport", "dual")?
         .set_default("pn.report_interval_secs", 5)?
         .set_default(
             "pn.node_traffic_idempotency_retention_secs",
@@ -235,6 +290,7 @@ pub fn get_pn_server_config(
     config: &config::Config,
 ) -> Result<PnServerConfig, config::ConfigError> {
     let enabled = config.get_bool("pn.enabled").unwrap_or(true);
+    let transport = get_pn_transport_mode(config)?;
 
     let heartbeat_interval_secs = config
         .get_int("pn.heartbeat_interval_secs")
@@ -256,7 +312,8 @@ pub fn get_pn_server_config(
 
     Ok(PnServerConfig {
         enabled,
-        control_server: get_pn_control_server_config(config)?,
+        transport,
+        control_server: get_pn_control_server_config(config, transport)?,
         report_interval_secs: config
             .get_int("pn.report_interval_secs")
             .ok()
@@ -310,6 +367,12 @@ pub fn validate_server_mode(
         return Ok(());
     }
     if sn_config.enabled {
+        if pn_config.transport != PnTransportMode::Dual {
+            return Err(config::ConfigError::Message(
+                "pn.transport must be dual when the control plane and proxy run in the same process"
+                    .to_owned(),
+            ));
+        }
         if pn_config.control_server.is_some() {
             return Err(config::ConfigError::Message(
                 "pn.control_server must not be configured when the control plane and proxy run in the same process"
@@ -334,9 +397,13 @@ pub fn validate_server_mode(
 
 pub fn resolve_service_endpoints(
     sn_endpoint: P2pEndpoint,
-    _sn_config: &SnServerConfig,
-    _pn_config: &PnServerConfig,
+    sn_config: &SnServerConfig,
+    pn_config: &PnServerConfig,
 ) -> Vec<P2pEndpoint> {
+    if is_standalone_proxy_node(sn_config, pn_config) {
+        return pn_config.transport.endpoints(*sn_endpoint.addr());
+    }
+
     let tcp_endpoint = P2pEndpoint::from((Protocol::Tcp, *sn_endpoint.addr()));
     if sn_endpoint.protocol() == Protocol::Tcp {
         vec![sn_endpoint]
@@ -507,8 +574,25 @@ fn same_ip_family(left: IpAddr, right: IpAddr) -> bool {
 
 fn get_pn_control_server_config(
     config: &config::Config,
+    transport: PnTransportMode,
 ) -> Result<Option<PnControlServerConfig>, config::ConfigError> {
-    get_control_server_config_at(config, "pn.control_server")
+    get_control_server_config_at(config, "pn.control_server", transport)
+}
+
+fn get_pn_transport_mode(
+    config: &config::Config,
+) -> Result<PnTransportMode, config::ConfigError> {
+    let value = match config.get::<config::Value>("pn.transport") {
+        Ok(value) => value,
+        Err(config::ConfigError::NotFound(_)) => return Ok(PnTransportMode::Dual),
+        Err(err) => return Err(err),
+    };
+    match value.kind {
+        config::ValueKind::String(value) => value.parse(),
+        _ => Err(config::ConfigError::Message(
+            "pn.transport must be one of tcp, quic, or dual, got a non-string value".to_owned(),
+        )),
+    }
 }
 
 fn get_pn_port_mapping_config(
@@ -542,6 +626,7 @@ fn get_pn_advertised_ip_config(
 fn get_control_server_config_at(
     config: &config::Config,
     prefix: &str,
+    transport: PnTransportMode,
 ) -> Result<Option<PnControlServerConfig>, config::ConfigError> {
     let id_key = format!("{prefix}.id");
     let name_key = format!("{prefix}.name");
@@ -561,10 +646,11 @@ fn get_control_server_config_at(
         Err(err) => return Err(err),
     };
     let endpoint = config.get_string(endpoint_key.as_str())?;
+    let socket_addr = parse_control_server_socket_addr(&endpoint)?;
     Ok(Some(PnControlServerConfig {
         id,
         name: get_optional_trimmed_string(config, name_key.as_str())?,
-        endpoint: parse_quic_endpoint(&endpoint)?,
+        endpoints: transport.endpoints(socket_addr),
     }))
 }
 
@@ -633,12 +719,20 @@ fn get_optional_port_prefer(
 }
 
 fn parse_quic_endpoint(address: &str) -> Result<P2pEndpoint, config::ConfigError> {
-    let socket_addr = address.parse::<SocketAddr>().map_err(|err| {
+    Ok(P2pEndpoint::from((
+        Protocol::Quic,
+        parse_control_server_socket_addr(address)?,
+    )))
+}
+
+fn parse_control_server_socket_addr(
+    address: &str,
+) -> Result<SocketAddr, config::ConfigError> {
+    address.parse::<SocketAddr>().map_err(|err| {
         config::ConfigError::Message(format!(
             "pn control server endpoint contains invalid socket address {address:?}: {err}"
         ))
-    })?;
-    Ok(P2pEndpoint::from((Protocol::Quic, socket_addr)))
+    })
 }
 
 #[cfg(test)]
@@ -872,6 +966,7 @@ jwt:
         let disabled_sn = SnServerConfig { enabled: false };
         let enabled_pn = PnServerConfig {
             enabled: true,
+            transport: PnTransportMode::Dual,
             control_server: None,
             report_interval_secs: 5,
             heartbeat_interval_secs: 5,
@@ -882,6 +977,7 @@ jwt:
         };
         let disabled_pn = PnServerConfig {
             enabled: false,
+            transport: PnTransportMode::Dual,
             control_server: None,
             report_interval_secs: 5,
             heartbeat_interval_secs: 5,
@@ -903,6 +999,7 @@ jwt:
         let disabled_sn = SnServerConfig { enabled: false };
         let enabled_pn = PnServerConfig {
             enabled: true,
+            transport: PnTransportMode::Dual,
             control_server: None,
             report_interval_secs: 5,
             heartbeat_interval_secs: 5,
@@ -913,6 +1010,7 @@ jwt:
         };
         let disabled_pn = PnServerConfig {
             enabled: false,
+            transport: PnTransportMode::Dual,
             control_server: None,
             report_interval_secs: 5,
             heartbeat_interval_secs: 5,
@@ -932,6 +1030,7 @@ jwt:
         let sn = SnServerConfig { enabled: true };
         let pn = PnServerConfig {
             enabled: true,
+            transport: PnTransportMode::Dual,
             control_server: None,
             report_interval_secs: 5,
             heartbeat_interval_secs: 5,
@@ -956,6 +1055,7 @@ jwt:
         let disabled_sn = SnServerConfig { enabled: false };
         let pn = PnServerConfig {
             enabled: true,
+            transport: PnTransportMode::Dual,
             control_server: None,
             report_interval_secs: 5,
             heartbeat_interval_secs: 5,
@@ -1116,7 +1216,13 @@ pn:
             Some(PnControlServerConfig {
                 id: "server-peer".to_string(),
                 name: None,
-                endpoint: parse_quic_endpoint("127.0.0.1:3624").unwrap(),
+                endpoints: vec![
+                    parse_quic_endpoint("127.0.0.1:3624").unwrap(),
+                    P2pEndpoint::from((
+                        Protocol::Tcp,
+                        "127.0.0.1:3624".parse::<SocketAddr>().unwrap(),
+                    )),
+                ],
             })
         );
         assert_eq!(pn_config.report_interval_secs, 9);

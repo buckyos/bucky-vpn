@@ -4,6 +4,9 @@ use vpn_frame::{
     ProxyTrafficReportResp, ValidatedPnConnection,
 };
 
+#[path = "pn_transport_mode_tests.rs"]
+mod pn_transport_mode_tests;
+
 struct FakeControlOps {
     network_id: Option<u64>,
 }
