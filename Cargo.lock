@@ -810,7 +810,7 @@ checksum = "13ddedb236201888b6d3d0bd7de4b310cf525a798a7df6db2c65b68c5fc545c9"
 
 [[package]]
 name = "bucky-vpn"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "async-std",
  "async-trait",
@@ -836,7 +836,7 @@ dependencies = [
 
 [[package]]
 name = "bucky-vpn-server"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "async-std",
  "async-trait",
