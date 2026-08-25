@@ -183,6 +183,46 @@ fn response_versions_commit_only_after_complete_reconciliation() {
 }
 
 #[test]
+fn changed_or_non_empty_vpn_info_is_logged_before_application() {
+    let body = function_body(VPN_CLIENT_SOURCE, "async fn run_proc");
+
+    assert_ordered(
+        body,
+        &[
+            "if is_unchanged_vpn_info_response",
+            "return Ok(());",
+            "if !vpn_infos.is_empty()",
+            "server_version != cur_version",
+            "pn_info_version != cur_pn_info_version",
+            "log_received_vpn_info(server_version, pn_info_version, &vpn_infos);",
+            "self.force_full_sync.store(true",
+            "self.tunnel_factory.on_vpn_info_received(&vpn_infos).await?;",
+        ],
+    );
+
+    let logger = function_body(VPN_CLIENT_SOURCE, "fn log_received_vpn_info");
+    for required_field in [
+        "vpn info received: info_version={}, pn_info_version={}, network_count={}",
+        "vpn network info received: group_id={}",
+        "network_id={}",
+        "name={:?}",
+        "ipv4={:?}/{}",
+        "ipv6={:?}/{}",
+        "pn_server_changed={}",
+        "pn_server_id={}",
+        "pn_server_name={:?}",
+        "pn_endpoints={}",
+        "member_count={}",
+        "members=[{}]",
+    ] {
+        assert!(
+            logger.contains(required_field),
+            "received VPN info log must include {required_field}"
+        );
+    }
+}
+
+#[test]
 fn zero_version_first_response_failure_keeps_the_next_request_full() {
     let constructor = function_body(VPN_CLIENT_SOURCE, "pub fn new_with_packet_dispatcher_config(");
     assert!(constructor.contains("cur_version: AtomicU16::new(0)"));

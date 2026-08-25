@@ -174,6 +174,57 @@ fn is_unchanged_vpn_info_response(
         && vpn_infos_empty
 }
 
+fn log_received_vpn_info(info_version: u16, pn_info_version: u32, vpn_infos: &[NodeVpnInfo]) {
+    if !log::log_enabled!(log::Level::Info) {
+        return;
+    }
+    log::info!(
+        "vpn info received: info_version={}, pn_info_version={}, network_count={}",
+        info_version,
+        pn_info_version,
+        vpn_infos.len()
+    );
+    for vpn_info in vpn_infos {
+        let pn_server = vpn_info.node_info.pn_server.as_ref();
+        let pn_server_id = pn_server
+            .map(|server| server.proxy_id.to_base36())
+            .unwrap_or_else(|| "none".to_owned());
+        let pn_server_name = pn_server.and_then(|server| server.name.as_deref());
+        let pn_endpoints = pn_server
+            .map(|server| format!("{:?}", server.endpoints))
+            .unwrap_or_else(|| "[]".to_owned());
+        let members = vpn_info
+            .members
+            .iter()
+            .map(|member| {
+                format!(
+                    "{{id={}, ip={}, ipv6={:?}}}",
+                    member.id.to_base36(),
+                    member.ip,
+                    member.ipv6
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        log::info!(
+            "vpn network info received: group_id={}, network_id={}, name={:?}, ipv4={:?}/{}, ipv6={:?}/{}, pn_server_changed={}, pn_server_id={}, pn_server_name={:?}, pn_endpoints={}, member_count={}, members=[{}]",
+            vpn_info.node_info.group_id,
+            vpn_info.node_info.id,
+            vpn_info.node_info.name,
+            vpn_info.node_info.ip,
+            vpn_info.node_info.mask,
+            vpn_info.node_info.ipv6,
+            vpn_info.node_info.ipv6_mask,
+            vpn_info.pn_server_changed,
+            pn_server_id,
+            pn_server_name,
+            pn_endpoints,
+            vpn_info.members.len(),
+            members
+        );
+    }
+}
+
 impl<
     M: CmdTunnelMeta,
     CS: CmdSend<M>,
@@ -255,6 +306,8 @@ impl<
     async fn run_proc(self: &Arc<Self>) -> VpnResult<()> {
         let is_first = self.is_first.load(Ordering::Relaxed);
         let force_full_sync = self.force_full_sync.load(Ordering::Relaxed);
+        let cur_version = self.cur_version.load(Ordering::SeqCst);
+        let cur_pn_info_version = self.cur_pn_info_version.load(Ordering::SeqCst);
         let ((server_version, pn_info_version), vpn_infos) = if is_first {
             let (versions, vpn_infos) = self
                 .server_client
@@ -265,22 +318,24 @@ impl<
             self.server_client.get_vpn_info(None, None, None).await?
         } else {
             self.server_client
-                .get_vpn_info(
-                    Some(self.cur_version.load(Ordering::SeqCst)),
-                    Some(self.cur_pn_info_version.load(Ordering::SeqCst)),
-                    None,
-                )
+                .get_vpn_info(Some(cur_version), Some(cur_pn_info_version), None)
                 .await?
         };
         if is_unchanged_vpn_info_response(
             self.is_first.load(Ordering::Relaxed),
             server_version,
-            self.cur_version.load(Ordering::SeqCst),
+            cur_version,
             pn_info_version,
-            self.cur_pn_info_version.load(Ordering::SeqCst),
+            cur_pn_info_version,
             vpn_infos.is_empty(),
         ) {
             return Ok(());
+        }
+        if !vpn_infos.is_empty()
+            || server_version != cur_version
+            || pn_info_version != cur_pn_info_version
+        {
+            log_received_vpn_info(server_version, pn_info_version, &vpn_infos);
         }
         self.force_full_sync.store(true, Ordering::Relaxed);
         let vpn_infos = self.apply_cached_pn_servers(vpn_infos);
