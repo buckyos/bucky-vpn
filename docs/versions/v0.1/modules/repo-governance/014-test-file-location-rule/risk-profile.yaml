@@ -1,0 +1,43 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-enforce-test-file-location"]
+source_bindings:
+  proposal: proposal.md
+  design_source: design.md
+risks:
+  contract:
+    applies: false
+    evidence: "不改变产品公共 API、协议、序列化格式或跨项目运行时合同；新增约束由 harness 风险类别单独管理。"
+    required_checks: []
+  data:
+    applies: false
+    evidence: "不修改持久化数据、数据库结构、迁移或存储格式。"
+    required_checks: []
+  security:
+    applies: false
+    evidence: "不改变认证、授权、密钥、隐私或权限边界。"
+    required_checks: []
+  runtime:
+    applies: false
+    evidence: "不修改 VPN 产品运行时、生命周期、并发或网络行为。"
+    required_checks: []
+  build:
+    applies: false
+    evidence: "不修改依赖、构建图、发布产物或产品测试框架；仅在既有治理入口登记聚焦 Python 验证。"
+    required_checks: []
+  ui:
+    applies: false
+    evidence: "不修改 Flutter UI、交互流程或可访问性行为。"
+    required_checks: []
+  harness:
+    applies: true
+    evidence:
+      - harness/custom-rules/test-file-location-rule.md
+      - harness/custom-rules/index.yaml
+      - harness/scripts/context.py
+      - docs/architecture/repository-workflow.md
+    required_checks:
+      - "规则必须明确：独立测试文件不得位于 src 或其子目录，且必须位于与对应 src 同级的 tests；内联测试块不属于独立测试文件。"
+      - "自定义索引必须在 manual 与 auto-pipeline 的 implementation、testing、acceptance 阶段，针对测试触发词以及根级和模块级 src/tests 路径路由该规则。"
+      - "规则路由验证必须证明新规则能进入代表性上下文，并且 custom-rules 索引整体仍通过机器校验。"
+      - "仓库治理说明必须链接新规则，并且不得与 vpn_web 默认不新增测试规则产生冲突。"

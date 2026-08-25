@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/globals/012-restore-pn-reassignment-after-sn-restart/proposal.md": "accbb345b7da0767df9608182982c7c94bfba6d1a8790eca1b4a141ccce165ff"
+      },
+      "status": "complete",
+      "task_binding_sha256": "0781b21824bb0789699bad95ab0e9c477b58a481f7f897f1c165d1f87b9b03a8"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

@@ -1,0 +1,99 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: backward-compatible
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: true
+evidence_inputs: ["vpn-server/src/server_config.rs", "vpn-server/src/pn_control_client.rs", "vpn-server/src/main.rs", "vpn-server/config/config.example.yaml", "vpn-server/tests", "vpn-server/Cargo.toml", "Cargo.toml", "Cargo.lock"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: pn-transport-new-path-positive
+      kind: external-positive
+      assertion: new-path-compiles
+      name: compile the migrated bucky-vpn-server transport configuration and control consumers
+      change_ids: ["CHG-enable-standalone-pn-transport-modes"]
+      run: ["cargo", "check", "-p", "bucky-vpn-server", "--all-targets", "--locked"]
+    - id: pn-transport-old-control-endpoint-scan
+      kind: removed-symbol-scan
+      assertion: no-unallowlisted-old-symbol-references
+      name: scan repository consumers for the replaced single control endpoint field
+      change_ids: ["CHG-enable-standalone-pn-transport-modes"]
+      run: ["python3", "./harness/scripts/consumer-closure-check.py", "--version", "v0.1", "--module", "bucky-vpn-server", "--task-name", "031-pn-tcp-only-transport"]
+    - id: pn-transport-repository-compile-closure
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: compile every bucky-vpn-server target and test consumer without running tests
+      change_ids: ["CHG-enable-standalone-pn-transport-modes"]
+      run: ["cargo", "test", "-p", "bucky-vpn-server", "--no-run", "--all-targets", "--locked"]
+    - id: pn-transport-documentation-examples
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: compile the unchanged shared Rust documentation examples alongside the parsed server YAML example test
+      change_ids: ["CHG-enable-standalone-pn-transport-modes"]
+      run: ["cargo", "test", "-p", "vpn-frame", "--doc", "--locked"]
+defaults:
+  workdir: .
+  timeout_sec: 1800
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: verify exact transport parsing, default and invalid inputs, service and report endpoint selection, primary and mapping behavior, SN compatibility, and the complete control factory fallback, classification, cleanup, route-switch, and concurrency behavior
+    test_targets:
+      - vpn-server/tests/unit/pn_transport_mode_tests.rs
+      - vpn-server/tests/unit/pn_control_client_tests.rs
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - all changed configuration branches are exercised with tcp, quic, dual, omitted, unknown, blank, case-variant, integer, and boolean inputs
+        - dual control candidate order is verified both at the configuration boundary and by driving ControlCmdTunnelFactory through QUIC connect failure and QUIC stream-open failure before TCP success
+        - deterministic fake-client tests verify cleanup after each failed connected target, exact classified route selection, protocol mismatch and unconfigured-route rejection before connection, and old-target removal after a successful route switch
+        - concurrent create requests are held inside the fake stream-open operation long enough to prove create_lock limits maximum in-flight creation to one and leaves at most one maintained target
+        - the target-identity test verifies that replacement and cleanup compare remote identity plus exact remote protocol and endpoint while ignoring a changed local endpoint
+        - example YAML parsing plus the documentation contract step jointly cover the operator-facing key, accepted values, default, and environment variable name
+    steps:
+      - id: pn-transport-focused-unit
+        name: run focused PN transport configuration and control resource tests
+        change_ids: ["CHG-enable-standalone-pn-transport-modes"]
+        run: ["cargo", "test", "-p", "bucky-vpn-server", "pn_transport_", "--locked"]
+
+  dv:
+    mode: enabled
+    summary: compile the full bucky-vpn-server target graph with mode-aware startup assembly and all test wiring
+    test_targets:
+      - vpn-server
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - compile closure covers main startup consumption of resolved endpoints, actual primary selection, route hint selection, and transport-filtered report mapping
+        - config-level tests verify listener identity endpoint input, report endpoints, report primary, and mapped protocols come from the same resolved mode
+    steps:
+      - id: pn-transport-all-targets-check
+        name: check all bucky-vpn-server targets after transport-mode wiring
+        change_ids: ["CHG-enable-standalone-pn-transport-modes"]
+        run: ["cargo", "check", "-p", "bucky-vpn-server", "--all-targets", "--locked"]
+
+  integration:
+    mode: disabled
+    summary: record the remaining real multi-process authenticated-tunnel and socket-observation boundary
+    reason: the deterministic ControlTtpClientOps fake now directly executes and observes ControlCmdTunnelFactory fallback, classified recreation, remove_server cleanup, route switching, and create_lock serialization; the remaining end-to-end gap requires a standalone PN identity, a control SN with authenticated TTP listeners, OS-level UDP and TCP socket observation, and heartbeat inspection, which are not available as a deterministic multi-process fixture in this task environment
+    change_ids: ["CHG-enable-standalone-pn-transport-modes"]
+    test_targets:
+      - standalone PN to SN control tunnel
+      - operating-system TCP and UDP listener table
+      - PN heartbeat and endpoint publication
+    preconditions:
+      tools: ["cargo", "standalone PN", "SN", "socket observer"]
+      env: []
+      services: ["authenticated PN control service", "PN heartbeat receiver"]
+      notes:
+        - manual follow-up should run tcp, quic, and dual standalone PN processes and verify only enabled listener protocols appear at the OS boundary
+        - dual follow-up should observe authenticated TCP control and heartbeat recovery after an actual QUIC transport outage; factory-level ordering, cleanup, and single-target invariants are already automated at unit level
+    steps: []

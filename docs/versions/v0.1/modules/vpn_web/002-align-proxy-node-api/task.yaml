@@ -1,0 +1,25 @@
+schema_version: 1
+workflow_tier: high-risk
+version: v0.1
+packet_module: vpn_web
+task_name: 002-align-proxy-node-api
+stage: acceptance
+mode: auto-pipeline
+auto_pipeline_start_stage: design
+proposal: proposal.md
+design:
+testing:
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+completion_report:
+change_record:
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+changed_paths_file: .harness/evidence/v0.1/stage-scope/002-align-proxy-node-api-acceptance.txt
+baseline_manifest:
+changes:
+  - id: CHG-align-proxy-node-api
+    target_module: vpn_web
+    scope_paths: ["vpn_web/lib/api.dart", "vpn_web/lib/api.g.dart"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/002-align-proxy-node-api-implementation-vpn_web.txt

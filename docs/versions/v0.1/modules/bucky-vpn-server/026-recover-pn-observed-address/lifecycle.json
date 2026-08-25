@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/bucky-vpn-server/026-recover-pn-observed-address/proposal.md": "bfb0bc5ca592141f662274aa5420760b107fdf5902aba62a04311f9a81f96254"
+      },
+      "status": "complete",
+      "task_binding_sha256": "1c1d99230a6d1a8cee2ba20a6d76110a7ff9446c7665c488558fb75dea6b317e"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

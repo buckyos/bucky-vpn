@@ -1,0 +1,25 @@
+schema_version: 1
+workflow_tier: trivial
+version: v0.1
+packet_module: vpn-frame
+task_name: 030-log-updated-vpn-info
+stage: proposal
+mode: manual
+auto_pipeline_start_stage:
+proposal: proposal.md
+design:
+testing:
+testplan:
+acceptance_report:
+completion_report: completion-report.md
+change_record:
+pipeline_plan:
+risk_profile:
+lifecycle_state: lifecycle.json
+changed_paths_file: .harness/evidence/v0.1/stage-scope/030-log-updated-vpn-info.paths
+baseline_manifest: .harness/baselines/v0.1/030-log-updated-vpn-info-delivery/manifest.json
+changes:
+  - id: CHG-log-updated-vpn-info
+    target_module: vpn-frame
+    scope_paths: ["vpn-frame/src/client/vpn_client.rs", "vpn-frame/tests/tun_recovery_contract.rs"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/030-log-updated-vpn-info-implementation-vpn-frame.txt

@@ -1,0 +1,29 @@
+schema_version: 1
+workflow_tier: high-risk
+version: v0.1
+packet_module: globals
+task_name: 008-separate-pn-control-client
+stage: acceptance
+mode: auto-pipeline
+auto_pipeline_start_stage: design
+proposal: proposal.md
+design:
+testing:
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+completion_report:
+change_record:
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+changed_paths_file: .harness/evidence/v0.1/stage-scope/008-separate-pn-control-client-acceptance.txt
+baseline_manifest:
+changes:
+  - id: CHG-dedicated-pn-control-client
+    target_module: vpn-frame
+    scope_paths: ["vpn-frame/src/control_channel.rs", "vpn-frame/src/client/vpn_server_client.rs", "vpn-frame/src/server/mod.rs", "vpn-frame/src/server/vpn_control_client.rs"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/008-separate-pn-control-client-implementation-vpn-frame.txt
+  - id: CHG-pn-control-client-integration
+    target_module: bucky-vpn-server
+    scope_paths: ["vpn-server/src/pn_control_client.rs"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/008-separate-pn-control-client-implementation-bucky-vpn-server.txt

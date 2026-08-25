@@ -1,0 +1,25 @@
+schema_version: 1
+workflow_tier: high-risk
+version: v0.1
+packet_module: bucky-vpn
+task_name: 019-install-nasm-for-windows-action
+stage: design
+mode: auto-pipeline
+auto_pipeline_start_stage: design
+proposal: proposal.md
+design:
+testing:
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+completion_report:
+change_record:
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+changed_paths_file: .harness/evidence/v0.1/stage-scope/019-install-nasm-for-windows-action-proposal.txt
+baseline_manifest:
+changes:
+  - id: CHG-provision-windows-nasm
+    target_module: bucky-vpn
+    scope_paths: [".github/workflows/build.yml"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/019-install-nasm-for-windows-action-implementation-bucky-vpn.txt

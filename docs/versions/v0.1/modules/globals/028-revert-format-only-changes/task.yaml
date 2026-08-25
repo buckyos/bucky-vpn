@@ -1,0 +1,25 @@
+schema_version: 1
+workflow_tier: trivial
+version: v0.1
+packet_module: globals
+task_name: 028-revert-format-only-changes
+stage: proposal
+mode: manual
+auto_pipeline_start_stage:
+proposal: proposal.md
+design:
+testing:
+testplan:
+acceptance_report:
+completion_report:
+change_record:
+pipeline_plan:
+risk_profile:
+lifecycle_state:
+changed_paths_file: .harness/evidence/v0.1/stage-scope/028-revert-format-only-changes.paths
+baseline_manifest: .harness/baselines/v0.1/028-revert-format-only-changes-delivery/manifest.json
+changes:
+  - id: CHG-revert-format-only-diff
+    target_module: workspace
+    scope_paths: ["vpn-frame/**", "vpn-server/**", "vpn_web/**"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/028-revert-format-only-changes-implementation-workspace.txt

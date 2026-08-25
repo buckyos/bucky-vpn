@@ -1,0 +1,29 @@
+schema_version: 1
+workflow_tier: high-risk
+version: v0.1
+packet_module: bucky-vpn
+task_name: 018-fix-windows-installer-version
+stage: design
+mode: auto-pipeline
+auto_pipeline_start_stage: design
+proposal: proposal.md
+design:
+testing:
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+completion_report:
+change_record:
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+changed_paths_file: .harness/evidence/v0.1/stage-scope/018-fix-windows-installer-version-proposal.txt
+baseline_manifest:
+changes:
+  - id: CHG-fix-windows-installer-version
+    target_module: bucky-vpn
+    scope_paths: ["build_win.bat", "install.iss", "vpn-client/Cargo.toml", "tests/github_actions_build_contract.py"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/018-fix-windows-installer-version-implementation-bucky-vpn.txt
+  - id: CHG-audit-cross-platform-version-packaging
+    target_module: bucky-vpn
+    scope_paths: ["build_deb.sh", "build_macos.sh", "build_server.sh", "build_win.bat", "vpn_deb/DEBIAN/control", "Dockerfile", "tests/github_actions_build_contract.py"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/018-fix-windows-installer-version-implementation-bucky-vpn.txt

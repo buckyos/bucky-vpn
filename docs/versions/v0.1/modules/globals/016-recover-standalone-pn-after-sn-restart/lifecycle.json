@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/globals/016-recover-standalone-pn-after-sn-restart/proposal.md": "9866aa7a867ad87f42e1da2a8b21d0dd7fb4d631fae0d3ef9aa3f4687331d48e"
+      },
+      "status": "complete",
+      "task_binding_sha256": "24e4958b0ae9dbb3c15393a5eb6a0b04965e359005095a48339ad45d182d4fd6"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

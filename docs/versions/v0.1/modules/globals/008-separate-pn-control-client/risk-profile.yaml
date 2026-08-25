@@ -1,0 +1,55 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-dedicated-pn-control-client", "CHG-pn-control-client-integration"]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+risks:
+  contract:
+    applies: true
+    evidence:
+      - vpn-frame/src/control_channel.rs
+      - vpn-frame/src/client/vpn_server_client.rs
+      - vpn-frame/src/server/mod.rs
+      - vpn-frame/src/server/vpn_control_client.rs
+      - vpn-server/src/pn_control_client.rs
+    required_checks:
+      - "VpnControlClientOps is implemented by vpn_frame::server::VpnControlClient and is no longer implemented by VpnServerClient."
+      - "The dedicated client preserves all four command codes, request and response payloads, command version handling, sequence generation, timeout use, result-code handling, and error conversion."
+      - "Every repository consumer of the removed VpnServerClient control methods and trait implementation is migrated to the dedicated client path."
+  data:
+    applies: false
+    evidence: "No persistent data, database schema, migration, or serialized VPN payload shape changes; existing command request and response types are reused unchanged."
+    required_checks: []
+  security:
+    applies: false
+    evidence: "Authentication, authorization, peer identity, cryptography, and privacy behavior are unchanged; the existing control tunnel and validation decisions are preserved."
+    required_checks: []
+  runtime:
+    applies: true
+    evidence:
+      - vpn-frame/src/control_channel.rs
+      - vpn-frame/src/client/vpn_server_client.rs
+      - vpn-frame/src/server/vpn_control_client.rs
+      - vpn-server/src/pn_control_client.rs
+    required_checks:
+      - "The dedicated client owns the same command client, protocol version, timeout, sequence generator, and generic transport lifetime markers previously used by VpnServerClient."
+      - "Heartbeat, traffic reporting, and PN connection validation keep the same success, rejection, transport-failure, and decode-failure behavior without new retry or lifecycle semantics."
+  build:
+    applies: true
+    evidence:
+      - vpn-frame/src/server/mod.rs
+      - vpn-frame/src/server/vpn_control_client.rs
+      - vpn-server/src/pn_control_client.rs
+    required_checks:
+      - "vpn-frame compiles with the new public server module type and without the old VpnServerClient control methods."
+      - "vpn-server compiles and its focused PN control tests pass using the dedicated client type."
+      - "A repository scan finds no stale production consumer of the removed VpnServerClient control surface."
+  ui:
+    applies: false
+    evidence: "The Flutter Web UI, accessibility behavior, and user workflows are outside this Rust client-boundary refactor."
+    required_checks: []
+  harness:
+    applies: false
+    evidence: "Harness policy and tooling are used without modification."
+    required_checks: []

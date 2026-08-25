@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/bucky-vpn/019-install-nasm-for-windows-action/proposal.md": "1f06906fe14266c2f55685460cbe4a78ab8c4ad45e5166331033bbf3d271a2af"
+      },
+      "status": "complete",
+      "task_binding_sha256": "e776a9ac1bf453f22ad5cea548bc3510a286e7b43803d1bb92634476be31a0d5"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

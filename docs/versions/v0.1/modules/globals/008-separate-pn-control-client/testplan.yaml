@@ -1,0 +1,89 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: breaking
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: false
+evidence_inputs: ["vpn-frame/src/control_channel.rs", "vpn-frame/src/client/vpn_server_client.rs", "vpn-frame/src/server/mod.rs", "vpn-frame/src/server/vpn_control_client.rs", "vpn-server/src/pn_control_client.rs", "vpn-server/src/pn_control_client_tests.rs", "tests/fixtures/sfo_cmd_server_0_4_consumer/Cargo.toml", "tests/fixtures/sfo_cmd_server_0_4_consumer/Cargo.lock", "tests/fixtures/sfo_cmd_server_0_4_consumer/src/lib.rs", "tests/fixtures/sfo_cmd_server_0_4_consumer/examples/removed_vpn_control_api.rs", "tests/vpn_control_client_api_contract.py", "vpn-frame/tests/vpn_control_client_tests.rs"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: dedicated-control-client-external-positive
+      kind: external-positive
+      assertion: new-path-compiles
+      name: compile an external consumer of vpn_frame::server::VpnControlClient
+      change_ids: ["CHG-dedicated-pn-control-client", "CHG-pn-control-client-integration"]
+      run: ["cargo", "check", "--manifest-path", "tests/fixtures/sfo_cmd_server_0_4_consumer/Cargo.toml", "--lib", "--locked"]
+    - id: vpn-server-client-old-control-api-negative
+      kind: external-negative
+      assertion: old-path-rejected-for-removed-symbol
+      name: prove VpnServerClient no longer exposes PN control commands
+      change_ids: ["CHG-dedicated-pn-control-client", "CHG-pn-control-client-integration"]
+      run: ["python3", "tests/vpn_control_client_api_contract.py"]
+    - id: removed-vpn-server-client-control-surface-scan
+      kind: removed-symbol-scan
+      assertion: no-unallowlisted-old-symbol-references
+      name: scan repository consumers for stale VpnServerClient control calls
+      change_ids: ["CHG-dedicated-pn-control-client", "CHG-pn-control-client-integration"]
+      run: ["python3", "./harness/scripts/consumer-closure-check.py", "--version", "v0.1", "--module", "globals", "--task-name", "008-separate-pn-control-client"]
+    - id: vpn-control-client-repository-compile-closure
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: compile all locked workspace consumers without running tests
+      change_ids: ["CHG-dedicated-pn-control-client", "CHG-pn-control-client-integration"]
+      run: ["cargo", "test", "--workspace", "--no-run", "--all-targets", "--locked"]
+defaults:
+  workdir: .
+  timeout_sec: 1800
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: run focused PN control client unit tests covering command forwarding and error semantics
+    test_targets:
+      - vpn-frame server control client
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - test implementation is finalized after the production client exists
+    steps:
+      - id: vpn-control-client-unit
+        name: run dedicated vpn-frame control client unit tests
+        change_ids: ["CHG-dedicated-pn-control-client"]
+        run: ["cargo", "test", "-p", "vpn-frame", "--test", "vpn_control_client_tests", "--locked"]
+  dv:
+    mode: enabled
+    summary: compile every vpn-frame target with the dedicated server-module control client
+    test_targets:
+      - vpn-frame
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - compile failure exposes module export, trait-bound, or stale general-client ownership defects
+    steps:
+      - id: vpn-frame-dedicated-control-client-check
+        name: check all vpn-frame targets with the dedicated control client
+        change_ids: ["CHG-dedicated-pn-control-client"]
+        run: ["cargo", "check", "-p", "vpn-frame", "--all-targets", "--locked"]
+  integration:
+    mode: enabled
+    summary: run focused vpn-server PN control tests and compile the migrated cross-crate consumer
+    test_targets:
+      - bucky-vpn-server
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - the existing focused fake-ops tests retain success and rejection semantics while compile closure validates concrete construction
+    steps:
+      - id: bucky-vpn-server-pn-control-tests
+        name: run focused PN control client tests after concrete client migration
+        change_ids: ["CHG-pn-control-client-integration"]
+        run: ["cargo", "test", "-p", "bucky-vpn-server", "pn_control_client_tests", "--locked"]

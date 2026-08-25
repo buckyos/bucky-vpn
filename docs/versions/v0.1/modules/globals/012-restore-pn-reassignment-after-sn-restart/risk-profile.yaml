@@ -1,0 +1,52 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-apply-equal-version-pn-refresh", "CHG-reconnect-reappeared-pn"]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+risks:
+  contract:
+    applies: true
+    evidence:
+      - vpn-frame/src/client/vpn_client.rs
+      - vpn-frame/src/server/vpn_server.rs
+      - vpn-frame/src/server/node_pn_manager.rs
+      - vpn-client/src/p2p_vpn.rs
+    required_checks:
+      - "A non-empty GetVpnInfo response is applied even when both returned numeric versions equal the client's cached versions."
+      - "An empty equal-version incremental response remains a no-op and cannot remove existing network or PN state."
+      - "Removing and re-adding the same PN metadata results in a fresh connect_server attempt."
+  data:
+    applies: false
+    evidence: "No persistent schema, database content, migration, or serialized payload changes are proposed."
+    required_checks: []
+  security:
+    applies: false
+    evidence: "PN identity validation, approval, authorization, and cryptographic behavior remain unchanged."
+    required_checks: []
+  runtime:
+    applies: true
+    evidence:
+      - vpn-frame/src/client/vpn_client.rs
+      - vpn-client/src/p2p_vpn.rs
+    required_checks:
+      - "Response application and both version commits remain ordered so any PN route or connection failure is retried by a later poll."
+      - "The connected PN registry contains only targets that have not been logically removed, and no standard mutex is held across await points."
+      - "The SN restart recovery sequence reaches a usable PN connection without restarting vpn-client."
+  build:
+    applies: true
+    evidence:
+      - vpn-frame/Cargo.toml
+      - vpn-client/Cargo.toml
+      - Cargo.toml
+    required_checks:
+      - "vpn-frame focused tests and all-target compile closure pass with the refresh fix."
+      - "bucky-vpn focused tests and all-target compile closure pass with the PN registry fix."
+  ui:
+    applies: false
+    evidence: "No Flutter UI or accessibility behavior changes."
+    required_checks: []
+  harness:
+    applies: false
+    evidence: "Harness policy and tooling are consumed without modification."
+    required_checks: []

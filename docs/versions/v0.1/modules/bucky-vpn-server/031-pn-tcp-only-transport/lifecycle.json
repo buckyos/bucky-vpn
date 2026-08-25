@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/bucky-vpn-server/031-pn-tcp-only-transport/proposal.md": "7857dcf974955a470a602c7d67cd90f6e1cca6f3b141283f644e204f2dc2098e"
+      },
+      "status": "complete",
+      "task_binding_sha256": "42a304fe621c509cd729ec426feb3d2c4004ffd6b087646cd434a9446d72387d"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

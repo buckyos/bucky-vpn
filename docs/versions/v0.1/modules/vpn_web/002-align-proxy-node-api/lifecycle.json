@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/vpn_web/002-align-proxy-node-api/proposal.md": "6f5c506e68cbf3904234e3cb446e281fab2be33a0b6b401664b90c1314a296d7"
+      },
+      "status": "complete",
+      "task_binding_sha256": "7d4e584a5b3dcfefb7b06ed91a0ccd575eafc8fb071868dee906ed7813cda3ed"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

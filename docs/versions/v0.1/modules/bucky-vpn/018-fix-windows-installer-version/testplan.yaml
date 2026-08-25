@@ -1,0 +1,92 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: none
+  crate_root_export_change: false
+  build_surface_change: true
+  documentation_examples_affected: false
+evidence_inputs: ["build_win.bat", "install.iss", "vpn-client/Cargo.toml", "build_deb.sh", "build_macos.sh", "build_server.sh", "vpn_deb/DEBIAN/control", "Dockerfile", "tests/github_actions_build_contract.py"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: affected-client-compile-closure
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: compile every bucky-vpn target after changing Windows resource metadata
+      change_ids: ["CHG-fix-windows-installer-version", "CHG-audit-cross-platform-version-packaging"]
+      run: ["cargo", "test", "-p", "bucky-vpn", "--no-run", "--all-targets"]
+defaults:
+  workdir: .
+  timeout_sec: 1800
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: lock the Windows cmd, ISPP, and winres repair while preserving executable fake-tool contracts for all four packaging entrypoints
+    test_targets:
+      - tests/github_actions_build_contract.py
+    preconditions:
+      tools: ["uv", "bash", "cargo"]
+      env: []
+      services: []
+      notes:
+        - PyYAML is pinned ephemerally by uv for structured GitHub workflow parsing.
+        - The Windows regression rejects the reproduced cmd caret leak, requires fully quoted ISCC arguments, proves both undefined and empty AppVersion guards, and prevents duplicate winres FileVersion or ProductVersion ownership.
+        - Debian, macOS, and server entrypoints execute against isolated fake Cargo and native packaging tools; the Windows entrypoint's native execution is owned by DV below.
+    steps:
+      - id: cross-platform-packaging-contract
+        name: run focused Windows regression and four-platform packaging contracts
+        change_ids: ["CHG-fix-windows-installer-version", "CHG-audit-cross-platform-version-packaging"]
+        run: ["uv", "run", "--with", "PyYAML==6.0.2", "python", "./tests/github_actions_build_contract.py"]
+
+  dv:
+    mode: enabled
+    summary: build the real Windows and Debian installers and bind their output metadata to vpn-client Cargo version
+    test_targets:
+      - build_win.bat
+      - build_deb.sh
+      - dist/BuckyVPN_<version>_amd64_Setup.exe
+      - dist/bucky-vpn_<version>_amd64.deb
+    preconditions:
+      tools: ["/mnt/c/Windows/System32/cmd.exe", "cargo", "ISCC.exe", "bash", "python3", "dpkg-deb", "uv"]
+      env: []
+      services: []
+      notes:
+        - Windows Cargo, PowerShell, and ISCC.exe must be available through the cmd.exe environment PATH.
+        - The x86_64-unknown-linux-musl target and linker must be installed for the Debian build.
+        - The verification step requires both preceding builds and checks the Debian control Version using dpkg-deb rather than only trusting filenames.
+    steps:
+      - id: real-debian-package-build
+        name: run the real Debian packaging entrypoint
+        change_ids: ["CHG-audit-cross-platform-version-packaging"]
+        run: ["./build_deb.sh"]
+      - id: real-windows-installer-build
+        name: run the real Windows batch entrypoint through cmd.exe
+        change_ids: ["CHG-fix-windows-installer-version", "CHG-audit-cross-platform-version-packaging"]
+        run: ["/mnt/c/Windows/System32/cmd.exe", "/d", "/c", "build_win.bat"]
+      - id: verify-windows-native-behavior
+        name: execute invalid AppVersion guards and compare Windows EXE resources with Cargo
+        change_ids: ["CHG-fix-windows-installer-version"]
+        run: ["python3", "./tests/github_actions_build_contract.py", "--verify-windows-native-behavior"]
+      - id: verify-native-versioned-artifacts
+        name: verify Windows and Debian filenames plus Debian control version against Cargo
+        change_ids: ["CHG-fix-windows-installer-version", "CHG-audit-cross-platform-version-packaging"]
+        run: ["python3", "./tests/github_actions_build_contract.py", "--verify-native-artifacts"]
+
+  integration:
+    mode: manual
+    summary: execute native macOS universal pkg and server Flutter plus Docker packaging in their supported hosted environments
+    reason: this workspace cannot natively execute pkgbuild and lipo on macOS or claim the configured Flutter and Docker server image path without a matching hosted toolchain; their isolated fake-tool contracts are automated, but native outputs remain an explicit integration gap
+    change_ids: ["CHG-audit-cross-platform-version-packaging"]
+    test_targets:
+      - build_macos.sh
+      - build_server.sh
+    preconditions:
+      tools: ["cargo", "flutter", "docker", "lipo", "pkgbuild"]
+      env: []
+      services: ["Docker daemon"]
+      notes:
+        - Run build_macos.sh on the configured Intel macOS runner and inspect the universal binary plus pkg metadata.
+        - Run build_server.sh with the configured Flutter toolchain and Docker daemon, then inspect the image version label and startup behavior.
+    steps: []

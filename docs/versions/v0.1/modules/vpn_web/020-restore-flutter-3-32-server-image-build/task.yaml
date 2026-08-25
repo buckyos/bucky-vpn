@@ -1,0 +1,25 @@
+schema_version: 1
+workflow_tier: trivial
+version: v0.1
+packet_module: vpn_web
+task_name: 020-restore-flutter-3-32-server-image-build
+stage: proposal
+mode: manual
+auto_pipeline_start_stage:
+proposal: proposal.md
+design:
+testing:
+testplan:
+acceptance_report:
+completion_report:
+change_record:
+pipeline_plan:
+risk_profile:
+lifecycle_state:
+changed_paths_file: .harness/evidence/v0.1/stage-scope/020-restore-flutter-3-32-server-image-build.paths
+baseline_manifest: .harness/baselines/v0.1/020-restore-flutter-3-32-server-image-build-delivery/manifest.json
+changes:
+  - id: CHG-update-server-build-flutter
+    target_module: vpn_web
+    scope_paths: [".github/workflows/build.yml"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/020-restore-flutter-3-32-server-image-build-implementation-vpn_web.txt

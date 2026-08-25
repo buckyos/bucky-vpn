@@ -1,0 +1,29 @@
+schema_version: 1
+workflow_tier: high-risk
+version: v0.1
+packet_module: globals
+task_name: 027-refresh-pn-observation-on-reonline
+stage: design
+mode: auto-pipeline
+auto_pipeline_start_stage: design
+proposal: proposal.md
+design:
+testing:
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+completion_report:
+change_record:
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+changed_paths_file: .harness/evidence/v0.1/stage-scope/027-refresh-pn-observation-on-reonline-design.txt
+baseline_manifest:
+changes:
+  - id: CHG-observe-pn-heartbeat-tunnel
+    target_module: vpn-frame
+    scope_paths: ["vpn-frame/src/server/pn_control_server.rs", "vpn-frame/src/server/vpn_server.rs", "vpn-frame/tests/**"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/027-refresh-pn-observation-on-reonline-implementation-vpn-frame.txt
+  - id: CHG-refresh-pn-observation-on-reonline
+    target_module: bucky-vpn-server
+    scope_paths: ["vpn-server/src/main.rs", "vpn-server/src/pn_control_server.rs", "vpn-server/src/pn_server_manager.rs", "vpn-server/tests/**"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/027-refresh-pn-observation-on-reonline-implementation-bucky-vpn-server.txt

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/bucky-vpn/018-fix-windows-installer-version/proposal.md": "24e9c67e352f6cf689da2f19f37ccdb785fa5f30e801a94d306b9d55af07f11f"
+      },
+      "status": "complete",
+      "task_binding_sha256": "2b50dafd60ba7a7efa879e3a1dfe736d2fb08cacd22d6c3e3a01b95c5e284994"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

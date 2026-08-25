@@ -1,0 +1,80 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: backward-compatible
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: false
+evidence_inputs: ["vpn-frame/src/client/vpn_client.rs", "vpn-frame/src/client/vpn_device.rs", "vpn-frame/tests/tun_recovery_contract.rs", "vpn-frame/src/vpn_protocol.rs", "vpn-frame/src/client/vpn_server_client.rs", "vpn-frame/src/server/vpn_server.rs", "vpn-client/src/p2p_vpn.rs", "docs/modules/vpn-frame.md", "docs/modules/bucky-vpn.md", "docs/modules/bucky-vpn-server.md"]
+contract_checks:
+  mode: disabled
+  reason: the pipeline design preserves both public VpnDevice method signatures and the existing GetVpnInfo wire payload, adds no crate-root export, dependency, build-surface, or documentation-example change, and the focused static behavior contract plus all-target compile check cover the changed internal runtime contract
+  steps: []
+defaults:
+  workdir: .
+  timeout_sec: 1800
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: verify the delivered field classification, receive-context refresh, retry state including a zero-version first-response failure, map restoration, commit ordering, and public update compatibility without creating a privileged TUN
+    test_targets:
+      - vpn-frame/tests/tun_recovery_contract.rs
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - the 2026-08-05 failure log is the pre-fix red evidence: GetVpnInfo was followed by create tun device and immediate drop tun device while pn control was recovering
+        - replaying the destructive pre-fix path requires an OS TUN plus deterministic tun-rs or Wintun create failure and cannot be portably injected through the existing public API
+        - the dedicated contract tests therefore combine public compatibility behavior with source-structure assertions over the private lifecycle and refresh transaction, without expanding the public API for testability
+        - normal and boundary coverage verifies PN/name are excluded from TUN-effective fields while id/ip/mask/ipv6/ipv6_mask remain included
+        - negative and error coverage verifies a missing device enters create_device, every removed map entry is reinserted before error propagation, and failed reconciliation blocks both version stores
+        - first-sync boundary coverage mechanically verifies the initial request sends None/None, the zero-initialized versions are not used as a success sentinel, and is_first is cleared exactly once only after reconciliation and both version stores succeed
+        - compatibility coverage verifies the existing public update_device signature still accepts a control-metadata snapshot and stores it successfully
+        - lifecycle coverage verifies group_id refreshes the receive task branch without taking the TUN handle and stale entries are retained until the full response succeeds
+    steps:
+      - id: tun-recovery-contract-unit
+        name: run focused TUN recovery lifecycle contract tests
+        change_ids: ["CHG-preserve-tun-on-control-refresh", "CHG-retry-failed-tun-update"]
+        run: ["cargo", "test", "-p", "vpn-frame", "--test", "tun_recovery_contract", "--locked"]
+
+  dv:
+    mode: enabled
+    summary: compile all vpn-frame targets and the focused test against the locked dependency graph
+    test_targets:
+      - vpn-frame
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - this single-module check covers the real vpn-frame client wiring, VpnDevice generic bounds, tun-rs integration surface, and unchanged public method signatures
+        - lifecycle and failure branches that require a real OS adapter are compiled but not executed in this unprivileged Linux run
+    steps:
+      - id: vpn-frame-tun-recovery-all-targets-check
+        name: check every vpn-frame target after TUN recovery changes
+        change_ids: ["CHG-preserve-tun-on-control-refresh", "CHG-retry-failed-tun-update"]
+        run: ["cargo", "check", "-p", "vpn-frame", "--all-targets", "--locked"]
+
+  integration:
+    mode: disabled
+    summary: assess the unchanged GetVpnInfo client-server wire boundary and record the live Windows Wintun recovery gap
+    reason: vpn-client and vpn-server continue consuming the unchanged NodeVpnInfo and GetVpnInfo request-response types, while a meaningful runtime integration requires privileged multi-process VPN setup plus vpn_server restart and deterministic Wintun adapter-create failure on Windows; those facilities are unavailable in the current Linux workspace and a compile-only duplicate would not prove that platform lifecycle
+    change_ids: ["CHG-preserve-tun-on-control-refresh", "CHG-retry-failed-tun-update"]
+    test_targets:
+      - vpn-client/src/p2p_vpn.rs
+      - vpn-frame/src/client/vpn_server_client.rs
+      - vpn-frame/src/server/vpn_server.rs
+      - vpn-frame/src/vpn_protocol.rs
+    preconditions:
+      tools: ["cargo", "Windows", "wintun.dll"]
+      env: []
+      services: ["vpn-client", "vpn-server", "SN/PN control path"]
+      notes:
+        - cross-module impact analysis found no command code, serialized field, protocol version, authorization, or server persistence change
+        - vpn-client still applies PN routes through VpnTunnelFactory::on_vpn_info_received and vpn-server still publishes the same versioned NodeVpnInfo list
+        - acceptance must treat live Windows/Wintun server-restart recovery as a documented manual evidence gap, not as an automated pass
+        - manual follow-up should keep vpn-client running, restart vpn_server, force one Wintun recreation failure for a genuine IP or mask change, and verify PN-only refresh preserves the adapter while the failed real change retries without advancing versions
+    steps: []

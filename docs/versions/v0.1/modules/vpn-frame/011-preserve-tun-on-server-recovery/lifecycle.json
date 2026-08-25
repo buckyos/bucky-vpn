@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/vpn-frame/011-preserve-tun-on-server-recovery/proposal.md": "10b50997858f2c9cff364733ea40f66fdee12aeef54328399d14a670b4df7cb1"
+      },
+      "status": "complete",
+      "task_binding_sha256": "2ee3d503a8ccfc77f45e02a58c8b558d4dbf841cd1ed42b5ccb259d1b596995a"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

@@ -1,0 +1,17 @@
+[package]
+name = "sfo-cmd-server-0-4-consumer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+vpn-frame = { path = "../../../vpn-frame" }
+
+[features]
+removed-vpn-control-api-negative = []
+
+[[example]]
+name = "removed_vpn_control_api"
+path = "examples/removed_vpn_control_api.rs"
+required-features = ["removed-vpn-control-api-negative"]
+
+[workspace]

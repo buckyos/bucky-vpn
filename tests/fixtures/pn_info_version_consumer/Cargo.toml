@@ -1,0 +1,21 @@
+[package]
+name = "pn-info-version-consumer"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+old-u16-negative = []
+old-u64-negative = []
+
+[dependencies]
+vpn-frame = { path = "../../../vpn-frame" }
+
+[[example]]
+name = "old_u16_negative"
+required-features = ["old-u16-negative"]
+
+[[example]]
+name = "old_u64_negative"
+required-features = ["old-u64-negative"]
+
+[workspace]

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/globals/027-refresh-pn-observation-on-reonline/proposal.md": "db66073a55248cd3516d08106092129331adffcda81d2f1094fa63db7513f388"
+      },
+      "status": "complete",
+      "task_binding_sha256": "2efee1d26cde9199bd0443bc53956b8bc0dca66a8b73b01686901a478e00a735"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

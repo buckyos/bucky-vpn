@@ -1,0 +1,25 @@
+schema_version: 1
+workflow_tier: high-risk
+version: v0.1
+packet_module: bucky-vpn-server
+task_name: 026-recover-pn-observed-address
+stage: design
+mode: auto-pipeline
+auto_pipeline_start_stage: design
+proposal: proposal.md
+design:
+testing:
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+completion_report:
+change_record:
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+changed_paths_file: .harness/evidence/v0.1/stage-scope/026-recover-pn-observed-address-proposal.txt
+baseline_manifest:
+changes:
+  - id: CHG-recover-pn-observed-address
+    target_module: bucky-vpn-server
+    scope_paths: ["vpn-server/src/pn_control_server.rs", "vpn-server/src/pn_server_manager.rs", "vpn-server/tests/**"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/026-recover-pn-observed-address-implementation-bucky-vpn-server.txt

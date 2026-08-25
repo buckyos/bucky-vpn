@@ -1,0 +1,60 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: none
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: false
+evidence_inputs: ["harness/custom-rules/test-file-location-rule.md", "harness/custom-rules/index.yaml", "harness/scripts/context.py", "harness/tests/test_test_file_location_rule.py", "docs/architecture/repository-workflow.md"]
+contract_checks:
+  mode: disabled
+  reason: the change adds repository governance metadata and prose only, with no public API, crate-root export, build-surface, or documentation-example impact
+  steps: []
+defaults:
+  workdir: .
+  timeout_sec: 120
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: validate the custom-rule index, routing coverage, priority, and approved placement contract
+    test_targets:
+      - harness/tests/test_test_file_location_rule.py
+    preconditions:
+      tools:
+        - python3
+      env: []
+      services: []
+      notes: []
+    steps:
+      - id: test-file-location-rule-routing
+        name: run focused custom-rule routing and contract regression tests
+        change_ids: ["CHG-enforce-test-file-location"]
+        run: ["python3", "./harness/tests/test_test_file_location_rule.py"]
+
+  dv:
+    mode: disabled
+    summary: no runnable product module or lifecycle behavior changes
+    reason: the changed surface is fully exercised by the context-router unit regression and index validation
+    change_ids: ["CHG-enforce-test-file-location"]
+    test_targets: []
+    preconditions:
+      tools: []
+      env: []
+      services: []
+      notes: []
+    steps: []
+
+  integration:
+    mode: disabled
+    summary: no neighbor-module runtime contract changes
+    reason: the rule is consumed through the existing context router and has no cross-module runtime interface
+    change_ids: ["CHG-enforce-test-file-location"]
+    test_targets: []
+    preconditions:
+      tools: []
+      env: []
+      services: []
+      notes: []
+    steps: []

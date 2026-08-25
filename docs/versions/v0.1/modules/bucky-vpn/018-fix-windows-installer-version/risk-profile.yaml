@@ -1,0 +1,56 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-fix-windows-installer-version", "CHG-audit-cross-platform-version-packaging"]
+source_bindings:
+  proposal: proposal.md
+  design_source: 
+risks:
+  contract:
+    applies: true
+    evidence:
+      - build_win.bat
+      - install.iss
+      - vpn-client/Cargo.toml
+      - build_deb.sh
+      - build_macos.sh
+      - build_server.sh
+    required_checks:
+      - "The unique stable bucky-vpn Cargo package version must reach every package metadata and output-name boundary without shell escaping damage."
+      - "Windows executable resources and Inno Setup metadata must not retain an independent hard-coded product version."
+      - "Missing, ambiguous, prerelease, or empty version values must fail before a misleading package is produced."
+  data:
+    applies: false
+    evidence: "No database, persistent application state, wire format, or migration changes."
+    required_checks: []
+  security:
+    applies: false
+    evidence: "No credential, permission, authentication, signing, or publication gate changes."
+    required_checks: []
+  runtime:
+    applies: false
+    evidence: "The task changes build-time version propagation only and leaves installed service/runtime behavior unchanged."
+    required_checks: []
+  build:
+    applies: true
+    evidence:
+      - build_win.bat
+      - install.iss
+      - vpn-client/Cargo.toml
+      - build_deb.sh
+      - build_macos.sh
+      - build_server.sh
+      - Dockerfile
+      - vpn_deb/DEBIAN/control
+    required_checks:
+      - "The real Windows batch entrypoint must execute through cmd.exe, invoke Cargo and ISCC, and produce the Cargo-versioned installer."
+      - "The regression evidence must reproduce the pre-fix cmd-to-PowerShell failure and pass after the fix."
+      - "Debian must produce and inspect a real package when the local toolchain supports it; macOS and server gaps must not be represented as native passes."
+      - "Focused executable contracts must cover Debian, macOS, server, and Windows version propagation and cleanup boundaries."
+  ui:
+    applies: false
+    evidence: "No UI page, interaction, styling, or accessibility behavior changes."
+    required_checks: []
+  harness:
+    applies: false
+    evidence: "Existing task workflow, test runner, and checkers are consumed without changing Harness policy or tooling."
+    required_checks: []

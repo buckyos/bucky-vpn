@@ -1,0 +1,47 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-vendored-swagger-ui-client", "CHG-vendored-swagger-ui-server", "CHG-proposal-approval-gate"]
+source_bindings:
+  proposal: proposal.md
+  design_source: design.md
+risks:
+  contract:
+    applies: false
+    evidence: "No public API, OpenAPI schema, protocol, CLI, or runtime interface changes are proposed."
+    required_checks: []
+  data:
+    applies: false
+    evidence: "No persistent data, database schema, serialization, or migration behavior is changed."
+    required_checks: []
+  security:
+    applies: false
+    evidence: "The change does not alter application authentication, authorization, privacy, or cryptographic behavior; supply-chain impact is owned by the build category."
+    required_checks: []
+  runtime:
+    applies: false
+    evidence: "The selected feature changes build-time asset sourcing only and does not alter application lifecycle, concurrency, networking, or retry behavior."
+    required_checks: []
+  build:
+    applies: true
+    evidence:
+      - vpn-client/Cargo.toml
+      - vpn-server/Cargo.toml
+      - Cargo.lock
+    required_checks:
+      - "Resolved Cargo features include utoipa-swagger-ui/vendored for both application package graphs."
+      - "Targeted compilation passes the previous Swagger UI custom-build failure without a remote curl download."
+      - "Lockfile inspection shows only the vendored asset dependency and resolution changes required by this feature activation."
+  ui:
+    applies: false
+    evidence: "Swagger UI presentation and application routes remain unchanged; only the source of identical build-time static assets changes."
+    required_checks: []
+  harness:
+    applies: true
+    evidence:
+      - harness/scripts/schema-check.py
+      - harness/scripts/harness-check.py
+      - harness/scripts/task-transition.py
+    required_checks:
+      - "Proposal-stage --require-approved accepts an approved proposal and still rejects a draft proposal."
+      - "The canonical task-transition command records proposal completion and advances the task legally."
+      - "Focused repo-governance coverage is reachable through the unified test entrypoint."

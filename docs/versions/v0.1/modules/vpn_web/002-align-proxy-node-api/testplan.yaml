@@ -1,0 +1,70 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: none
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: false
+evidence_inputs: ["vpn-server/src/api.rs", "vpn_web/lib/api.dart", "vpn_web/lib/api.g.dart", "vpn_web/lib/proxy_nodes_page.dart"]
+contract_checks:
+  mode: disabled
+  reason: the pipeline design records no public API, crate-root export, build-surface, or documentation-example impact; the task-scoped analyzer and web build cover the affected frontend compilation surface
+  steps: []
+defaults:
+  workdir: .
+  timeout_sec: 1800
+  env: {}
+levels:
+  unit:
+    mode: disabled
+    summary: no Flutter unit or widget tests are added or modified for this vpn_web correction
+    reason: the repository vpn_web no-new-tests rule requires analyzer, web-build, and targeted manual evidence unless the user explicitly authorizes a frontend test exception
+    change_ids: ["CHG-align-proxy-node-api"]
+    test_targets: []
+    preconditions:
+      tools: []
+      env: []
+      services: []
+      notes:
+        - red-green automated reproduction is unavailable because adding or modifying vpn_web tests is outside the approved proposal and prohibited by the matching custom rule
+    steps: []
+
+  dv:
+    mode: enabled
+    summary: statically analyze the corrected generated model, API calls, and existing Proxy Nodes page consumer
+    test_targets:
+      - vpn_web/lib/api.dart
+      - vpn_web/lib/api.g.dart
+      - vpn_web/lib/proxy_nodes_page.dart
+    preconditions:
+      tools:
+        - Windows Flutter available through cmd.exe
+      env: []
+      services: []
+      notes:
+        - WSL invokes the installed Windows Flutter SDK from the Windows project path
+    steps:
+      - id: vpn-web-proxy-api-analyze
+        name: analyze vpn_web with Windows Flutter
+        change_ids: ["CHG-align-proxy-node-api"]
+        run: ["/mnt/c/Windows/System32/cmd.exe", "/d", "/s", "/c", "cd /d F:\\work\\vpn\\vpn_web && flutter analyze --no-fatal-infos --no-fatal-warnings"]
+
+  integration:
+    mode: enabled
+    summary: compile the complete Flutter Web application with the corrected response decoder, approval encoder, and page-facing accessor
+    test_targets:
+      - vpn_web/lib
+      - vpn_web/web
+    preconditions:
+      tools:
+        - Windows Flutter available through cmd.exe
+      env: []
+      services: []
+      notes:
+        - this build verifies frontend compile integration but does not exercise a live vpn-server response or browser approval flow
+    steps:
+      - id: vpn-web-proxy-api-build-web
+        name: build vpn_web Web bundle with Windows Flutter
+        change_ids: ["CHG-align-proxy-node-api"]
+        run: ["/mnt/c/Windows/System32/cmd.exe", "/d", "/s", "/c", "cd /d F:\\work\\vpn\\vpn_web && flutter build web"]

@@ -1,0 +1,52 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-preserve-tun-on-control-refresh", "CHG-retry-failed-tun-update"]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+risks:
+  contract:
+    applies: true
+    evidence:
+      - vpn-frame/src/client/vpn_client.rs
+      - vpn-frame/src/client/vpn_device.rs
+      - vpn-client/src/p2p_vpn.rs
+    required_checks:
+      - "PN server, PN endpoint/name, and peer-member refreshes update routing state without recreating or dropping an unchanged OS TUN."
+      - "The existing public VpnDevice start and update_device signatures and VPN GetVpnInfo wire contract remain compatible."
+  data:
+    applies: false
+    evidence: "No persistent schema, migration, serialized payload, or stored network allocation changes are proposed."
+    required_checks: []
+  security:
+    applies: false
+    evidence: "SN/PN authorization, identity validation, cryptography, and permission decisions remain unchanged."
+    required_checks: []
+  runtime:
+    applies: true
+    evidence:
+      - vpn-frame/src/client/vpn_client.rs
+      - vpn-frame/src/client/vpn_device.rs
+      - vpn-frame/src/client/packet_dispatcher.rs
+      - vpn-client/src/p2p_vpn.rs
+    required_checks:
+      - "TUN-effective fields, receive-dispatch fields, and routing-only metadata are classified according to pipeline/plan.md and applied by their owning lifecycle path."
+      - "Every removed device-map entry is reinserted before an error can return, including multi-network partial failure."
+      - "A failed required TUN transition retains retryable managed state, returns and logs the underlying error, and leaves both applied versions unchanged."
+      - "A later full poll reapplies already successful networks idempotently and retries the failed network."
+  build:
+    applies: true
+    evidence:
+      - vpn-frame/Cargo.toml
+      - Cargo.toml
+    required_checks:
+      - "vpn-frame focused lifecycle tests compile and pass through the task-scoped unified test entry."
+      - "All vpn-frame targets compile without a public API or dependency/build-surface change."
+  ui:
+    applies: false
+    evidence: "Flutter UI and user-facing interaction flows are outside this Rust runtime lifecycle fix."
+    required_checks: []
+  harness:
+    applies: false
+    evidence: "Harness policy and tooling are consumed without behavioral modification."
+    required_checks: []

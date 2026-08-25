@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/globals/017-add-github-actions-builds/proposal.md": "42040e92629ec5e24f34479dd72b3bafb61c9391194eaa53ad726a197ab45470"
+      },
+      "status": "complete",
+      "task_binding_sha256": "9bee1403c157ca7dce07e15c659056bca2a8f615f13c6e8105a6c95c6a373390"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

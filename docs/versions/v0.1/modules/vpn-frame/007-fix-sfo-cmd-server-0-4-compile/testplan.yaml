@@ -1,0 +1,85 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: migration-required
+  crate_root_export_change: true
+  build_surface_change: true
+  documentation_examples_affected: false
+evidence_inputs: ["Cargo.lock", "vpn-frame/Cargo.toml", "vpn-frame/src/vpn_protocol.rs", "vpn-frame/src/control_channel.rs", "vpn-frame/src/client/vpn_client.rs", "vpn-frame/src/client/vpn_client_manager.rs", "vpn-frame/src/client/vpn_server_client.rs", "vpn-frame/src/server/pn_control_server.rs", "vpn-frame/src/server/vpn_server.rs", "vpn-client/Cargo.toml", "vpn-client/src/p2p_vpn.rs", "vpn-server/Cargo.toml", "vpn-server/src/pn_control_client.rs", "vpn-server/src/pn_control_server.rs", "vpn-server/src/sqlite_store_factory.rs", "tests/fixtures/sfo_cmd_server_0_4_consumer/Cargo.toml", "tests/fixtures/sfo_cmd_server_0_4_consumer/Cargo.lock", "tests/fixtures/sfo_cmd_server_0_4_consumer/src/lib.rs"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: external-new-package-length-path
+      kind: external-positive
+      assertion: new-path-compiles
+      name: compile an external consumer of VpnCmdPkgLen and VpnCmdHeader
+      change_ids: ["CHG-sfo-cmd-server-0-4-api-migration"]
+      run: ["cargo", "check", "--manifest-path", "tests/fixtures/sfo_cmd_server_0_4_consumer/Cargo.toml", "--all-targets"]
+    - id: removed-raw-command-length-symbol-scan
+      kind: removed-symbol-scan
+      assertion: no-unallowlisted-old-symbol-references
+      name: verify migrated consumers no longer reference the old command-length selections
+      change_ids: ["CHG-sfo-cmd-server-0-4-api-migration"]
+      run: ["python3", "./harness/scripts/consumer-closure-check.py", "--version", "v0.1", "--module", "vpn-frame", "--task-name", "007-fix-sfo-cmd-server-0-4-compile"]
+    - id: repository-compile-closure
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: compile all locked workspace consumers without running tests
+      change_ids: ["CHG-sfo-cmd-server-0-4-api-migration"]
+      run: ["cargo", "test", "--workspace", "--no-run", "--all-targets", "--locked"]
+defaults:
+  workdir: .
+  timeout_sec: 1800
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: run existing vpn-frame unit tests and compile the command-server test service with VpnCmdPkgLen
+    test_targets:
+      - vpn-frame
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - the pre-fix diagnostic produced 43 CmdPkgLen errors before any test body could run; successful compilation and execution is the red-green regression signal
+    steps:
+      - id: vpn-frame-package-length-unit
+        name: run vpn-frame library tests with the migrated command package-length type
+        change_ids: ["CHG-sfo-cmd-server-0-4-api-migration"]
+        run: ["cargo", "test", "-p", "vpn-frame", "--lib", "--locked"]
+  dv:
+    mode: enabled
+    summary: compile every vpn-frame target against sfo-cmd-server 0.4.0
+    test_targets:
+      - vpn-frame
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - compile failure exposes any remaining raw u16 command package-length generic
+    steps:
+      - id: vpn-frame-locked-all-targets-check
+        name: check all vpn-frame targets with the locked dependency graph
+        change_ids: ["CHG-sfo-cmd-server-0-4-api-migration"]
+        run: ["cargo", "check", "-p", "vpn-frame", "--all-targets", "--locked"]
+  integration:
+    mode: enabled
+    summary: compile all workspace client and server consumers against the migrated vpn-frame API
+    test_targets:
+      - vpn-frame
+      - vpn-client
+      - vpn-server
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - this is compile-only consumer coverage and does not execute broad workspace runtime tests
+    steps:
+      - id: locked-workspace-all-targets-check
+        name: check all locked workspace targets for client and server compatibility
+        change_ids: ["CHG-sfo-cmd-server-0-4-api-migration"]
+        run: ["cargo", "check", "--workspace", "--all-targets", "--locked"]

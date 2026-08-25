@@ -1,0 +1,89 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: backward-compatible
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: false
+evidence_inputs: ["vpn-frame/src/client/vpn_client.rs", "vpn-frame/src/client/vpn_client_restart_tests.rs", "vpn-client/src/p2p_vpn.rs", "vpn-client/src/p2p_vpn_pn_registry_tests.rs", "vpn-frame/src/client/vpn_server_client.rs", "vpn-frame/src/vpn_protocol.rs", "docs/modules/vpn-frame.md", "docs/modules/bucky-vpn.md"]
+contract_checks:
+  mode: disabled
+  reason: both changes preserve the GetVpnInfo wire payload, public Rust signatures, crate exports, dependencies, build surface, and documentation examples; focused branch tests plus both affected packages' all-target compile checks validate the internal compatibility boundary
+  steps: []
+defaults:
+  workdir: .
+  timeout_sec: 1800
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: verify the equal-version response decision and the desired-versus-connected PN registry lifecycle at their lowest deterministic boundaries
+    test_targets:
+      - vpn-frame client restart response tests
+      - bucky-vpn PN registry lifecycle tests
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - post-implementation design uses dedicated included test files so private state decisions are exercised without widening production visibility
+        - red-green evidence is model-based because Harness requires tests after implementation and reverting vpn_client.rs would overwrite accepted task 011 work
+        - the legacy equal-version predicate returns unchanged for a non-empty zero-version restart response, while the delivered predicate returns changed
+        - the legacy PN removal path leaves the identical key present and suppresses connect_server, while the delivered helper removes it before external target removal
+        - normal and boundary coverage includes empty and non-empty responses, zero and maximum u16 versions, retained and removed PN targets, and identical reappearance
+        - negative coverage includes first sync plus independent server-version and PN-version mismatches
+        - error and lifecycle coverage verifies registry removal precedes fallible remove_server so a later identical response remains reconnectable even when target removal logs an error
+        - concurrency is not applicable to these pure decisions; the existing mutex take-and-restore boundary is unchanged and no await occurs while connected_pn_targets is locked
+    steps:
+      - id: vpn-frame-restart-response-unit
+        name: run equal-version PN refresh decision regressions
+        change_ids: ["CHG-apply-equal-version-pn-refresh"]
+        run: ["cargo", "test", "-p", "vpn-frame", "client::vpn_client::tests::", "--locked", "--target-dir", ".harness/target/012-restore-pn-reassignment-after-sn-restart"]
+      - id: vpn-frame-restart-commit-transaction
+        name: run response application and commit ordering regressions
+        change_ids: ["CHG-apply-equal-version-pn-refresh"]
+        run: ["cargo", "test", "-p", "vpn-frame", "--test", "tun_recovery_contract", "--locked", "--target-dir", ".harness/target/012-restore-pn-reassignment-after-sn-restart"]
+      - id: bucky-vpn-pn-registry-unit
+        name: run PN registry removal and reappearance regressions
+        change_ids: ["CHG-reconnect-reappeared-pn"]
+        run: ["cargo", "test", "-p", "bucky-vpn", "p2p_vpn::tests::", "--locked", "--target-dir", ".harness/target/012-restore-pn-reassignment-after-sn-restart"]
+  dv:
+    mode: enabled
+    summary: compile all targets of both affected packages with the locked dependency graph
+    test_targets:
+      - vpn-frame
+      - bucky-vpn
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - vpn-frame all-target compilation covers the private decision helper, included tests, response application flow, and task 011 commit-after-success ordering
+        - bucky-vpn all-target compilation covers the real P2P target types, synchronization method, included tests, and unchanged VpnTunnelFactory callback integration
+        - no persisted state or behavior-changing configuration is introduced by either change
+    steps:
+      - id: vpn-frame-restart-response-all-targets-check
+        name: check every vpn-frame target after restart response fix
+        change_ids: ["CHG-apply-equal-version-pn-refresh"]
+        run: ["cargo", "check", "-p", "vpn-frame", "--all-targets", "--locked", "--target-dir", ".harness/target/012-restore-pn-reassignment-after-sn-restart"]
+      - id: bucky-vpn-pn-registry-all-targets-check
+        name: check every bucky-vpn target after PN registry fix
+        change_ids: ["CHG-reconnect-reappeared-pn"]
+        run: ["cargo", "check", "-p", "bucky-vpn", "--all-targets", "--locked", "--target-dir", ".harness/target/012-restore-pn-reassignment-after-sn-restart"]
+  integration:
+    mode: disabled
+    summary: record the live SN restart and independent PN reconnect validation gap
+    reason: a meaningful integration run requires live SN, PN, and vpn-client processes, an assigned independent PN, controlled SN restart, and observable P2P target registration; those services are unavailable in this workspace, while a compile-only duplicate would not prove runtime reassignment
+    change_ids: ["CHG-apply-equal-version-pn-refresh", "CHG-reconnect-reappeared-pn"]
+    test_targets:
+      - vpn-frame GetVpnInfo response consumption
+      - bucky-vpn VpnTunnelFactory callback and TTP client
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: ["SN", "independent PN", "vpn-client"]
+      notes:
+        - live follow-up should keep vpn-client running, restart SN until restart-local versions collide, bring the same PN assignment back, and verify connect_server is attempted again without restarting vpn-client
+        - the focused unit tests directly prove both state decisions, but acceptance must retain this live multi-process gap rather than call it automated integration coverage
+    steps: []

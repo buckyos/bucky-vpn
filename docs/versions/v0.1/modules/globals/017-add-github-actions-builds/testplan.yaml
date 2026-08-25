@@ -1,0 +1,68 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: none
+  crate_root_export_change: false
+  build_surface_change: true
+  documentation_examples_affected: false
+evidence_inputs: [".github/workflows/build.yml", "build_deb.sh", "build_macos.sh", "build_server.sh", "build_win.bat", "Dockerfile", "install.iss", "vpn-client/Cargo.toml", "vpn_deb/DEBIAN/control", "tests/github_actions_build_contract.py"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: affected-rust-consumers-compile
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: compile the affected client and server package targets without running their broad suites
+      change_ids: ["CHG-github-deb-build", "CHG-github-macos-build", "CHG-github-windows-build", "CHG-github-server-build", "CHG-github-release"]
+      run: ["cargo", "test", "-p", "bucky-vpn", "-p", "bucky-vpn-server", "--no-run", "--all-targets"]
+defaults:
+  workdir: .
+  timeout_sec: 1200
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: validate workflow syntax and structure, version propagation, packaging entrypoint behavior, permission boundaries, event gates, Release assets, and GHCR tags
+    test_targets:
+      - tests/github_actions_build_contract.py
+    preconditions:
+      tools:
+        - uv
+        - bash
+        - cargo
+      env: []
+      services: []
+      notes:
+        - PyYAML is pinned ephemerally by uv for structured workflow parsing.
+    steps:
+      - id: github-actions-build-contract
+        name: run focused build and publication contract tests
+        change_ids: ["CHG-github-deb-build", "CHG-github-macos-build", "CHG-github-windows-build", "CHG-github-server-build", "CHG-github-release"]
+        run: ["uv", "run", "--with", "PyYAML==6.0.2", "python", "./tests/github_actions_build_contract.py"]
+
+  dv:
+    mode: manual
+    summary: execute every native packaging entrypoint on its matching GitHub-hosted operating system
+    reason: Linux can exercise script contracts locally, but real macOS universal pkg and Windows Inno Setup builds require their hosted runners; server Docker plus Flutter also requires the configured hosted toolchain
+    change_ids: ["CHG-github-deb-build", "CHG-github-macos-build", "CHG-github-windows-build", "CHG-github-server-build", "CHG-github-release"]
+    test_targets: []
+    preconditions:
+      tools: []
+      env: []
+      services: []
+      notes: []
+    steps: []
+
+  integration:
+    mode: manual
+    summary: publish a matching version Tag and verify GitHub Release plus GHCR outputs
+    reason: creating a real Tag, GitHub Release, and GHCR package is an external mutation intentionally reserved for the maintainer's first release run
+    change_ids: ["CHG-github-deb-build", "CHG-github-macos-build", "CHG-github-windows-build", "CHG-github-server-build", "CHG-github-release"]
+    test_targets: []
+    preconditions:
+      tools: []
+      env: []
+      services: []
+      notes: []
+    steps: []

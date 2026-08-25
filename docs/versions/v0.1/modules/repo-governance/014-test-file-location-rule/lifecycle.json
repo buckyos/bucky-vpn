@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/repo-governance/014-test-file-location-rule/design.md": "30d7629186a3b1ed1939fea5525188522eb55023c51024c2ad07b52ef83ccbd3",
+        "docs/versions/v0.1/modules/repo-governance/014-test-file-location-rule/risk-profile.yaml": "2a320ce8f35225c009deb4c64448d1071301db16102a1af0e56aa06571926043"
+      },
+      "status": "complete",
+      "task_binding_sha256": "9641dc739bd3925ad810d13c1a1f0376aeddd4be567bce5b175ed2053b04689c"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/repo-governance/014-test-file-location-rule/proposal.md": "8f0d0d9d3db2e6bcd4db6abef218e17d6534612ae75460baf94b84de0c622e0c"
+      },
+      "status": "complete",
+      "task_binding_sha256": "9641dc739bd3925ad810d13c1a1f0376aeddd4be567bce5b175ed2053b04689c"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

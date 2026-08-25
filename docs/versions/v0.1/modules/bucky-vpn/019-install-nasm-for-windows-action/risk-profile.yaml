@@ -1,0 +1,46 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-provision-windows-nasm"]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+risks:
+  contract:
+    applies: true
+    evidence:
+      - .github/workflows/build.yml
+    required_checks:
+      - "The build-windows job must provision Chocolatey package nasm at exactly version 2.16.3 before invoking build_win.bat."
+      - "A separate PowerShell step must execute nasm -v after installation so a missing executable or unusable PATH fails before Cargo compilation."
+      - "The existing cmd build_win.bat invocation and versioned installer verification must remain unchanged."
+  data:
+    applies: false
+    evidence: "No database, persistent application state, wire format, or migration changes."
+    required_checks: []
+  security:
+    applies: true
+    evidence:
+      - .github/workflows/build.yml
+    required_checks:
+      - "The external assembler must come from the existing Chocolatey client on windows-2022 with an exact package version rather than an unpinned latest resolution."
+      - "The workflow must expose the installed NASM version in hosted logs without introducing credentials, mutable download URLs, or prebuilt AWS-LC assembly objects."
+  runtime:
+    applies: false
+    evidence: "The change affects only hosted build-tool provisioning and does not alter installed VPN runtime behavior."
+    required_checks: []
+  build:
+    applies: true
+    evidence:
+      - .github/workflows/build.yml
+    required_checks:
+      - "Local workflow validation must confirm the pinned NASM setup and fail-fast version check occur after checkout and before Build Windows installer."
+      - "A hosted windows-2022 run must show the expected NASM version, compile aws-lc-sys past the prior NASM command not found failure, and pass the existing versioned installer-file verification."
+      - "No build_win.bat, dependency graph, crypto-provider feature, release trigger, or non-Windows job behavior may change."
+  ui:
+    applies: false
+    evidence: "No UI page, interaction, styling, or accessibility behavior changes."
+    required_checks: []
+  harness:
+    applies: false
+    evidence: "The task consumes the existing Harness workflow without changing repository Harness rules, scripts, or runner policy."
+    required_checks: []

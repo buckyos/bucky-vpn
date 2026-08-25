@@ -1,0 +1,25 @@
+schema_version: 1
+workflow_tier: high-risk
+version: v0.1
+packet_module: bucky-vpn-server
+task_name: 031-pn-tcp-only-transport
+stage: design
+mode: auto-pipeline
+auto_pipeline_start_stage: design
+proposal: proposal.md
+design:
+testing:
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+completion_report:
+change_record:
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+changed_paths_file: .harness/evidence/v0.1/stage-scope/031-pn-tcp-only-transport-design.txt
+baseline_manifest:
+changes:
+  - id: CHG-enable-standalone-pn-transport-modes
+    target_module: bucky-vpn-server
+    scope_paths: ["vpn-server/src/server_config.rs", "vpn-server/src/pn_control_client.rs", "vpn-server/src/main.rs", "vpn-server/config/config.example.yaml", "vpn-server/tests/**"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/031-pn-tcp-only-transport-implementation-bucky-vpn-server.txt

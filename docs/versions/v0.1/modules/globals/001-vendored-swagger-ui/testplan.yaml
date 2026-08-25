@@ -1,0 +1,74 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: none
+  crate_root_export_change: false
+  build_surface_change: true
+  documentation_examples_affected: false
+evidence_inputs: ["vpn-client/Cargo.toml", "vpn-server/Cargo.toml", "Cargo.lock", "harness/scripts/schema-check.py", "harness/scripts/lifecycle-check.py", "harness/scripts/test-run.py", "harness/tests/test_schema_check_proposal_approval.py", "harness/scripts/harness-check.py", "harness/scripts/task-transition.py"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: repository-compile-closure
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: compile all workspace consumers without running tests
+      change_ids: ["CHG-vendored-swagger-ui-client", "CHG-vendored-swagger-ui-server", "CHG-proposal-approval-gate"]
+      run: ["cargo", "test", "--workspace", "--no-run", "--all-targets", "--locked"]
+defaults:
+  workdir: .
+  timeout_sec: 1800
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: verify proposal approval behavior and vendored Cargo resolution declarations
+    test_targets:
+      - harness/tests/test_schema_check_proposal_approval.py
+      - harness/scripts/lifecycle-check.py
+      - vpn-client/Cargo.toml
+      - vpn-server/Cargo.toml
+      - Cargo.lock
+    preconditions:
+      tools: ["python3"]
+      env: []
+      services: []
+      notes: []
+    steps:
+      - id: proposal-approval-and-vendored-resolution-regression
+        name: run focused proposal approval and vendored resolution regression
+        change_ids: ["CHG-vendored-swagger-ui-client", "CHG-vendored-swagger-ui-server", "CHG-proposal-approval-gate"]
+        run: ["python3", "./harness/tests/test_schema_check_proposal_approval.py"]
+
+  dv:
+    mode: disabled
+    summary: no standalone runtime workflow is changed by this build and checker correction
+    reason: the change has no service lifecycle or single-module runtime workflow; focused unit assertions and the compile closure cover its observable boundaries
+    change_ids: ["CHG-vendored-swagger-ui-client", "CHG-vendored-swagger-ui-server", "CHG-proposal-approval-gate"]
+    test_targets: []
+    preconditions:
+      tools: []
+      env: []
+      services: []
+      notes: []
+    steps: []
+
+  integration:
+    mode: enabled
+    summary: verify the locked workspace dependency metadata remains resolvable
+    test_targets:
+      - vpn-client/Cargo.toml
+      - vpn-server/Cargo.toml
+      - Cargo.lock
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - metadata validation does not compile or execute workspace tests
+    steps:
+      - id: locked-cargo-metadata
+        name: resolve locked workspace metadata without dependencies
+        change_ids: ["CHG-vendored-swagger-ui-client", "CHG-vendored-swagger-ui-server"]
+        run: ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"]

@@ -1,0 +1,89 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: none
+  crate_root_export_change: false
+  build_surface_change: true
+  documentation_examples_affected: false
+evidence_inputs: [".github/workflows/build.yml", "build_win.bat", "install.iss", "Cargo.toml", "vpn-client/Cargo.toml", "tests/windows_action_nasm_contract.py"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: affected-client-compile-closure
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: compile every bucky-vpn target after changing the hosted Windows build surface
+      change_ids: ["CHG-provision-windows-nasm"]
+      run: ["cargo", "test", "-p", "bucky-vpn", "--no-run", "--all-targets", "--target-dir", "/tmp/bucky-vpn-019-cargo-target"]
+defaults:
+  workdir: .
+  timeout_sec: 1800
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: validate the exact pinned NASM command, deterministic Program Files package location, cross-step GITHUB_PATH persistence, separate fail-fast version step, ordering, unchanged build and installer checks, and rejected workaround paths
+    test_targets:
+      - tests/windows_action_nasm_contract.py
+      - .github/workflows/build.yml
+      - build_win.bat
+    preconditions:
+      tools: ["uv", "python"]
+      env: []
+      services: []
+      notes:
+        - PyYAML 6.0.2 is pinned ephemerally by uv for structured workflow parsing.
+        - The structured contract requires the install step to derive and validate $env:ProgramFiles\NASM\nasm.exe, fail explicitly when that file is absent, and persist $env:ProgramFiles\NASM through GITHUB_PATH for later steps.
+        - Mutation cases reproduce the pre-fix missing-step contract and reject unpinned, wrong-version, wrong install location, Machine/User PATH discovery, missing cross-step PATH persistence, prebuilt-object, and crypto-feature workaround variants.
+    steps:
+      - id: windows-action-nasm-contract
+        name: run focused Windows Action NASM provisioning contracts
+        change_ids: ["CHG-provision-windows-nasm"]
+        run: ["uv", "run", "--with", "PyYAML==6.0.2", "python", "./tests/windows_action_nasm_contract.py"]
+
+  dv:
+    mode: enabled
+    summary: prove the unchanged Windows batch entrypoint compiles the native dependency closure and produces the versioned installer in the available local Windows environment
+    test_targets:
+      - build_win.bat
+      - dist/BuckyVPN_<version>_amd64_Setup.exe
+    preconditions:
+      tools: ["/mnt/c/Windows/System32/cmd.exe", "cargo", "nasm", "ISCC.exe", "python3"]
+      env: []
+      services: []
+      notes:
+        - The local Windows environment reports NASM 2.16.01; this DV proves native compilation and packaging compatibility but does not claim that Chocolatey installed the hosted pin 2.16.3.
+        - build_win.bat retains its own missing-installer failure and the final Python step independently checks the Cargo-versioned output path.
+    steps:
+      - id: report-local-windows-nasm
+        name: report the supplemental local Windows NASM version without treating it as the hosted pin
+        change_ids: ["CHG-provision-windows-nasm"]
+        run: ["/mnt/c/Windows/System32/cmd.exe", "/d", "/c", "nasm -v"]
+      - id: real-local-windows-installer-build
+        name: run the unchanged Windows build entrypoint with the available local toolchain
+        change_ids: ["CHG-provision-windows-nasm"]
+        run: ["/mnt/c/Windows/System32/cmd.exe", "/d", "/c", "build_win.bat"]
+      - id: verify-local-versioned-installer
+        name: verify the local installer filename against vpn-client Cargo version
+        change_ids: ["CHG-provision-windows-nasm"]
+        run: ["python3", "./tests/windows_action_nasm_contract.py", "--verify-local-windows-artifact"]
+
+  integration:
+    mode: manual
+    summary: execute the build-windows job on the configured hosted windows-2022 runner
+    reason: hosted windows-2022 execution cannot be launched from this workspace without pushing or dispatching an external GitHub Actions run; acceptance must require a real log showing Chocolatey NASM 2.16.3, aws-lc-sys passing the prior assembler failure, and the existing installer verification succeeding
+    change_ids: ["CHG-provision-windows-nasm"]
+    test_targets:
+      - .github/workflows/build.yml
+      - hosted build-windows job log
+    preconditions:
+      tools: ["GitHub Actions windows-2022 runner", "Chocolatey"]
+      env: []
+      services: ["GitHub Actions", "Chocolatey community repository"]
+      notes:
+        - Local WSL and Windows execution cannot prove the hosted runner image, package-repository resolution, deterministic Program Files installation, or cross-step PATH propagation for the exact 2.16.3 package.
+        - Hosted run 31710104500, build-windows job 94480591823 proved the old implementation failed at the separate Verify NASM step because nasm was not available on that later step's PATH.
+        - Hosted run 31716578412, build-windows job 94502776485 proved that refreshing Machine/User/current PATH still cannot find the successfully installed NASM because the package does not register its Program Files directory in PATH.
+        - A new hosted windows-2022 rerun is still required to prove the deterministic $env:ProgramFiles\NASM validation and GITHUB_PATH persistence fix reaches aws-lc-sys and the installer verification successfully.
+    steps: []

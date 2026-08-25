@@ -1,0 +1,41 @@
+schema_version: 1
+workflow_tier: high-risk
+version: v0.1
+packet_module: globals
+task_name: 017-add-github-actions-builds
+stage: design
+mode: auto-pipeline
+auto_pipeline_start_stage: design
+proposal: proposal.md
+design:
+testing:
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+completion_report:
+change_record:
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+changed_paths_file: .harness/evidence/v0.1/stage-scope/017-add-github-actions-builds-proposal.txt
+baseline_manifest:
+changes:
+  - id: CHG-github-deb-build
+    target_module: bucky-vpn
+    scope_paths: [".github/workflows/build.yml", "build_deb.sh", "vpn_deb/DEBIAN/control", "vpn-client/Cargo.toml"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/017-add-github-actions-builds-implementation-bucky-vpn.txt
+  - id: CHG-github-macos-build
+    target_module: bucky-vpn
+    scope_paths: [".github/workflows/build.yml", "build_macos.sh", "vpn-client/Cargo.toml"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/017-add-github-actions-builds-implementation-bucky-vpn.txt
+  - id: CHG-github-windows-build
+    target_module: bucky-vpn
+    scope_paths: [".github/workflows/build.yml", "build_win.bat", "install.iss", "vpn-client/Cargo.toml"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/017-add-github-actions-builds-implementation-bucky-vpn.txt
+  - id: CHG-github-server-build
+    target_module: bucky-vpn-server
+    scope_paths: [".github/workflows/build.yml", "build_server.sh", "Dockerfile"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/017-add-github-actions-builds-implementation-bucky-vpn-server.txt
+  - id: CHG-github-release
+    target_module: bucky-vpn
+    scope_paths: [".github/workflows/build.yml", "vpn-client/Cargo.toml"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/017-add-github-actions-builds-implementation-bucky-vpn.txt

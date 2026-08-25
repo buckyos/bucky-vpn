@@ -1,0 +1,55 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-enable-standalone-pn-transport-modes"]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+risks:
+  contract:
+    applies: true
+    evidence:
+      - vpn-server/src/server_config.rs
+      - vpn-server/src/pn_control_client.rs
+      - vpn-server/src/main.rs
+      - vpn-server/config/config.example.yaml
+    required_checks:
+      - "pn.transport accepts exactly tcp, quic, and dual; omission remains backward-compatible with dual."
+      - "Each mode drives matching standalone-PN listener, control-target, identity, report-primary, reported endpoint, and reported port-mapping protocols without publishing a disabled protocol."
+      - "Combined SN and PN mode rejects non-dual transport because both services share one P2P endpoint set."
+      - "An enabled SN without an enabled PN retains the existing QUIC-plus-TCP listener set even if an unused pn.transport value is configured."
+  data:
+    applies: false
+    evidence: "No database schema, persisted application data, migration, or wire encoding changes."
+    required_checks: []
+  security:
+    applies: false
+    evidence: "The existing authenticated P2P control and PN authorization boundaries remain unchanged; only transport candidates change."
+    required_checks: []
+  runtime:
+    applies: true
+    evidence:
+      - vpn-server/src/server_config.rs
+      - vpn-server/src/pn_control_client.rs
+      - vpn-server/src/main.rs
+    required_checks:
+      - "TCP mode creates and advertises only TCP endpoints, while QUIC mode creates and advertises only QUIC endpoints."
+      - "Dual unclassified control creation tries QUIC before TCP, while classified recreation honors the exact configured protocol and never pairs a local endpoint with a different remote protocol."
+      - "A successful fallback or later route replacement leaves at most one TTP target registered for maintenance and one effective control/heartbeat chain."
+      - "Failed control candidates remove any target registered before stream-open failure, return the final connection error without returning a partial stream, and never start duplicate reporters."
+  build:
+    applies: true
+    evidence:
+      - vpn-server/config/config.example.yaml
+      - vpn-server/Cargo.toml
+      - Cargo.toml
+    required_checks:
+      - "The documented YAML and VPN_PN_TRANSPORT environment override match the implemented configuration values and default."
+      - "The affected bucky-vpn-server targets compile and task-scoped tests run without dependency or feature changes."
+  ui:
+    applies: false
+    evidence: "No Flutter UI, interaction, or accessibility behavior changes."
+    required_checks: []
+  harness:
+    applies: false
+    evidence: "Existing Harness rules and tooling are consumed without behavioral modification."
+    required_checks: []

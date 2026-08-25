@@ -1,0 +1,51 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-align-proxy-node-api"]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+risks:
+  contract:
+    applies: true
+    evidence:
+      - vpn-server/src/api.rs
+      - vpn_web/lib/api.dart
+      - vpn_web/lib/api.g.dart
+    required_checks:
+      - "The frontend pn_server response mapping reads id, optional name, endpoints, and optional port_mapping exactly as emitted by JsonPnServerInfo."
+      - "The approve/reject request mapping writes the same current pn_server shape."
+  data:
+    applies: true
+    evidence:
+      - vpn-server/src/api.rs
+      - vpn_web/lib/api.dart
+      - vpn_web/lib/api.g.dart
+    required_checks:
+      - "Generated serialization code is produced from api.dart annotations and contains no obsolete ip, port, or addresses fields for PnServerInfo."
+  security:
+    applies: false
+    evidence: "Existing bearer authentication and server authorization remain unchanged; this task only corrects the nested proxy-node data model."
+    required_checks: []
+  runtime:
+    applies: true
+    evidence:
+      - vpn_web/lib/api.dart
+      - vpn_web/lib/proxy_nodes_page.dart
+    required_checks:
+      - "ProxyNodesPage can continue consuming PnServerInfo.allAddresses after the model migration, and transport/error handling remains unchanged."
+  build:
+    applies: false
+    evidence: "No dependency, build graph, packaging, deployment, or generated-artifact policy changes are introduced; the existing build_runner workflow only refreshes an already tracked generated file."
+    required_checks: []
+  ui:
+    applies: true
+    evidence:
+      - vpn_web/lib/proxy_nodes_page.dart
+      - vpn_web/lib/api.dart
+    required_checks:
+      - "The existing Proxy Nodes loading, refresh, table, and approval workflows compile against the corrected endpoint list without a page-layout change."
+      - "Automated widget tests are not added under the repository's vpn_web no-new-tests rule; analyzer/build evidence and recorded manual gaps are used."
+  harness:
+    applies: false
+    evidence: "Harness policy and tooling are only used for task evidence and are not modified by this delivery."
+    required_checks: []

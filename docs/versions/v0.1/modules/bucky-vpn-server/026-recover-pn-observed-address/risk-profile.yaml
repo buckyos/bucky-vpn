@@ -1,0 +1,53 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-recover-pn-observed-address"]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+risks:
+  contract:
+    applies: true
+    evidence:
+      - vpn-server/src/pn_control_server.rs
+      - vpn-server/src/pn_server_manager.rs
+    required_checks:
+      - "The existing cmd158 payload, PnServerSelector contract, and VPN client PN-list protocol remain unchanged."
+      - "A reported PN is selectable only while its heartbeat is live and the merged state contains a connectable endpoint."
+  data:
+    applies: false
+    evidence: "No persistent schema, migration, serialized payload, or stored PN allocation changes are proposed."
+    required_checks: []
+  security:
+    applies: true
+    evidence:
+      - vpn-server/src/pn_control_server.rs
+      - vpn-server/src/pn_server_manager.rs
+    required_checks:
+      - "An observed public address is retained only while the command service still has at least one authenticated control connection for that peer."
+      - "The last peer control disconnect clears the observation so a stale NAT address cannot make the PN selectable."
+  runtime:
+    applies: true
+    evidence:
+      - vpn-server/src/pn_control_server.rs
+      - vpn-server/src/pn_server_manager.rs
+    required_checks:
+      - "Heartbeat timeout logs one offline transition without deleting an observation supported by a live control session."
+      - "A later cmd158 on the same control session restores online state and rebuilds mapped endpoints from the retained observed IP."
+      - "Disconnect and reconnect, repeated offline/online cycles, multiple control connections, and observed-address changes preserve correct lifecycle behavior."
+      - "A delayed final-disconnect callback cannot erase a newer reconnect observation; connection registration, peer-presence recheck, and observation-generation comparison close this race."
+  build:
+    applies: true
+    evidence:
+      - vpn-server/Cargo.toml
+      - Cargo.toml
+    required_checks:
+      - "Focused bucky-vpn-server regression tests pass through the task-scoped unified test entry."
+      - "The affected bucky-vpn-server targets compile without a dependency or wire-contract change."
+  ui:
+    applies: false
+    evidence: "Flutter UI and user interaction flows are outside this SN control-plane recovery fix."
+    required_checks: []
+  harness:
+    applies: false
+    evidence: "Harness policy and tooling are consumed without behavioral modification."
+    required_checks: []

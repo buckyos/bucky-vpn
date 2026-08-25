@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/globals/008-separate-pn-control-client/proposal.md": "f7518b75c47b54806f0e0fb027396d88b36a8d99cae0d2369f3e97a3a4dbf35e"
+      },
+      "status": "complete",
+      "task_binding_sha256": "90bcb3c5ee5ad716adbe66ddee3e10398882b17c828d26065106a12895c2b573"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

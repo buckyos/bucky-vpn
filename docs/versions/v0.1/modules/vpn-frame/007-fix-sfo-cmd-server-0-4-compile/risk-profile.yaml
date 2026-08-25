@@ -1,0 +1,69 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-sfo-cmd-server-0-4-api-migration"]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+risks:
+  contract:
+    applies: true
+    evidence:
+      - vpn-frame/src/vpn_protocol.rs
+      - vpn-frame/src/control_channel.rs
+      - vpn-frame/src/client/vpn_client.rs
+      - vpn-frame/src/client/vpn_client_manager.rs
+      - vpn-frame/src/client/vpn_server_client.rs
+      - vpn-frame/src/server/pn_control_server.rs
+      - vpn-frame/src/server/vpn_server.rs
+      - vpn-client/src/p2p_vpn.rs
+      - vpn-server/src/pn_control_client.rs
+      - vpn-server/src/pn_control_server.rs
+      - vpn-server/src/sqlite_store_factory.rs
+    required_checks:
+      - "Every command header, client, server, and test-service generic that previously selected raw u16 uses the single VpnCmdPkgLen alias backed by sfo_cmd_server::U16."
+      - "The migration preserves the two-byte package-length encoding, u16::MAX effective limit, command version, command codes, and response behavior."
+      - "All repository consumers of the changed vpn-frame command types compile against the migrated public type."
+  data:
+    applies: false
+    evidence: "No persistent data, database schema, serialized VPN payload field, or migration is changed; only the command framing length type implementation is adapted."
+    required_checks: []
+  security:
+    applies: false
+    evidence: "Authentication, authorization, peer identity, cryptography, and privacy behavior are unchanged by the package-length type migration."
+    required_checks: []
+  runtime:
+    applies: true
+    evidence:
+      - vpn-frame/src/vpn_protocol.rs
+      - vpn-frame/src/client/vpn_server_client.rs
+      - vpn-frame/src/server/pn_control_server.rs
+      - vpn-frame/src/server/vpn_server.rs
+      - vpn-client/src/p2p_vpn.rs
+      - vpn-server/src/pn_control_client.rs
+      - vpn-server/src/pn_control_server.rs
+      - vpn-server/src/sqlite_store_factory.rs
+    required_checks:
+      - "Existing command registration, request/response dispatch, header version checks, and tunnel lifecycles remain behaviorally unchanged after the type migration."
+      - "Existing vpn-frame unit tests pass, including command-server test service compilation with VpnCmdPkgLen."
+  build:
+    applies: true
+    evidence:
+      - vpn-frame/Cargo.toml
+      - Cargo.lock
+      - vpn-frame/src/vpn_protocol.rs
+      - vpn-client/src/p2p_vpn.rs
+      - vpn-server/src/pn_control_client.rs
+      - vpn-server/src/pn_control_server.rs
+      - vpn-server/src/sqlite_store_factory.rs
+    required_checks:
+      - "Cargo.lock resolves sfo-cmd-server 0.4.0 and the repository does not restore the 0.3.2 dependency."
+      - "A task-scoped locked vpn-frame check passes after the captured 43-error pre-fix failure."
+      - "Locked compile closure passes for vpn-frame and its vpn-client and vpn-server workspace consumers."
+  ui:
+    applies: false
+    evidence: "The Flutter Web UI, accessibility behavior, and user workflows are outside this Rust dependency migration."
+    required_checks: []
+  harness:
+    applies: false
+    evidence: "Harness policy and tooling are used without modification."
+    required_checks: []

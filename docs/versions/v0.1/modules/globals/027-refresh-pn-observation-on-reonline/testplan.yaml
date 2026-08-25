@@ -1,0 +1,96 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: backward-compatible
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: false
+evidence_inputs:
+  - vpn-frame/src/server/vpn_server.rs
+  - vpn-frame/src/server/pn_control_server.rs
+  - vpn-server/src/main.rs
+  - vpn-server/src/pn_control_server.rs
+  - vpn-server/src/pn_server_manager.rs
+  - vpn-server/tests/unit/pn_control_tunnel_observer_tests.rs
+  - vpn-server/tests/unit/pn_observed_address_recovery_tests.rs
+  - Cargo.lock
+contract_checks:
+  mode: disabled
+  reason: the change is additive and preserves cmd158 encoding, VPN client PN-list structures, existing VpnServer constructors, default PnServerSelector implementations, dependencies, crate-root exports, and configuration
+  steps: []
+defaults:
+  workdir: .
+  timeout_sec: 1800
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: verify exact cmd158 tunnel forwarding, bounded waiting for exact tunnel registration, fresh address replacement on re-online, same-address recovery, observation failure fallback, TTL separation, and identity rejection
+    test_targets:
+      - vpn-frame/src/server/pn_control_server.rs
+      - vpn-server/tests/unit/pn_control_tunnel_observer_tests.rs
+      - vpn-server/tests/unit/pn_observed_address_recovery_tests.rs
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - the handler regression captures the exact TunnelId supplied by cmd158 and verifies the returned observation is passed to the selector
+        - the observer regressions cover the command-before-registration race and bounded missing-tunnel fallback without selecting another tunnel
+        - the manager regressions expire heartbeat liveness before resuming with the same or changed observed public IP and mapped service port
+        - a missing exact-tunnel observation retains the last valid address but cannot make the PN live without cmd158
+        - a mismatched observed PN identity fails without creating manager state
+    steps:
+      - id: pn-heartbeat-exact-tunnel-unit
+        name: run exact cmd158 tunnel observation forwarding regression
+        change_ids: ["CHG-observe-pn-heartbeat-tunnel"]
+        run: ["cargo", "test", "-p", "vpn-frame", "heartbeat_observes_and_forwards_the_exact_command_tunnel", "--locked"]
+      - id: pn-control-tunnel-registration-race-unit
+        name: run exact tunnel registration race and bounded fallback regressions
+        change_ids: ["CHG-observe-pn-heartbeat-tunnel", "CHG-refresh-pn-observation-on-reonline"]
+        run: ["cargo", "test", "-p", "bucky-vpn-server", "pn_control_tunnel_observer_tests", "--locked"]
+      - id: pn-reonline-observation-unit
+        name: run PN re-online address observation lifecycle regressions
+        change_ids: ["CHG-refresh-pn-observation-on-reonline"]
+        run: ["cargo", "test", "-p", "bucky-vpn-server", "pn_observed_address_recovery_tests", "--locked"]
+
+  dv:
+    mode: enabled
+    summary: compile all affected targets and run the complete vpn-frame library suite across the compatible observer and selector interfaces
+    test_targets:
+      - vpn-frame
+      - vpn-server
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - all-target compilation exercises production startup wiring, concrete command-service tunnel lookup, manager merge, and the preserved constructors
+        - the complete vpn-frame library suite covers existing selector and control-server consumers in addition to the new regression
+        - the broader bucky-vpn-server suite was run separately; 65 tests passed and one unrelated pre-existing SQLite traffic-expiry assertion failed again when isolated
+    steps:
+      - id: pn-reonline-affected-targets-check
+        name: check all affected vpn-frame and bucky-vpn-server targets
+        change_ids: ["CHG-observe-pn-heartbeat-tunnel", "CHG-refresh-pn-observation-on-reonline"]
+        run: ["cargo", "check", "-p", "vpn-frame", "-p", "bucky-vpn-server", "--all-targets", "--locked"]
+      - id: vpn-frame-library-suite
+        name: run complete vpn-frame library tests
+        change_ids: ["CHG-observe-pn-heartbeat-tunnel"]
+        run: ["cargo", "test", "-p", "vpn-frame", "--lib", "--locked"]
+
+  integration:
+    mode: disabled
+    summary: record the live standalone PN, SN, and VPN client reconnect replay gap
+    reason: a meaningful live replay requires an authenticated standalone PN control tunnel, controlled cmd158 suppression beyond the SN TTL, a reconnect with a controlled NAT address, and a VPN client PN-list observer; that deployed multi-process topology is not available in this workspace
+    change_ids: ["CHG-observe-pn-heartbeat-tunnel", "CHG-refresh-pn-observation-on-reonline"]
+    test_targets:
+      - vpn-server/src/pn_control_server.rs
+      - vpn-frame/src/server/pn_control_server.rs
+    preconditions:
+      tools: ["cargo", "standalone PN", "SN", "VPN client"]
+      env: []
+      services: ["PN proxy-control", "SN control service", "VPN client info poll"]
+      notes:
+        - operational confirmation should let the PN expire, reconnect or resume cmd158, and verify the client receives the currently observed public IP without restarting SN
+    steps: []

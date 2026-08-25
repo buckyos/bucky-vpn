@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/vpn-frame/007-fix-sfo-cmd-server-0-4-compile/proposal.md": "15b970b542ec630b514e3002919160c6b0b8e6701ed7401b26453ee572d98d8d"
+      },
+      "status": "complete",
+      "task_binding_sha256": "0864a2f8eb967b49582e26c7baddc113b0616d99d51341734b696c6fbc63c006"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

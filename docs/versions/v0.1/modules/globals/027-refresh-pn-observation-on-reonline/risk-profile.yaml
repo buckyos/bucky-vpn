@@ -1,0 +1,55 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-observe-pn-heartbeat-tunnel", "CHG-refresh-pn-observation-on-reonline"]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+risks:
+  contract:
+    applies: true
+    evidence:
+      - vpn-frame/src/server/pn_control_server.rs
+      - vpn-frame/src/server/vpn_server.rs
+      - vpn-server/src/main.rs
+    required_checks:
+      - "The cmd158 wire payload and command number remain unchanged while the in-process handler gains exact tunnel observation context."
+      - "Existing VpnServer constructors and PnServerSelector implementations remain source-compatible through additive default behavior."
+  data:
+    applies: false
+    evidence: "No persistent schema, migration, serialized payload, or PN assignment data format changes are proposed."
+    required_checks: []
+  security:
+    applies: true
+    evidence:
+      - vpn-server/src/pn_control_server.rs
+      - vpn-server/src/pn_server_manager.rs
+    required_checks:
+      - "The observed address comes from the exact authenticated command tunnel carrying cmd158, not an arbitrary peer tunnel or the heartbeat body."
+      - "An observation lookup failure does not synthesize or clear an address and does not make an addressless PN selectable."
+  runtime:
+    applies: true
+    evidence:
+      - vpn-frame/src/server/pn_control_server.rs
+      - vpn-server/src/pn_control_server.rs
+      - vpn-server/src/pn_server_manager.rs
+    required_checks:
+      - "Every valid cmd158 can refresh the observed remote endpoint before heartbeat state is applied, including offline-to-online recovery and reconnect with a changed IP."
+      - "Peer disconnect no longer immediately clears observation or determines PN online state; heartbeat TTL remains the sole liveness authority."
+      - "Exact tunnel lookup handles multiple connections, tunnel disappearance, and writer access without holding the writer guard across manager awaits."
+  build:
+    applies: true
+    evidence:
+      - vpn-frame/Cargo.toml
+      - vpn-server/Cargo.toml
+      - Cargo.toml
+    required_checks:
+      - "Focused vpn-frame handler and bucky-vpn-server lifecycle tests pass through the task-scoped unified test entry."
+      - "All affected vpn-frame and bucky-vpn-server targets compile without dependency or wire-contract changes."
+  ui:
+    applies: false
+    evidence: "Flutter UI and user interaction flows are outside this control-plane recovery change."
+    required_checks: []
+  harness:
+    applies: false
+    evidence: "Harness policy and tooling are consumed without behavioral modification."
+    required_checks: []

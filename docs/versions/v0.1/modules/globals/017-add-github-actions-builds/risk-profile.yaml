@@ -1,0 +1,65 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-github-deb-build", "CHG-github-macos-build", "CHG-github-windows-build", "CHG-github-server-build", "CHG-github-release"]
+source_bindings:
+  proposal: proposal.md
+  design_source: 
+risks:
+  contract:
+    applies: true
+    evidence:
+      - .github/workflows/build.yml
+      - build_deb.sh
+      - build_macos.sh
+      - build_win.bat
+      - install.iss
+    required_checks:
+      - "Every client installer version and filename must derive from vpn-client/Cargo.toml package.version."
+      - "A release Tag must equal v plus the exact Cargo package version, and a mismatch must fail before publication."
+      - "A matching release must attach exactly the Debian, macOS, and Windows installer classes while relying on GitHub's automatic source archives."
+      - "The GHCR version tag and latest tag must name the same server image digest."
+  data:
+    applies: false
+    evidence: "No database, persistent application state, serialization format, or migration is changed."
+    required_checks: []
+  security:
+    applies: true
+    evidence:
+      - .github/workflows/build.yml
+      - Dockerfile
+    required_checks:
+      - "Ordinary push, pull_request, and workflow_dispatch builds must not receive publication permissions or authenticate to GHCR."
+      - "Only the Tag-gated Release job may receive contents: write, and only the Tag-gated image publisher may receive packages: write."
+      - "Publication must use the ephemeral repository GITHUB_TOKEN without adding a personal token or long-lived secret."
+      - "External Actions must be minimized and pinned to reviewed immutable commit SHAs where practical."
+  runtime:
+    applies: false
+    evidence: "The task changes CI build and publication behavior but no deployed VPN process lifecycle, concurrency, networking, or recovery behavior."
+    required_checks: []
+  build:
+    applies: true
+    evidence:
+      - .github/workflows/build.yml
+      - build_deb.sh
+      - build_macos.sh
+      - build_server.sh
+      - build_win.bat
+      - vpn-client/Cargo.toml
+      - vpn_deb/DEBIAN/control
+      - install.iss
+      - Dockerfile
+      - vpn_web/pubspec.yaml
+    required_checks:
+      - "The four hosted-runner jobs provision the intended Rust targets and platform tools, invoke the four repository build entrypoints, and verify their final package or image outputs."
+      - "Version extraction works in POSIX and Windows shells and rejects missing, ambiguous, or unsupported Cargo package versions."
+      - "The Debian control version, macOS package metadata, Windows Inno Setup metadata, artifact filenames, Release Tag, and GHCR tag stay aligned."
+      - "The server job builds the musl binary, Flutter Web bundle, and Docker image before any Tag-only registry publication."
+      - "Focused task tests validate workflow structure, event gating, permissions, artifact paths, version propagation, and failure branches."
+  ui:
+    applies: false
+    evidence: "Flutter Web is compiled as an existing server-image input, but no page, interaction, styling, or accessibility behavior changes."
+    required_checks: []
+  harness:
+    applies: false
+    evidence: "Existing Harness task metadata and test registration are used without changing repository workflow policy or checker behavior."
+    required_checks: []

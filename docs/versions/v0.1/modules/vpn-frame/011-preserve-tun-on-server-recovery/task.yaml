@@ -1,0 +1,29 @@
+schema_version: 1
+workflow_tier: high-risk
+version: v0.1
+packet_module: vpn-frame
+task_name: 011-preserve-tun-on-server-recovery
+stage: acceptance
+mode: auto-pipeline
+auto_pipeline_start_stage: design
+proposal: proposal.md
+design:
+testing:
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+completion_report:
+change_record:
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+changed_paths_file: .harness/evidence/v0.1/stage-scope/011-preserve-tun-on-server-recovery-acceptance.txt
+baseline_manifest:
+changes:
+  - id: CHG-preserve-tun-on-control-refresh
+    target_module: vpn-frame
+    scope_paths: ["vpn-frame/src/client/vpn_client.rs", "vpn-frame/src/client/vpn_device.rs"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/011-preserve-tun-on-server-recovery-implementation-vpn-frame.txt
+  - id: CHG-retry-failed-tun-update
+    target_module: vpn-frame
+    scope_paths: ["vpn-frame/src/client/vpn_client.rs", "vpn-frame/src/client/vpn_device.rs"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/011-preserve-tun-on-server-recovery-implementation-vpn-frame.txt

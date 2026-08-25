@@ -1,0 +1,33 @@
+schema_version: 1
+workflow_tier: high-risk
+version: v0.1
+packet_module: globals
+task_name: 001-vendored-swagger-ui
+stage: acceptance
+mode: auto-pipeline
+auto_pipeline_start_stage: implementation
+proposal: proposal.md
+design: design.md
+testing: testing.md
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+completion_report:
+change_record:
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+changed_paths_file: .harness/evidence/v0.1/stage-scope/001-vendored-swagger-ui-acceptance.txt
+baseline_manifest:
+changes:
+  - id: CHG-vendored-swagger-ui-client
+    target_module: bucky-vpn
+    scope_paths: ["vpn-client/Cargo.toml", "Cargo.lock"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/001-vendored-swagger-ui-implementation-bucky-vpn.txt
+  - id: CHG-vendored-swagger-ui-server
+    target_module: bucky-vpn-server
+    scope_paths: ["vpn-server/Cargo.toml", "Cargo.lock"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/001-vendored-swagger-ui-implementation-bucky-vpn-server.txt
+  - id: CHG-proposal-approval-gate
+    target_module: repo-governance
+    scope_paths: ["harness/scripts/schema-check.py", "harness/scripts/lifecycle-check.py", "harness/scripts/test-run.py", "harness/tests/test_schema_check_proposal_approval.py"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/001-vendored-swagger-ui-implementation-repo-governance.txt

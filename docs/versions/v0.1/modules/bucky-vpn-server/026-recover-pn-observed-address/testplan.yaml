@@ -1,0 +1,80 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: backward-compatible
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: false
+evidence_inputs: ["vpn-server/src/pn_server_manager.rs", "vpn-server/src/pn_control_server.rs", "vpn-server/tests/unit/pn_observed_address_recovery_tests.rs", "vpn-server/tests/unit/pn_control_disconnect_listener_tests.rs", "vpn-frame/src/server/pn_control_server.rs", "vpn-frame/src/server/node_store.rs", "vpn-frame/src/proxy_node.rs", "Cargo.lock"]
+contract_checks:
+  mode: disabled
+  reason: the implementation preserves the shared PnServerSelector trait, cmd158 payload, VPN client PN-list structures, crate-root exports, dependencies, build surface, and documentation examples; focused lifecycle tests plus all-target compile closure cover the changed crate-local contract
+  steps: []
+defaults:
+  workdir: .
+  timeout_sec: 1800
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: verify observation and heartbeat have independent lifetimes, repeated TTL recovery reuses the observed public IP and mapped port, final disconnect clears it, reconnect observes a changed address, stale disconnect generations cannot erase a newer observation, and disconnect edge branches are safe
+    test_targets:
+      - vpn-server/tests/unit/pn_observed_address_recovery_tests.rs
+      - vpn-server/tests/unit/pn_control_disconnect_listener_tests.rs
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - the pre-fix red run failed in observed_address_survives_timeout_and_same_connection_heartbeat_recovers because the second heartbeat still left selector.select returning None after prune deleted the observed address
+        - normal and lifecycle coverage verifies observed IP 47.113.93.155 plus mapped QUIC/TCP port 3625 is restored after two repeated offline/online cycles on the same session
+        - boundary and concurrency coverage verifies repeated prune calls retain the active-session observation while recording one offline state, verifies unknown and observed-only disconnect handling, and proves an old observation generation cannot clear a newer reconnect address
+        - negative and security coverage verifies final disconnect prevents addressless reported heartbeats from making the PN selectable and a new observed IP replaces the old one
+        - error coverage verifies an expired state is removed when its last control session disconnects
+        - compatibility coverage verifies the command-service listener converts PeerId bytes to the existing NodeId identity and calls the crate-local cleanup without changing shared protocols
+    steps:
+      - id: pn-observed-address-lifecycle-unit
+        name: run PN observed-address timeout recovery tests
+        change_ids: ["CHG-recover-pn-observed-address"]
+        run: ["cargo", "test", "-p", "bucky-vpn-server", "pn_observed_address_recovery_tests", "--locked"]
+      - id: pn-control-disconnect-listener-unit
+        name: run PN final-peer-disconnect listener test
+        change_ids: ["CHG-recover-pn-observed-address"]
+        run: ["cargo", "test", "-p", "bucky-vpn-server", "pn_control_disconnect_listener_tests", "--locked"]
+
+  dv:
+    mode: enabled
+    summary: compile all bucky-vpn-server targets with the real manager, command service, p2p-frame event listener, vpn-frame selector consumer, and dedicated tests wired together
+    test_targets:
+      - vpn-server
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - all-target compile closure covers the real external CmdServerEventListener trait and PeerId-to-NodeId conversion
+        - the full crate runtime suite was also attempted: 64 task-compatible tests passed while the unrelated pre-existing sqlite_store_factory node traffic expiry assertion failed both in-suite and alone
+    steps:
+      - id: bucky-vpn-server-pn-recovery-all-targets-check
+        name: check every bucky-vpn-server target after PN recovery changes
+        change_ids: ["CHG-recover-pn-observed-address"]
+        run: ["cargo", "check", "-p", "bucky-vpn-server", "--all-targets", "--locked"]
+
+  integration:
+    mode: disabled
+    summary: assess the unchanged cmd158 and VPN client-list contracts and record the live multi-process PN/SN timeout gap
+    reason: a meaningful live replay requires a standalone PN and SN, a real authenticated proxy-control stream held open beyond TTL, command 158 suppression and resumption, and client PN-list observation; those controlled network-process facilities are not available in the current task run, while the unchanged wire boundary is compiled and the exact manager/listener transitions are deterministic at unit level
+    change_ids: ["CHG-recover-pn-observed-address"]
+    test_targets:
+      - vpn-frame/src/server/pn_control_server.rs
+      - vpn-frame/src/proxy_node.rs
+      - vpn-server/src/pn_control_server.rs
+    preconditions:
+      tools: ["cargo", "standalone PN", "SN", "VPN client"]
+      env: []
+      services: ["PN proxy-control", "SN control service", "VPN client info poll"]
+      notes:
+        - the command service dependency emits on_peer_disconnected only after its final connection for a PeerId is removed; the listener consumes that final-peer event rather than a per-stream callback
+        - manual follow-up should suppress cmd158 for more than remote TTL while keeping the control TCP/QUIC session open, resume cmd158, and verify pn_proxy_nodes and the next client PN update again contain 47.113.93.155:3625 without process restart
+    steps: []

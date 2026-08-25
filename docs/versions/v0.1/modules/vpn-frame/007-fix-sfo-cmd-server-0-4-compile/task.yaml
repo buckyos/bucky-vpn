@@ -1,0 +1,25 @@
+schema_version: 1
+workflow_tier: high-risk
+version: v0.1
+packet_module: vpn-frame
+task_name: 007-fix-sfo-cmd-server-0-4-compile
+stage: acceptance
+mode: auto-pipeline
+auto_pipeline_start_stage: design
+proposal: proposal.md
+design:
+testing:
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+completion_report:
+change_record:
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+changed_paths_file: .harness/evidence/v0.1/stage-scope/007-fix-sfo-cmd-server-0-4-compile-acceptance.txt
+baseline_manifest:
+changes:
+  - id: CHG-sfo-cmd-server-0-4-api-migration
+    target_module: vpn-frame
+    scope_paths: ["vpn-frame/Cargo.toml", "Cargo.lock", "vpn-frame/src/vpn_protocol.rs", "vpn-frame/src/control_channel.rs", "vpn-frame/src/client/vpn_client.rs", "vpn-frame/src/client/vpn_client_manager.rs", "vpn-frame/src/client/vpn_server_client.rs", "vpn-frame/src/server/pn_control_server.rs", "vpn-frame/src/server/vpn_server.rs"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/007-fix-sfo-cmd-server-0-4-compile-implementation-vpn-frame.txt

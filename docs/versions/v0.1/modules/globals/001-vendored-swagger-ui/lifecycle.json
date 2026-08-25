@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/globals/001-vendored-swagger-ui/design.md": "8c33611933cde5a68c5d6bd7dba7b215e93bbc97ae23a96a643129869a8f064a",
+        "docs/versions/v0.1/modules/globals/001-vendored-swagger-ui/risk-profile.yaml": "d2e05591a3bc21c7b151701c6c176d6cd61ea99555e2256d94deff84d1069247"
+      },
+      "status": "complete",
+      "task_binding_sha256": "3f23bf61d38da5b32232f80e0843b61b680320fb97892a86b3ea3e51f5c4f010"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/globals/001-vendored-swagger-ui/proposal.md": "d53e09cd67d16fd972fac0ebd5cebcb88f2c6d34e83b08cfc7fbbd5f08e4dd83"
+      },
+      "status": "complete",
+      "task_binding_sha256": "3f23bf61d38da5b32232f80e0843b61b680320fb97892a86b3ea3e51f5c4f010"
+    }
+  },
+  "task_manifest": "task.yaml"
+}
