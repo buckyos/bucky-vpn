@@ -254,6 +254,75 @@ class GitHubActionsBuildContractTests(unittest.TestCase):
         self.assertIn('git rev-parse --verify "refs/tags/${release_tag}^{commit}"', script)
         self.assertIn('"${source_sha}" != "${tag_sha}"', script)
 
+    def test_cargo_update_lock_is_shared_by_all_builds(self) -> None:
+        version_steps = self.jobs["version"]["steps"]
+        version_step_names = [step["name"] for step in version_steps]
+        self.assertLess(
+            version_step_names.index("Check out source"),
+            version_step_names.index("Update Cargo dependencies"),
+        )
+        self.assertLess(
+            version_step_names.index("Update Cargo dependencies"),
+            version_step_names.index("Read and validate vpn-client version"),
+        )
+        self.assertLess(
+            version_step_names.index("Read and validate vpn-client version"),
+            version_step_names.index("Store updated Cargo lockfile"),
+        )
+
+        update = step_by_name(self.jobs["version"], "Update Cargo dependencies")
+        self.assertEqual(update["run"], "cargo update")
+        stored_lock = step_by_name(
+            self.jobs["version"], "Store updated Cargo lockfile"
+        )
+        self.assertEqual(stored_lock["uses"], UPLOAD_ARTIFACT_V7)
+        self.assertEqual(
+            stored_lock["with"],
+            {
+                "name": "cargo-lock",
+                "path": "Cargo.lock",
+                "if-no-files-found": "error",
+                "retention-days": "1",
+            },
+        )
+
+        build_steps = {
+            "build-deb": "Build Debian package",
+            "build-macos": "Build macOS package",
+            "build-windows": "Build Windows installer",
+            "build-server": "Build and verify server image",
+        }
+        for job_name, build_step_name in build_steps.items():
+            with self.subTest(job=job_name):
+                steps = self.jobs[job_name]["steps"]
+                step_names = [step["name"] for step in steps]
+                self.assertLess(
+                    step_names.index("Check out source"),
+                    step_names.index("Restore updated Cargo lockfile"),
+                )
+                self.assertLess(
+                    step_names.index("Restore updated Cargo lockfile"),
+                    step_names.index(build_step_name),
+                )
+                restored_lock = step_by_name(
+                    self.jobs[job_name], "Restore updated Cargo lockfile"
+                )
+                self.assertEqual(restored_lock["uses"], DOWNLOAD_ARTIFACT_V8)
+                self.assertEqual(
+                    restored_lock["with"],
+                    {"name": "cargo-lock", "path": "."},
+                )
+                self.assertNotIn("if", restored_lock)
+                self.assertNotIn("continue-on-error", restored_lock)
+
+        cargo_update_steps = [
+            step
+            for job in self.jobs.values()
+            for step in job.get("steps", [])
+            if str(step.get("run", "")).strip() == "cargo update"
+        ]
+        self.assertEqual(cargo_update_steps, [update])
+
     def test_publication_permissions_are_job_local(self) -> None:
         self.assertEqual(
             self.jobs["authorize-publication"]["permissions"],
