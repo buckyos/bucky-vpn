@@ -7,8 +7,8 @@ use crate::server_config::{
     build_server_config, endpoints_to_pn_server, get_node_traffic_idempotency_retention_secs,
     get_pn_server_config, get_pn_traffic_upload_config, get_server_name_config,
     get_sn_admin_config, get_sn_http_config, get_sn_jwt_config, get_sn_server_config,
-    is_standalone_proxy_node, resolve_service_endpoints, select_default_config_file,
-    should_start_pn_server, validate_server_mode,
+    is_standalone_proxy_node, resolve_service_endpoints, resolve_sn_identity_endpoints,
+    select_default_config_file, should_start_pn_server, validate_server_mode,
 };
 use crate::sqlx_store::open_sqlite_pool;
 use crate::sqlite_store_factory::{P2pSnCmdServer, SqliteStoreFactory};
@@ -232,7 +232,7 @@ async fn main() {
     let config_file = explicit_config_file.unwrap_or(default_config.as_str());
     let config = build_server_config(explicit_config_file, data_folder.as_path()).unwrap();
     let server_name = get_server_name_config(&config);
-    let sn_server_config = get_sn_server_config(&config);
+    let sn_server_config = get_sn_server_config(&config).unwrap();
     let pn_config = get_pn_server_config(&config).unwrap();
     validate_server_mode(&sn_server_config, &pn_config).unwrap();
     let node_traffic_idempotency_retention_secs =
@@ -305,7 +305,9 @@ async fn main() {
 
     let identity_file = data_dir.join("identity");
     let identity = load_or_create_identity(&identity_file, server_name.clone()).await;
-    let local_identity = identity.update_endpoints(eps.clone());
+    let sn_identity_endpoints =
+        resolve_sn_identity_endpoints(&eps, &sn_server_config.nat_probe_ports).unwrap();
+    let local_identity = identity.update_endpoints(sn_identity_endpoints);
     let control_identity = local_identity.clone();
     let local_id = local_identity.get_id();
     let local_id_string = local_id.to_string();
@@ -340,7 +342,8 @@ async fn main() {
     };
     let mut remote_control_client = None;
     let server_runtime = ServerRuntime::start(ServerRuntimeConfig::default()).unwrap();
-    let sn_service_config = new_sn_service_config(local_identity, server_runtime.clone());
+    let sn_service_config = new_sn_service_config(local_identity, server_runtime.clone())
+        .set_nat_probe_ports(sn_server_config.nat_probe_ports.clone());
     let sn_service = create_sn_service(sn_service_config).await.unwrap();
     let pn_ttp_server = if sn_server_config.enabled {
         sn_service.start().await.unwrap();

@@ -81,7 +81,7 @@ fn pn_transport_config_omission_defaults_to_dual() {
 fn pn_transport_config_example_matches_dual_runtime_contract_and_override_name() {
     let example = include_str!("../../config/config.example.yaml");
     let config = config_from_yaml(example);
-    let sn = get_sn_server_config(&config);
+    let sn = get_sn_server_config(&config).unwrap();
     let pn = get_pn_server_config(&config).unwrap();
 
     assert!(example.contains("VPN_PN_TRANSPORT"));
@@ -109,7 +109,10 @@ fn pn_transport_config_rejects_unknown_blank_case_variant_and_non_string_values(
 
 #[test]
 fn pn_transport_config_modes_drive_service_primary_report_and_mapping() {
-    let sn = SnServerConfig { enabled: false };
+    let sn = SnServerConfig {
+        enabled: false,
+        nat_probe_ports: Vec::new(),
+    };
     let listen = P2pEndpoint::from((
         Protocol::Quic,
         "0.0.0.0:3624".parse::<SocketAddr>().unwrap(),
@@ -189,7 +192,10 @@ fn pn_transport_config_modes_drive_service_primary_report_and_mapping() {
 
 #[test]
 fn pn_transport_config_sn_only_keeps_dual_endpoints_and_combined_rejects_single_protocol() {
-    let sn = SnServerConfig { enabled: true };
+    let sn = SnServerConfig {
+        enabled: true,
+        nat_probe_ports: Vec::new(),
+    };
     let listen = P2pEndpoint::from((
         Protocol::Quic,
         "127.0.0.1:3624".parse::<SocketAddr>().unwrap(),

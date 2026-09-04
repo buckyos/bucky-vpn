@@ -3,7 +3,7 @@ use crate::pn_server_info::{
 };
 use config::builder::DefaultState;
 use if_addrs::IfAddr;
-use p2p_frame::endpoint::{Endpoint as P2pEndpoint, Protocol};
+use p2p_frame::endpoint::{Endpoint as P2pEndpoint, EndpointArea, Protocol};
 use p2p_frame::p2p_identity::P2pId;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
@@ -14,9 +14,10 @@ const DEFAULT_YAML_CONFIG: &str = "config.yaml";
 const LEGACY_TOML_CONFIG: &str = "config.toml";
 const DEFAULT_NODE_TRAFFIC_IDEMPOTENCY_RETENTION_SECS: u64 = 600;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnServerConfig {
     pub enabled: bool,
+    pub nat_probe_ports: Vec<u16>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -246,10 +247,103 @@ pub fn get_pn_traffic_upload_config(
     })
 }
 
-pub fn get_sn_server_config(config: &config::Config) -> SnServerConfig {
-    SnServerConfig {
+pub fn get_sn_server_config(
+    config: &config::Config,
+) -> Result<SnServerConfig, config::ConfigError> {
+    Ok(SnServerConfig {
         enabled: config.get_bool("sn.enabled").unwrap_or(true),
+        nat_probe_ports: get_sn_nat_probe_ports(config)?,
+    })
+}
+
+fn get_sn_nat_probe_ports(config: &config::Config) -> Result<Vec<u16>, config::ConfigError> {
+    const CONFIG_KEY: &str = "sn.nat_probe_ports";
+    // Environment::separator("_") expands VPN_SN_NAT_PROBE_PORTS to this path.
+    const ENVIRONMENT_KEY: &str = "sn.nat.probe.ports";
+
+    let value = match config.get::<config::Value>(ENVIRONMENT_KEY) {
+        Ok(value) => value,
+        Err(config::ConfigError::NotFound(_)) => {
+            match config.get::<config::Value>(CONFIG_KEY) {
+                Ok(value) => value,
+                Err(config::ConfigError::NotFound(_)) => return Ok(Vec::new()),
+                Err(err) => return Err(err),
+            }
+        }
+        Err(err) => return Err(err),
+    };
+    let ports = match value.kind {
+        config::ValueKind::Array(values) => values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| parse_sn_nat_probe_port(value, index))
+            .collect::<Result<Vec<_>, _>>()?,
+        config::ValueKind::String(value) => value
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .enumerate()
+            .map(|(index, item)| {
+                item.parse::<u16>().map_err(|err| {
+                    config::ConfigError::Message(format!(
+                        "{CONFIG_KEY}[{index}] contains invalid UDP port {item:?}: {err}"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => {
+            return Err(config::ConfigError::Message(format!(
+                "{CONFIG_KEY} must be a list of UDP ports"
+            )));
+        }
+    };
+
+    validate_sn_nat_probe_ports(ports)
+}
+
+fn parse_sn_nat_probe_port(
+    value: config::Value,
+    index: usize,
+) -> Result<u16, config::ConfigError> {
+    let port = match value.kind {
+        config::ValueKind::I64(value) => u16::try_from(value).ok(),
+        config::ValueKind::I128(value) => u16::try_from(value).ok(),
+        config::ValueKind::U64(value) => u16::try_from(value).ok(),
+        config::ValueKind::U128(value) => u16::try_from(value).ok(),
+        config::ValueKind::String(value) => value.parse::<u16>().ok(),
+        _ => None,
+    };
+    port.ok_or_else(|| {
+        config::ConfigError::Message(format!(
+            "sn.nat_probe_ports[{index}] must be an integer within 1..={}",
+            u16::MAX
+        ))
+    })
+}
+
+fn validate_sn_nat_probe_ports(ports: Vec<u16>) -> Result<Vec<u16>, config::ConfigError> {
+    const MAX_PORTS: usize = p2p_frame::sn::nat_probe::MAX_NAT_PROBE_ENDPOINTS;
+
+    if ports.is_empty() {
+        return Ok(ports);
     }
+    if ports.len() < 2 || ports.len() > MAX_PORTS {
+        return Err(config::ConfigError::Message(format!(
+            "sn.nat_probe_ports requires between 2 and {MAX_PORTS} ports when enabled"
+        )));
+    }
+    if ports.contains(&0) {
+        return Err(config::ConfigError::Message(
+            "sn.nat_probe_ports cannot contain zero".to_owned(),
+        ));
+    }
+    let mut unique = std::collections::HashSet::with_capacity(ports.len());
+    if ports.iter().any(|port| !unique.insert(*port)) {
+        return Err(config::ConfigError::Message(
+            "sn.nat_probe_ports must contain unique ports".to_owned(),
+        ));
+    }
+    Ok(ports)
 }
 
 pub fn get_server_name_config(config: &config::Config) -> Option<String> {
@@ -363,6 +457,11 @@ pub fn validate_server_mode(
     sn_config: &SnServerConfig,
     pn_config: &PnServerConfig,
 ) -> Result<(), config::ConfigError> {
+    if !sn_config.enabled && !sn_config.nat_probe_ports.is_empty() {
+        return Err(config::ConfigError::Message(
+            "sn.nat_probe_ports requires sn.enabled to be true".to_owned(),
+        ));
+    }
     if !pn_config.enabled {
         return Ok(());
     }
@@ -410,6 +509,48 @@ pub fn resolve_service_endpoints(
     } else {
         vec![sn_endpoint, tcp_endpoint]
     }
+}
+
+pub fn resolve_sn_identity_endpoints(
+    service_endpoints: &[P2pEndpoint],
+    nat_probe_ports: &[u16],
+) -> Result<Vec<P2pEndpoint>, config::ConfigError> {
+    if nat_probe_ports.is_empty() {
+        return Ok(service_endpoints.to_vec());
+    }
+
+    let mut identity_endpoints = Vec::with_capacity(service_endpoints.len() * 2);
+    for endpoint in service_endpoints {
+        let SocketAddr::V4(address) = endpoint.addr() else {
+            return Err(config::ConfigError::Message(
+                "sn.nat_probe_ports requires top-level ip to be an IPv4 address".to_owned(),
+            ));
+        };
+        let advertised_ip = *address.ip();
+        if advertised_ip.is_unspecified()
+            || advertised_ip.is_private()
+            || advertised_ip.is_loopback()
+            || advertised_ip.is_link_local()
+            || advertised_ip.is_multicast()
+            || advertised_ip.is_broadcast()
+        {
+            return Err(config::ConfigError::Message(format!(
+                "sn.nat_probe_ports requires top-level ip to be an externally reachable IPv4 address, got {advertised_ip}"
+            )));
+        }
+
+        let mut mapped = *endpoint;
+        mapped.set_area(EndpointArea::Mapped);
+        let mut local = *endpoint;
+        local.set_area(EndpointArea::Lan);
+        match local.mut_addr() {
+            SocketAddr::V4(address) => address.set_ip(Ipv4Addr::UNSPECIFIED),
+            SocketAddr::V6(_) => unreachable!("IPv6 endpoints were rejected above"),
+        }
+        identity_endpoints.push(mapped);
+        identity_endpoints.push(local);
+    }
+    Ok(identity_endpoints)
 }
 
 pub fn endpoint_to_pn_server(
@@ -785,10 +926,11 @@ mod tests {
     fn sn_and_pn_default_enabled_without_config_file() {
         let dir = new_temp_dir();
         let config = build_server_config(None, &dir).unwrap();
-        let sn_config = get_sn_server_config(&config);
+        let sn_config = get_sn_server_config(&config).unwrap();
         let pn_config = get_pn_server_config(&config).unwrap();
 
         assert!(sn_config.enabled);
+        assert!(sn_config.nat_probe_ports.is_empty());
         assert!(pn_config.enabled);
         assert_eq!(pn_config.report_interval_secs, 5);
         assert_eq!(pn_config.heartbeat_interval_secs, 5);
@@ -801,6 +943,166 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn yaml_and_environment_can_configure_sn_nat_probe_ports() {
+        let disabled = config::Config::builder()
+            .add_source(config::File::from_str(
+                "sn:\n  nat_probe_ports: []\n",
+                config::FileFormat::Yaml,
+            ))
+            .build()
+            .unwrap();
+        assert!(
+            get_sn_server_config(&disabled)
+                .unwrap()
+                .nat_probe_ports
+                .is_empty()
+        );
+
+        let yaml = config::Config::builder()
+            .add_source(config::File::from_str(
+                "sn:\n  nat_probe_ports: [4100, 4101, 4102]\n",
+                config::FileFormat::Yaml,
+            ))
+            .build()
+            .unwrap();
+        assert_eq!(
+            get_sn_server_config(&yaml).unwrap().nat_probe_ports,
+            vec![4100, 4101, 4102]
+        );
+
+        let mut values = std::collections::HashMap::new();
+        values.insert(
+            "VPN_SN_NAT_PROBE_PORTS".to_owned(),
+            "4200, 4201".to_owned(),
+        );
+        let environment = config::Config::builder()
+            .add_source(config::File::from_str(
+                "sn:\n  nat_probe_ports: [4300, 4301]\n",
+                config::FileFormat::Yaml,
+            ))
+            .add_source(
+                config::Environment::with_prefix("VPN")
+                    .separator("_")
+                    .source(Some(values)),
+            )
+            .build()
+            .unwrap();
+        assert_eq!(
+            get_sn_server_config(&environment)
+                .unwrap()
+                .nat_probe_ports,
+            vec![4200, 4201]
+        );
+    }
+
+    #[test]
+    fn sn_nat_probe_ports_reject_invalid_sets() {
+        for ports in [
+            "[4100]",
+            "[0, 4101]",
+            "[4100, 4100]",
+            "[1, 2, 3, 4, 5, 6, 7, 8, 9]",
+            "[4100, true]",
+        ] {
+            let config = config::Config::builder()
+                .add_source(config::File::from_str(
+                    format!("sn:\n  nat_probe_ports: {ports}\n").as_str(),
+                    config::FileFormat::Yaml,
+                ))
+                .build()
+                .unwrap();
+            let error = get_sn_server_config(&config).unwrap_err().to_string();
+            assert!(error.contains("sn.nat_probe_ports"), "unexpected error: {error}");
+        }
+    }
+
+    #[test]
+    fn sn_nat_probe_requires_enabled_sn_even_when_pn_is_disabled() {
+        let sn = SnServerConfig {
+            enabled: false,
+            nat_probe_ports: vec![4100, 4101],
+        };
+        let pn = PnServerConfig {
+            enabled: false,
+            transport: PnTransportMode::Dual,
+            control_server: None,
+            report_interval_secs: 5,
+            heartbeat_interval_secs: 5,
+            heartbeat_timeout_secs: 15,
+            advertised_ip: None,
+            port_mapping: PnPortMappingConfig::default(),
+            report_local_address: true,
+        };
+
+        let error = validate_server_mode(&sn, &pn).unwrap_err().to_string();
+        assert!(error.contains("sn.enabled"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn sn_nat_probe_identity_endpoints_pair_mapped_public_with_wildcard_local() {
+        let service_endpoints = vec![
+            P2pEndpoint::from((
+                Protocol::Quic,
+                "8.8.8.8:3624".parse::<SocketAddr>().unwrap(),
+            )),
+            P2pEndpoint::from((
+                Protocol::Tcp,
+                "8.8.8.8:3624".parse::<SocketAddr>().unwrap(),
+            )),
+        ];
+
+        let endpoints = resolve_sn_identity_endpoints(&service_endpoints, &[4100, 4101]).unwrap();
+
+        assert_eq!(endpoints.len(), 4);
+        for pair in endpoints.chunks_exact(2) {
+            assert_eq!(pair[0].get_area(), EndpointArea::Mapped);
+            assert_eq!(pair[0].addr().ip(), "8.8.8.8".parse::<IpAddr>().unwrap());
+            assert_eq!(pair[1].get_area(), EndpointArea::Lan);
+            assert_eq!(pair[1].addr().ip(), IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+            assert_eq!(pair[0].protocol(), pair[1].protocol());
+            assert_eq!(pair[0].addr().port(), pair[1].addr().port());
+        }
+    }
+
+    #[test]
+    fn sn_nat_probe_identity_endpoints_reject_non_public_addresses() {
+        for address in ["0.0.0.0:3624", "127.0.0.1:3624", "192.168.1.2:3624"] {
+            let endpoints = vec![P2pEndpoint::from((
+                Protocol::Quic,
+                address.parse::<SocketAddr>().unwrap(),
+            ))];
+            let error = resolve_sn_identity_endpoints(&endpoints, &[4100, 4101])
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("externally reachable IPv4"), "unexpected error: {error}");
+        }
+
+        let ipv6 = vec![P2pEndpoint::from((
+            Protocol::Quic,
+            "[2001:4860:4860::8888]:3624"
+                .parse::<SocketAddr>()
+                .unwrap(),
+        ))];
+        let error = resolve_sn_identity_endpoints(&ipv6, &[4100, 4101])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("IPv4"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn disabled_sn_nat_probe_preserves_service_endpoints() {
+        let service_endpoints = vec![P2pEndpoint::from((
+            Protocol::Quic,
+            "0.0.0.0:3624".parse::<SocketAddr>().unwrap(),
+        ))];
+
+        assert_eq!(
+            resolve_sn_identity_endpoints(&service_endpoints, &[]).unwrap(),
+            service_endpoints
+        );
     }
 
     #[test]
@@ -838,7 +1140,7 @@ pn:
         .unwrap();
 
         let config = build_server_config(None, &dir).unwrap();
-        let sn_config = get_sn_server_config(&config);
+        let sn_config = get_sn_server_config(&config).unwrap();
         let pn_config = get_pn_server_config(&config).unwrap();
 
         assert!(!sn_config.enabled);
@@ -962,8 +1264,14 @@ jwt:
 
     #[test]
     fn pn_server_start_depends_on_pn_enabled_only() {
-        let enabled_sn = SnServerConfig { enabled: true };
-        let disabled_sn = SnServerConfig { enabled: false };
+        let enabled_sn = SnServerConfig {
+            enabled: true,
+            nat_probe_ports: Vec::new(),
+        };
+        let disabled_sn = SnServerConfig {
+            enabled: false,
+            nat_probe_ports: Vec::new(),
+        };
         let enabled_pn = PnServerConfig {
             enabled: true,
             transport: PnTransportMode::Dual,
@@ -995,8 +1303,14 @@ jwt:
 
     #[test]
     fn standalone_proxy_node_requires_disabled_sn_and_enabled_pn() {
-        let enabled_sn = SnServerConfig { enabled: true };
-        let disabled_sn = SnServerConfig { enabled: false };
+        let enabled_sn = SnServerConfig {
+            enabled: true,
+            nat_probe_ports: Vec::new(),
+        };
+        let disabled_sn = SnServerConfig {
+            enabled: false,
+            nat_probe_ports: Vec::new(),
+        };
         let enabled_pn = PnServerConfig {
             enabled: true,
             transport: PnTransportMode::Dual,
@@ -1027,7 +1341,10 @@ jwt:
 
     #[test]
     fn proxy_address_defaults_to_control_endpoint_without_static_proxy_addresses() {
-        let sn = SnServerConfig { enabled: true };
+        let sn = SnServerConfig {
+            enabled: true,
+            nat_probe_ports: Vec::new(),
+        };
         let pn = PnServerConfig {
             enabled: true,
             transport: PnTransportMode::Dual,
@@ -1051,8 +1368,14 @@ jwt:
 
     #[test]
     fn service_endpoints_do_not_include_static_proxy_addresses() {
-        let sn = SnServerConfig { enabled: true };
-        let disabled_sn = SnServerConfig { enabled: false };
+        let sn = SnServerConfig {
+            enabled: true,
+            nat_probe_ports: Vec::new(),
+        };
+        let disabled_sn = SnServerConfig {
+            enabled: false,
+            nat_probe_ports: Vec::new(),
+        };
         let pn = PnServerConfig {
             enabled: true,
             transport: PnTransportMode::Dual,

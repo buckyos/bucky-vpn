@@ -6,20 +6,28 @@
 #
 # VPN_ 前缀的环境变量可以覆盖配置项，例如：
 # VPN_NAME、VPN_PN_TRANSPORT、VPN_SN_ADMIN_NAME、VPN_SN_ADMIN_PASSWORD、
-# VPN_SN_JWT_KEY、VPN_DATA_DIR。
+# VPN_SN_JWT_KEY、VPN_SN_NAT_PROBE_PORTS、VPN_DATA_DIR。
 
 # 本机 P2P identity 证书名，也是作为 PN 代理节点上报给控制节点的名字。
 # 修改该值后，服务端会保留已有私钥并重签生成带新名字的证书。
 name: "bucky-vpn-server"
 
-# SN 服务和内置 PN 代理节点使用的 P2P 监听地址。
-# 服务端会在同一 IP/端口上同时监听 QUIC 和 TCP。
+# SN 服务和内置 PN 代理节点使用的 P2P 地址。
+# 服务端会在同一 IP/端口上同时监听 QUIC 和 TCP；启用 SN NAT type 探测时，
+# ip 表示对外发布的公网 IPv4，进程实际在 0.0.0.0 上监听该服务端口。
 ip: "0.0.0.0"
 port: 3624
 
 # 本机 SN 控制服务和控制节点管理面。
 sn:
   enabled: true
+
+  # 可选：启用客户端 NAT type 探测的 UDP reflector 端口。
+  # 不配置或配置空列表时关闭；启用时必须配置 2 到 8 个不同的非零端口。
+  # 同时需要把顶层 ip 改为客户端可访问的公网 IPv4，并在防火墙、容器端口
+  # 映射或 NAT 设备中将这里的每个 UDP 端口转发到本进程。
+  # 环境变量写法：VPN_SN_NAT_PROBE_PORTS=3630,3631。
+  # nat_probe_ports: [3630, 3631]
 
   # HTTP 管理 API 监听地址。
   # 如果前面有 nginx 或容器端口映射，这里保留进程内部端口即可。
