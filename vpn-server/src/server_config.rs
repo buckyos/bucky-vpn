@@ -3,7 +3,7 @@ use crate::pn_server_info::{
 };
 use config::builder::DefaultState;
 use if_addrs::IfAddr;
-use p2p_frame::endpoint::{Endpoint as P2pEndpoint, EndpointArea, Protocol};
+use p2p_frame::endpoint::{Endpoint as P2pEndpoint, Protocol};
 use p2p_frame::p2p_identity::P2pId;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
@@ -511,46 +511,15 @@ pub fn resolve_service_endpoints(
     }
 }
 
-pub fn resolve_sn_identity_endpoints(
-    service_endpoints: &[P2pEndpoint],
-    nat_probe_ports: &[u16],
-) -> Result<Vec<P2pEndpoint>, config::ConfigError> {
-    if nat_probe_ports.is_empty() {
-        return Ok(service_endpoints.to_vec());
-    }
-
-    let mut identity_endpoints = Vec::with_capacity(service_endpoints.len() * 2);
-    for endpoint in service_endpoints {
-        let SocketAddr::V4(address) = endpoint.addr() else {
-            return Err(config::ConfigError::Message(
-                "sn.nat_probe_ports requires top-level ip to be an IPv4 address".to_owned(),
-            ));
-        };
-        let advertised_ip = *address.ip();
-        if advertised_ip.is_unspecified()
-            || advertised_ip.is_private()
-            || advertised_ip.is_loopback()
-            || advertised_ip.is_link_local()
-            || advertised_ip.is_multicast()
-            || advertised_ip.is_broadcast()
-        {
-            return Err(config::ConfigError::Message(format!(
-                "sn.nat_probe_ports requires top-level ip to be an externally reachable IPv4 address, got {advertised_ip}"
-            )));
-        }
-
-        let mut mapped = *endpoint;
-        mapped.set_area(EndpointArea::Mapped);
-        let mut local = *endpoint;
-        local.set_area(EndpointArea::Lan);
-        match local.mut_addr() {
-            SocketAddr::V4(address) => address.set_ip(Ipv4Addr::UNSPECIFIED),
-            SocketAddr::V6(_) => unreachable!("IPv6 endpoints were rejected above"),
-        }
-        identity_endpoints.push(mapped);
-        identity_endpoints.push(local);
-    }
-    Ok(identity_endpoints)
+/// SN identity endpoints always track the ordinary service endpoints.
+///
+/// The locked `p2p-frame` NAT probe wire is port-only: reflectors bind
+/// `0.0.0.0:<port>` and clients rebuild complete probe endpoints from the
+/// authenticated QUIC SN IPv4 plus the delivered port vector. No public IPv4
+/// or mapped-area endpoint adaptation is needed, and wildcard listen addresses
+/// are valid.
+pub fn resolve_sn_identity_endpoints(service_endpoints: &[P2pEndpoint]) -> Vec<P2pEndpoint> {
+    service_endpoints.to_vec()
 }
 
 pub fn endpoint_to_pn_server(
@@ -1042,65 +1011,35 @@ mod tests {
     }
 
     #[test]
-    fn sn_nat_probe_identity_endpoints_pair_mapped_public_with_wildcard_local() {
+    fn sn_nat_probe_accepts_wildcard_top_level_ip() {
+        let config = config::Config::builder()
+            .add_source(config::File::from_str(
+                "ip: \"0.0.0.0\"\nsn:\n  nat_probe_ports: [4100, 4101]\n",
+                config::FileFormat::Yaml,
+            ))
+            .build()
+            .unwrap();
+
+        let sn = get_sn_server_config(&config).unwrap();
+        assert_eq!(sn.nat_probe_ports, vec![4100, 4101]);
+        assert_eq!(config.get_string("ip").unwrap(), "0.0.0.0");
+    }
+
+    #[test]
+    fn sn_nat_probe_identity_endpoints_keep_service_endpoints_for_wildcard_listen() {
         let service_endpoints = vec![
             P2pEndpoint::from((
                 Protocol::Quic,
-                "8.8.8.8:3624".parse::<SocketAddr>().unwrap(),
+                "0.0.0.0:3624".parse::<SocketAddr>().unwrap(),
             )),
             P2pEndpoint::from((
                 Protocol::Tcp,
-                "8.8.8.8:3624".parse::<SocketAddr>().unwrap(),
+                "0.0.0.0:3624".parse::<SocketAddr>().unwrap(),
             )),
         ];
 
-        let endpoints = resolve_sn_identity_endpoints(&service_endpoints, &[4100, 4101]).unwrap();
-
-        assert_eq!(endpoints.len(), 4);
-        for pair in endpoints.chunks_exact(2) {
-            assert_eq!(pair[0].get_area(), EndpointArea::Mapped);
-            assert_eq!(pair[0].addr().ip(), "8.8.8.8".parse::<IpAddr>().unwrap());
-            assert_eq!(pair[1].get_area(), EndpointArea::Lan);
-            assert_eq!(pair[1].addr().ip(), IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-            assert_eq!(pair[0].protocol(), pair[1].protocol());
-            assert_eq!(pair[0].addr().port(), pair[1].addr().port());
-        }
-    }
-
-    #[test]
-    fn sn_nat_probe_identity_endpoints_reject_non_public_addresses() {
-        for address in ["0.0.0.0:3624", "127.0.0.1:3624", "192.168.1.2:3624"] {
-            let endpoints = vec![P2pEndpoint::from((
-                Protocol::Quic,
-                address.parse::<SocketAddr>().unwrap(),
-            ))];
-            let error = resolve_sn_identity_endpoints(&endpoints, &[4100, 4101])
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains("externally reachable IPv4"), "unexpected error: {error}");
-        }
-
-        let ipv6 = vec![P2pEndpoint::from((
-            Protocol::Quic,
-            "[2001:4860:4860::8888]:3624"
-                .parse::<SocketAddr>()
-                .unwrap(),
-        ))];
-        let error = resolve_sn_identity_endpoints(&ipv6, &[4100, 4101])
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("IPv4"), "unexpected error: {error}");
-    }
-
-    #[test]
-    fn disabled_sn_nat_probe_preserves_service_endpoints() {
-        let service_endpoints = vec![P2pEndpoint::from((
-            Protocol::Quic,
-            "0.0.0.0:3624".parse::<SocketAddr>().unwrap(),
-        ))];
-
         assert_eq!(
-            resolve_sn_identity_endpoints(&service_endpoints, &[]).unwrap(),
+            resolve_sn_identity_endpoints(&service_endpoints),
             service_endpoints
         );
     }

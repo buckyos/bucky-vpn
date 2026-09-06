@@ -305,8 +305,7 @@ async fn main() {
 
     let identity_file = data_dir.join("identity");
     let identity = load_or_create_identity(&identity_file, server_name.clone()).await;
-    let sn_identity_endpoints =
-        resolve_sn_identity_endpoints(&eps, &sn_server_config.nat_probe_ports).unwrap();
+    let sn_identity_endpoints = resolve_sn_identity_endpoints(&eps);
     let local_identity = identity.update_endpoints(sn_identity_endpoints);
     let control_identity = local_identity.clone();
     let local_id = local_identity.get_id();
