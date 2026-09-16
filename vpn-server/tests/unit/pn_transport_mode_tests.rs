@@ -90,6 +90,22 @@ fn pn_transport_config_example_matches_dual_runtime_contract_and_override_name()
 }
 
 #[test]
+fn server_config_example_documents_ipv6_listen_contract() {
+    let example = include_str!("../../config/config.example.yaml");
+    let config = config_from_yaml(example);
+
+    let listen_ips = parse_listen_ips(&config.get_string("ip").unwrap()).unwrap();
+    assert_eq!(listen_ips, vec!["0.0.0.0".parse::<IpAddr>().unwrap()]);
+    assert!(example.contains("ip: \"0.0.0.0, ::\""));
+    assert!(example.contains("只监听 IPv6"));
+    assert_eq!(
+        normalize_http_bind_ip("::".to_owned()),
+        "[::]",
+        "the documented IPv6 HTTP bind form must stay bracket-correct"
+    );
+}
+
+#[test]
 fn pn_transport_config_rejects_unknown_blank_case_variant_and_non_string_values() {
     for yaml in [
         "pn:\n  transport: udp\n",
@@ -113,10 +129,7 @@ fn pn_transport_config_modes_drive_service_primary_report_and_mapping() {
         enabled: false,
         nat_probe_ports: Vec::new(),
     };
-    let listen = P2pEndpoint::from((
-        Protocol::Quic,
-        "0.0.0.0:3624".parse::<SocketAddr>().unwrap(),
-    ));
+    let listen = parse_listen_ips("0.0.0.0").unwrap();
     let advertised_ip = "203.0.113.8".parse::<IpAddr>().unwrap();
     let mapping = PnPortMappingConfig {
         quic: Some(43624),
@@ -153,7 +166,7 @@ fn pn_transport_config_modes_drive_service_primary_report_and_mapping() {
         let mut pn = pn_config(true, mode);
         pn.advertised_ip = Some(advertised_ip);
         pn.port_mapping = mapping.clone();
-        let endpoints = resolve_service_endpoints(listen, &sn, &pn);
+        let endpoints = resolve_service_endpoints(listen.as_slice(), 3624, &sn, &pn);
         let filtered_mapping = mode.filter_port_mapping(&pn.port_mapping);
 
         assert_eq!(endpoint_protocols(&endpoints), protocols);
@@ -196,16 +209,18 @@ fn pn_transport_config_sn_only_keeps_dual_endpoints_and_combined_rejects_single_
         enabled: true,
         nat_probe_ports: Vec::new(),
     };
-    let listen = P2pEndpoint::from((
-        Protocol::Quic,
-        "127.0.0.1:3624".parse::<SocketAddr>().unwrap(),
-    ));
+    let listen = parse_listen_ips("127.0.0.1").unwrap();
 
     for mode in [PnTransportMode::Tcp, PnTransportMode::Quic] {
         let disabled_pn = pn_config(false, mode);
         assert!(validate_server_mode(&sn, &disabled_pn).is_ok());
         assert_eq!(
-            endpoint_protocols(&resolve_service_endpoints(listen, &sn, &disabled_pn)),
+            endpoint_protocols(&resolve_service_endpoints(
+                listen.as_slice(),
+                3624,
+                &sn,
+                &disabled_pn
+            )),
             vec![Protocol::Quic, Protocol::Tcp]
         );
 

@@ -267,7 +267,9 @@ async fn main() {
         None
     };
 
-    let ip = config.get_string("ip").unwrap();
+    let listen_ip_value = config.get_string("ip").unwrap();
+    let listen_ips = crate::server_config::parse_listen_ips(listen_ip_value.as_str())
+        .unwrap_or_else(|err| panic!("invalid ip {listen_ip_value:?}: {err}"));
     let port = config.get_int("port").unwrap() as u16;
     let data_dir = match config.get_string("data.dir") {
         Ok(dir) => PathBuf::from(dir),
@@ -292,14 +294,13 @@ async fn main() {
     if !data_dir.exists() {
         tokio::fs::create_dir_all(data_dir.as_path()).await.unwrap();
     }
-    let sn_endpoint = Endpoint::from((
-        Protocol::Quic,
-        SocketAddr::V4(SocketAddrV4::new(
-            Ipv4Addr::from_str(ip.as_str()).unwrap(),
-            port,
-        )),
-    ));
-    let eps = resolve_service_endpoints(sn_endpoint.clone(), &sn_server_config, &pn_config);
+    log::info!("server listen addresses: {:?} port: {}", listen_ips, port);
+    let eps = resolve_service_endpoints(
+        listen_ips.as_slice(),
+        port,
+        &sn_server_config,
+        &pn_config,
+    );
     let start_pn_server = should_start_pn_server(&sn_server_config, &pn_config);
     let standalone_proxy_node = is_standalone_proxy_node(&sn_server_config, &pn_config);
 

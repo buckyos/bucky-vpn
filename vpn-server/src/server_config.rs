@@ -13,6 +13,7 @@ use vpn_frame::PnServerInfo;
 const DEFAULT_YAML_CONFIG: &str = "config.yaml";
 const LEGACY_TOML_CONFIG: &str = "config.toml";
 const DEFAULT_NODE_TRAFFIC_IDEMPOTENCY_RETENTION_SECS: u64 = 600;
+const MAX_LISTEN_IPS: usize = 4;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnServerConfig {
@@ -354,7 +355,7 @@ pub fn get_server_name_config(config: &config::Config) -> Option<String> {
 }
 
 pub fn get_sn_http_config(config: &config::Config) -> Result<SnHttpConfig, config::ConfigError> {
-    let ip = get_string_prefer(config, "sn.http.ip", "http.ip")?;
+    let ip = normalize_http_bind_ip(get_string_prefer(config, "sn.http.ip", "http.ip")?);
     let port = get_int_prefer(config, "sn.http.port", "http.port")?;
     if port <= 0 || port > u16::MAX as i64 {
         return Err(config::ConfigError::Message(format!(
@@ -365,6 +366,19 @@ pub fn get_sn_http_config(config: &config::Config) -> Result<SnHttpConfig, confi
         ip,
         port: port as u16,
     })
+}
+
+/// Normalize the configured HTTP bind address for the underlying HTTP server.
+///
+/// The HTTP layer concatenates `host:port`, so a bare IPv6 literal has to be
+/// bracketed before it reaches that layer. Values that are not IP literals are
+/// passed through unchanged, preserving any existing hostname-style usage.
+pub fn normalize_http_bind_ip(value: String) -> String {
+    match value.trim().parse::<IpAddr>() {
+        Ok(IpAddr::V6(ip)) => format!("[{ip}]"),
+        Ok(IpAddr::V4(ip)) => ip.to_string(),
+        Err(_) => value,
+    }
 }
 
 pub fn get_sn_admin_config(config: &config::Config) -> Result<SnAdminConfig, config::ConfigError> {
@@ -494,21 +508,88 @@ pub fn validate_server_mode(
     Ok(())
 }
 
+/// Parse the configured `ip` value into the listen address set.
+///
+/// The value accepts one address or a comma/whitespace separated list so an
+/// operator can listen on IPv4 only, IPv6 only, or both families. A wildcard
+/// address is allowed at most once per family because two wildcards of the
+/// same family would address the same socket set.
+pub fn parse_listen_ips(value: &str) -> Result<Vec<IpAddr>, config::ConfigError> {
+    let mut ips: Vec<IpAddr> = Vec::new();
+    for raw in value.split([',', ' ', '\t', '\r', '\n']) {
+        let entry = raw.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let ip = entry.parse::<IpAddr>().map_err(|err| {
+            config::ConfigError::Message(format!(
+                "ip entry {entry:?} is not an IP address: {err}"
+            ))
+        })?;
+        if ips.contains(&ip) {
+            return Err(config::ConfigError::Message(format!(
+                "ip contains duplicate address {ip}"
+            )));
+        }
+        ips.push(ip);
+    }
+
+    if ips.is_empty() {
+        return Err(config::ConfigError::Message(
+            "ip must contain at least one IP address".to_owned(),
+        ));
+    }
+    if ips.len() > MAX_LISTEN_IPS {
+        return Err(config::ConfigError::Message(format!(
+            "ip accepts at most {MAX_LISTEN_IPS} addresses"
+        )));
+    }
+
+    let wildcard_v4 = ips
+        .iter()
+        .filter(|ip| ip.is_ipv4() && ip.is_unspecified())
+        .count();
+    let wildcard_v6 = ips
+        .iter()
+        .filter(|ip| ip.is_ipv6() && ip.is_unspecified())
+        .count();
+    if wildcard_v4 > 1 || wildcard_v6 > 1 {
+        return Err(config::ConfigError::Message(
+            "ip accepts at most one wildcard address per family".to_owned(),
+        ));
+    }
+
+    Ok(ips)
+}
+
+/// Build the service endpoint set for every configured listen address.
+///
+/// Address order and the per-address QUIC-before-TCP preference are preserved,
+/// and the first resolved endpoint remains the primary endpoint for reporting.
 pub fn resolve_service_endpoints(
-    sn_endpoint: P2pEndpoint,
+    listen_ips: &[IpAddr],
+    port: u16,
     sn_config: &SnServerConfig,
     pn_config: &PnServerConfig,
 ) -> Vec<P2pEndpoint> {
-    if is_standalone_proxy_node(sn_config, pn_config) {
-        return pn_config.transport.endpoints(*sn_endpoint.addr());
+    let mut endpoints: Vec<P2pEndpoint> = Vec::with_capacity(listen_ips.len() * 2);
+    for ip in listen_ips.iter().copied() {
+        let addr = SocketAddr::new(ip, port);
+        let candidates = if is_standalone_proxy_node(sn_config, pn_config) {
+            pn_config.transport.endpoints(addr)
+        } else {
+            vec![
+                P2pEndpoint::from((Protocol::Quic, addr)),
+                P2pEndpoint::from((Protocol::Tcp, addr)),
+            ]
+        };
+        for endpoint in candidates {
+            if !endpoints.contains(&endpoint) {
+                endpoints.push(endpoint);
+            }
+        }
     }
-
-    let tcp_endpoint = P2pEndpoint::from((Protocol::Tcp, *sn_endpoint.addr()));
-    if sn_endpoint.protocol() == Protocol::Tcp {
-        vec![sn_endpoint]
-    } else {
-        vec![sn_endpoint, tcp_endpoint]
-    }
+    endpoints
 }
 
 /// SN identity endpoints always track the ordinary service endpoints.
@@ -1295,14 +1376,15 @@ jwt:
             port_mapping: PnPortMappingConfig::default(),
             report_local_address: true,
         };
-        let sn_endpoint = parse_quic_endpoint("127.0.0.1:3624").unwrap();
+        let listen_ips = parse_listen_ips("127.0.0.1").unwrap();
 
-        let endpoints = resolve_service_endpoints(sn_endpoint.clone(), &sn, &pn);
+        let endpoints = resolve_service_endpoints(listen_ips.as_slice(), 3624, &sn, &pn);
 
+        let expected = parse_quic_endpoint("127.0.0.1:3624").unwrap();
         assert_eq!(endpoints.len(), 2);
-        assert_eq!(format!("{:?}", endpoints[0]), format!("{:?}", sn_endpoint));
+        assert_eq!(format!("{:?}", endpoints[0]), format!("{:?}", expected));
         assert_eq!(endpoints[1].protocol(), Protocol::Tcp);
-        assert_eq!(endpoints[1].addr(), sn_endpoint.addr());
+        assert_eq!(endpoints[1].addr(), expected.addr());
     }
 
     #[test]
@@ -1326,13 +1408,87 @@ jwt:
             port_mapping: PnPortMappingConfig::default(),
             report_local_address: true,
         };
-        let sn_endpoint = parse_quic_endpoint("127.0.0.1:3624").unwrap();
+        let listen_ips = parse_listen_ips("127.0.0.1").unwrap();
 
-        let endpoints = resolve_service_endpoints(sn_endpoint.clone(), &sn, &pn);
+        let endpoints = resolve_service_endpoints(listen_ips.as_slice(), 3624, &sn, &pn);
         assert_eq!(endpoints.len(), 2);
 
-        let endpoints = resolve_service_endpoints(sn_endpoint, &disabled_sn, &pn);
+        let endpoints = resolve_service_endpoints(listen_ips.as_slice(), 3624, &disabled_sn, &pn);
         assert_eq!(endpoints.len(), 2);
+    }
+
+    #[test]
+    fn listen_ips_accept_single_family_and_mixed_lists() {
+        assert_eq!(
+            parse_listen_ips("0.0.0.0").unwrap(),
+            vec!["0.0.0.0".parse::<IpAddr>().unwrap()]
+        );
+        assert_eq!(
+            parse_listen_ips("::").unwrap(),
+            vec!["::".parse::<IpAddr>().unwrap()]
+        );
+        assert_eq!(
+            parse_listen_ips("2001:db8::1").unwrap(),
+            vec!["2001:db8::1".parse::<IpAddr>().unwrap()]
+        );
+        assert_eq!(
+            parse_listen_ips("0.0.0.0, ::").unwrap(),
+            vec![
+                "0.0.0.0".parse::<IpAddr>().unwrap(),
+                "::".parse::<IpAddr>().unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn listen_ips_reject_ambiguous_or_malformed_values() {
+        assert!(parse_listen_ips("").is_err());
+        assert!(parse_listen_ips("::1").is_ok());
+        assert!(parse_listen_ips("[::]").is_err());
+        assert!(parse_listen_ips("0.0.0.0,0.0.0.0").is_err());
+        assert!(parse_listen_ips("::,::").is_err());
+        assert!(parse_listen_ips("0.0.0.0,1.2.3.4,::,::1,::2").is_err());
+        assert!(parse_listen_ips("localhost").is_err());
+    }
+
+    #[test]
+    fn mixed_listen_ips_resolve_quic_then_tcp_per_address() {
+        let sn = SnServerConfig {
+            enabled: true,
+            nat_probe_ports: Vec::new(),
+        };
+        let pn = PnServerConfig {
+            enabled: true,
+            transport: PnTransportMode::Dual,
+            control_server: None,
+            report_interval_secs: 5,
+            heartbeat_interval_secs: 5,
+            heartbeat_timeout_secs: 15,
+            advertised_ip: None,
+            port_mapping: PnPortMappingConfig::default(),
+            report_local_address: true,
+        };
+        let listen_ips = parse_listen_ips("0.0.0.0,::").unwrap();
+
+        let endpoints = resolve_service_endpoints(listen_ips.as_slice(), 3624, &sn, &pn);
+
+        assert_eq!(endpoints.len(), 4);
+        assert_eq!(endpoints[0].addr(), &"0.0.0.0:3624".parse::<SocketAddr>().unwrap());
+        assert_eq!(endpoints[0].protocol(), Protocol::Quic);
+        assert_eq!(endpoints[1].addr(), &"0.0.0.0:3624".parse::<SocketAddr>().unwrap());
+        assert_eq!(endpoints[1].protocol(), Protocol::Tcp);
+        assert_eq!(endpoints[2].addr(), &"[::]:3624".parse::<SocketAddr>().unwrap());
+        assert_eq!(endpoints[2].protocol(), Protocol::Quic);
+        assert_eq!(endpoints[3].addr(), &"[::]:3624".parse::<SocketAddr>().unwrap());
+        assert_eq!(endpoints[3].protocol(), Protocol::Tcp);
+    }
+
+    #[test]
+    fn http_bind_address_is_bracketed_for_ipv6() {
+        assert_eq!(normalize_http_bind_ip("0.0.0.0".to_owned()), "0.0.0.0");
+        assert_eq!(normalize_http_bind_ip("::".to_owned()), "[::]");
+        assert_eq!(normalize_http_bind_ip(" 2001:db8::1 ".to_owned()), "[2001:db8::1]");
+        assert_eq!(normalize_http_bind_ip("localhost".to_owned()), "localhost");
     }
 
     #[test]

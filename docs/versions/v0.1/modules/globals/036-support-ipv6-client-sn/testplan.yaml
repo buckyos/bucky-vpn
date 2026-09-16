@@ -1,0 +1,116 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: backward-compatible
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: true
+evidence_inputs: ["vpn-client/src/cli.rs", "vpn-client/src/main.rs", "vpn-client/src/p2p_vpn.rs", "vpn-server/src/server_config.rs", "vpn-server/src/main.rs", "vpn-server/config/config.example.yaml", "vpn-server/tests", "Cargo.toml", "Cargo.lock"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: ipv6-listen-new-path-positive
+      kind: external-positive
+      assertion: new-path-compiles
+      name: compile the whole workspace with the migrated client and server listen assembly
+      change_ids: ["CHG-client-ipv6-listen", "CHG-server-ipv6-listen", "CHG-client-sn-ipv6-endpoint", "CHG-sn-comms-ipv6-surfaces", "CHG-ipv6-capability-boundaries"]
+      run: ["cargo", "check", "--workspace", "--all-targets", "--locked"]
+    - id: ipv6-listen-old-symbol-scan
+      kind: removed-symbol-scan
+      assertion: no-unallowlisted-old-symbol-references
+      name: scan repository consumers for the replaced listen-address helper signatures
+      change_ids: ["CHG-client-ipv6-listen", "CHG-server-ipv6-listen", "CHG-client-sn-ipv6-endpoint", "CHG-sn-comms-ipv6-surfaces", "CHG-ipv6-capability-boundaries"]
+      run: ["python3", "./harness/scripts/consumer-closure-check.py", "--version", "v0.1", "--module", "globals", "--task-name", "036-support-ipv6-client-sn"]
+    - id: ipv6-listen-repository-compile-closure
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: compile every workspace target and test consumer without running tests
+      change_ids: ["CHG-client-ipv6-listen", "CHG-server-ipv6-listen", "CHG-client-sn-ipv6-endpoint", "CHG-sn-comms-ipv6-surfaces", "CHG-ipv6-capability-boundaries"]
+      run: ["cargo", "test", "--workspace", "--no-run", "--all-targets", "--locked"]
+    - id: ipv6-listen-documentation-examples
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: compile the workspace documentation examples alongside the documented listen contract
+      change_ids: ["CHG-client-ipv6-listen", "CHG-server-ipv6-listen", "CHG-client-sn-ipv6-endpoint", "CHG-sn-comms-ipv6-surfaces", "CHG-ipv6-capability-boundaries"]
+      run: ["cargo", "test", "--doc", "--workspace", "--locked"]
+defaults:
+  workdir: .
+  timeout_sec: 1800
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: verify client listen-address parsing and endpoint construction, client SN address-family ordering, server listen-address parsing and endpoint assembly, HTTP bind normalization, and the shipped example contract
+    test_targets:
+      - vpn-client/src/main.rs
+      - vpn-client/src/p2p_vpn.rs
+      - vpn-server/src/server_config.rs
+      - vpn-server/tests/unit/pn_transport_mode_tests.rs
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - client tests cover the omitted default, IPv4-only, IPv6-only, and mixed listen sets plus rejection of malformed, duplicate, and double-wildcard input
+        - client SN endpoint tests cover IPv6 literal handling, the deterministic IPv4-before-IPv6 order, duplicate removal, and the QUIC-before-TCP pattern per address
+        - server tests cover IPv4 literal, IPv6 literal, IPv6 wildcard, mixed list, duplicate rejection, second-wildcard rejection, and named rejection of non-IP input
+        - server tests cover HTTP bind bracketing for IPv6 and the shipped example configuration contract
+        - the upstream IPv6-only bind behavior is verified in the sibling p2p repository; this repository's task run cannot execute that suite
+    steps:
+      - id: ipv6-client-listen-unit
+        name: run the full bucky-vpn unit suite for listen and SN endpoint behavior
+        change_ids: ["CHG-client-ipv6-listen", "CHG-client-sn-ipv6-endpoint", "CHG-ipv6-capability-boundaries"]
+        run: ["cargo", "test", "-p", "bucky-vpn", "--locked"]
+      - id: ipv6-server-listen-focused
+        name: run focused server listen-address and endpoint assembly tests
+        change_ids: ["CHG-server-ipv6-listen"]
+        run: ["cargo", "test", "-p", "bucky-vpn-server", "--locked", "listen_ips"]
+      - id: ipv6-server-surfaces-focused
+        name: run focused IPv6 surface and example contract tests
+        change_ids: ["CHG-sn-comms-ipv6-surfaces"]
+        run: ["cargo", "test", "-p", "bucky-vpn-server", "--locked", "ipv6"]
+      - id: ipv6-server-regression-focused
+        name: re-run the existing transport and endpoint regression tests
+        change_ids: ["CHG-server-ipv6-listen"]
+        run: ["cargo", "test", "-p", "bucky-vpn-server", "--locked", "pn_transport_"]
+
+  dv:
+    mode: enabled
+    summary: compile the full client and server target graphs with the family-aware listen configuration
+    test_targets:
+      - bucky-vpn
+      - bucky-vpn-server
+    preconditions:
+      tools: ["cargo"]
+      env: []
+      services: []
+      notes:
+        - compile closure covers `run_daemon` consuming parsed listen addresses, `P2pVpnClientFactory` consuming the ordered SN endpoint list, and server startup consuming the validated listen set for identity, listeners, and PN primary selection
+        - the upstream socket-option change is additive and does not alter this repository's dependency surface
+    steps:
+      - id: ipv6-client-dv
+        name: check all bucky-vpn targets
+        change_ids: ["CHG-client-ipv6-listen", "CHG-client-sn-ipv6-endpoint", "CHG-ipv6-capability-boundaries"]
+        run: ["cargo", "check", "-p", "bucky-vpn", "--all-targets", "--locked"]
+      - id: ipv6-server-dv
+        name: check all bucky-vpn-server targets
+        change_ids: ["CHG-server-ipv6-listen", "CHG-sn-comms-ipv6-surfaces"]
+        run: ["cargo", "check", "-p", "bucky-vpn-server", "--all-targets", "--locked"]
+
+  integration:
+    mode: disabled
+    summary: record the remaining real dual-stack deployment boundary
+    reason: proving a live IPv6 SN requires a published upstream p2p-frame revision, a client that can reach an IPv6-addressed SN, operator-side IPv6 routing and firewall state, and observable SN-side address classification; none of these are available as a deterministic fixture in this task environment, and the accepted NAT-probe boundary means the IPv6 path deliberately exercises no probe traffic
+    change_ids: ["CHG-client-ipv6-listen", "CHG-server-ipv6-listen", "CHG-client-sn-ipv6-endpoint", "CHG-sn-comms-ipv6-surfaces", "CHG-ipv6-capability-boundaries"]
+    test_targets:
+      - IPv6-addressed SN process
+      - IPv6-only and dual-stack client listener set
+    preconditions:
+      tools: ["cargo", "client process", "server process", "IPv6 route"]
+      env: []
+      services: ["bucky-vpn-server with ip: \"::\" or \"0.0.0.0, ::\""]
+      notes:
+        - manual follow-up should start a server with `ip: "0.0.0.0, ::"`, confirm both listeners bind, connect a client over IPv6, and confirm the SN classifies the client's observed address as IPv4 while the accepted NAT-probe boundary is logged
+        - the upstream p2p-frame commit must be published and the dependency revision updated before that manual check can be reproduced from a clean checkout
+    steps: []

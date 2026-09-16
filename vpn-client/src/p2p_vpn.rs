@@ -391,11 +391,75 @@ fn pn_endpoint_to_p2p_endpoint(endpoint: &VpnEndpoint) -> VpnResult<Endpoint> {
     )))
 }
 
-fn sn_endpoints(sn_addr: SocketAddr) -> Vec<Endpoint> {
-    vec![
-        Endpoint::from((Protocol::Quic, sn_addr)),
-        Endpoint::from((Protocol::Tcp, sn_addr)),
-    ]
+/// Build the ordered SN endpoint list for every resolved SN address.
+///
+/// Addresses keep the caller-provided order (IPv4 first when a name resolves
+/// to both families) and each address contributes a QUIC endpoint before its
+/// TCP endpoint, so the existing protocol preference is preserved per family.
+fn sn_endpoints(sn_addrs: &[SocketAddr]) -> Vec<Endpoint> {
+    let mut endpoints = Vec::with_capacity(sn_addrs.len() * 2);
+    for sn_addr in sn_addrs.iter().copied() {
+        endpoints.push(Endpoint::from((Protocol::Quic, sn_addr)));
+        endpoints.push(Endpoint::from((Protocol::Tcp, sn_addr)));
+    }
+    endpoints
+}
+
+/// Resolve the configured SN target into a deterministic address list.
+///
+/// A literal socket address is used as-is. A name is resolved once and sorted
+/// with IPv4 addresses first, which keeps the previous effective IPv4-first
+/// behavior while still supporting IPv6-only names.
+async fn resolve_sn_addrs(server: &str) -> VpnResult<Vec<SocketAddr>> {
+    if let Ok(addr) = server.parse::<SocketAddr>() {
+        return Ok(vec![addr]);
+    }
+
+    let resolved = tokio::net::lookup_host(server)
+        .await
+        .map_err(into_vpn_err!(
+            VpnErrorCode::Failed,
+            "resolve domain {} failed",
+            server
+        ))?;
+    let mut addrs: Vec<SocketAddr> = resolved.collect();
+    addrs = order_sn_addrs(addrs);
+    if addrs.is_empty() {
+        return Err(vpn_err!(
+            VpnErrorCode::Failed,
+            "no IP found for domain {}",
+            server
+        ));
+    }
+    Ok(addrs)
+}
+
+/// Deterministic SN address order: IPv4 addresses first, then IPv6 addresses,
+/// with duplicates removed while preserving the resolver's order per family.
+fn order_sn_addrs(mut addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    addrs.sort_by_key(|addr| u8::from(addr.is_ipv6()));
+    addrs.dedup();
+    addrs
+}
+
+/// The address-family scope of the resolved SN endpoint list.
+fn sn_address_family_scope(addrs: &[SocketAddr]) -> &'static str {
+    if addrs.iter().all(|addr| addr.is_ipv6()) {
+        "ipv6-only"
+    } else if addrs.iter().all(|addr| addr.is_ipv4()) {
+        "ipv4-only"
+    } else {
+        "dual"
+    }
+}
+
+/// Whether the active SN connection can only use IPv6.
+///
+/// NAT probe directives reject a non-IPv4 active SN endpoint (`ActiveEndpointIpv4`),
+/// so an IPv6-only SN connection keeps NAT traversal unavailable rather than
+/// probing unusable endpoints.
+fn sn_nat_probe_unavailable(addrs: &[SocketAddr]) -> bool {
+    !addrs.is_empty() && addrs.iter().all(|addr| addr.is_ipv6())
 }
 
 #[async_trait::async_trait]
@@ -637,28 +701,28 @@ impl
         let client_key = P2pVpnClientKey::from_manager_key(key)?;
         let sn_id = client_key.server_id.as_str();
         let server = client_key.server_addr();
-        //判断ip是不是域名，如果是域名，需要解析ip
-        let ip = if let Ok(addr) = server.parse::<SocketAddr>() {
-            addr
-        } else {
-            // 解析域名
-            tokio::net::lookup_host(server.as_str())
-                .await
-                .map_err(into_vpn_err!(
-                    VpnErrorCode::Failed,
-                    "resolve domain {} failed",
-                    server
-                ))?
-                .next()
-                .ok_or_else(|| {
-                    vpn_err!(VpnErrorCode::Failed, "no IP found for domain {}", server)
-                })?
-        };
-        let sn_port = ip.port();
+        // 字面量地址直接使用；域名解析后按 IPv4 优先的确定性顺序构造端点列表
+        let sn_addrs = resolve_sn_addrs(server.as_str()).await?;
+        let primary_addr = sn_addrs[0];
+        let sn_port = primary_addr.port();
+        log::info!(
+            "client sn addresses: {:?} address_family_scope={}",
+            sn_addrs,
+            sn_address_family_scope(sn_addrs.as_slice())
+        );
+        if sn_nat_probe_unavailable(sn_addrs.as_slice()) {
+            log::warn!(
+                "client sn endpoints are IPv6-only: SN NAT probe directives stay rejected \
+                 (ActiveEndpointIpv4), so NAT traversal is unavailable on this SN connection"
+            );
+        }
 
-        let server_config =
-            self.config_path
-                .join(format!("{}_{}_{}", sn_id, ip.ip().to_string(), sn_port));
+        let server_config = self.config_path.join(format!(
+            "{}_{}_{}",
+            sn_id,
+            primary_addr.ip().to_string(),
+            sn_port
+        ));
         let identity_file = server_config.join("identity");
         let local_identity = if server_config.exists() && identity_file.exists() {
             let data = tokio::fs::read(identity_file.as_path())
@@ -701,11 +765,9 @@ impl
         let local_id = local_identity.get_id();
         log::info!("create client id:{}", local_id.to_string());
 
-        let sn_addr = SocketAddr::new(ip.ip(), sn_port);
-
         let conn_timeout = Duration::from_secs(5);
         let proxy_route_resolver = Arc::new(P2pVpnPnProxyRouteResolver::new());
-        let sn_eps = sn_endpoints(sn_addr);
+        let sn_eps = sn_endpoints(sn_addrs.as_slice());
         log::info!("create client sn endpoints: {:?}", sn_eps);
         let sn_name = effective_server_name(
             client_key.server.as_str(),
@@ -909,13 +971,63 @@ mod tests {
     fn sn_endpoints_register_quic_before_tcp() {
         let sn_addr = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 3624);
 
-        let endpoints = sn_endpoints(sn_addr);
+        let endpoints = sn_endpoints(vec![sn_addr].as_slice());
 
         assert_eq!(endpoints.len(), 2);
         assert_eq!(endpoints[0].protocol(), Protocol::Quic);
         assert_eq!(endpoints[0].addr(), &sn_addr);
         assert_eq!(endpoints[1].protocol(), Protocol::Tcp);
         assert_eq!(endpoints[1].addr(), &sn_addr);
+    }
+
+    #[test]
+    fn sn_endpoints_cover_both_families_quic_then_tcp_per_address() {
+        let v4 = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 3624);
+        let v6 = SocketAddr::new(IpAddr::from([0u16, 0, 0, 0, 0, 0, 0, 1]), 3624);
+
+        let endpoints = sn_endpoints(vec![v4, v6].as_slice());
+
+        assert_eq!(endpoints.len(), 4);
+        assert_eq!(endpoints[0].addr(), &v4);
+        assert_eq!(endpoints[0].protocol(), Protocol::Quic);
+        assert_eq!(endpoints[1].addr(), &v4);
+        assert_eq!(endpoints[1].protocol(), Protocol::Tcp);
+        assert_eq!(endpoints[2].addr(), &v6);
+        assert_eq!(endpoints[2].protocol(), Protocol::Quic);
+        assert_eq!(endpoints[3].addr(), &v6);
+        assert_eq!(endpoints[3].protocol(), Protocol::Tcp);
+    }
+
+    #[test]
+    fn order_sn_addrs_places_ipv4_first_and_removes_duplicates() {
+        let v4 = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 3624);
+        let v6 = SocketAddr::new(IpAddr::from([0u16, 0, 0, 0, 0, 0, 0, 1]), 3624);
+        let v6_other = SocketAddr::new(IpAddr::from([0u16, 0, 0, 0, 0, 0, 0, 2]), 3624);
+
+        let ordered = order_sn_addrs(vec![v6, v4, v6_other, v4]);
+
+        assert_eq!(ordered, vec![v4, v6, v6_other]);
+    }
+
+    #[test]
+    fn sn_address_family_scope_reports_single_family_and_dual_lists() {
+        let v4 = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 3624);
+        let v6 = SocketAddr::new(IpAddr::from([0u16, 0, 0, 0, 0, 0, 0, 1]), 3624);
+
+        assert_eq!(sn_address_family_scope(&[v4]), "ipv4-only");
+        assert_eq!(sn_address_family_scope(&[v6]), "ipv6-only");
+        assert_eq!(sn_address_family_scope(&[v4, v6]), "dual");
+    }
+
+    #[test]
+    fn sn_nat_probe_is_unavailable_only_for_ipv6_only_endpoint_lists() {
+        let v4 = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 3624);
+        let v6 = SocketAddr::new(IpAddr::from([0u16, 0, 0, 0, 0, 0, 0, 1]), 3624);
+
+        assert!(!sn_nat_probe_unavailable(&[v4]));
+        assert!(!sn_nat_probe_unavailable(&[v4, v6]));
+        assert!(sn_nat_probe_unavailable(&[v6]));
+        assert!(!sn_nat_probe_unavailable(&[]));
     }
 
     #[test]

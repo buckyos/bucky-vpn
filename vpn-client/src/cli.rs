@@ -66,6 +66,54 @@ fn valid_port(port: i64) -> Option<u16> {
     u16::try_from(port).ok().filter(|port| *port > 0)
 }
 
+pub const DEFAULT_LISTEN_IP: &str = "0.0.0.0, ::";
+const MAX_LISTEN_IPS: usize = 4;
+
+/// Parse the client listen address configuration.
+///
+/// The value accepts one address or a comma/whitespace separated list so the
+/// operator can listen on IPv4 only, IPv6 only, or both families. A wildcard
+/// address is allowed at most once per family.
+pub fn parse_listen_ips(value: &str) -> Result<Vec<std::net::IpAddr>, String> {
+    let mut ips: Vec<std::net::IpAddr> = Vec::new();
+    for raw in value.split([',', ' ', '\t', '\r', '\n']) {
+        let entry = raw.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let ip = entry
+            .parse::<std::net::IpAddr>()
+            .map_err(|err| format!("p2p.listen_ip entry {entry:?} is not an IP address: {err}"))?;
+        if ips.contains(&ip) {
+            return Err(format!("p2p.listen_ip contains duplicate address {ip}"));
+        }
+        ips.push(ip);
+    }
+
+    if ips.is_empty() {
+        return Err("p2p.listen_ip must contain at least one IP address".to_owned());
+    }
+    if ips.len() > MAX_LISTEN_IPS {
+        return Err(format!(
+            "p2p.listen_ip accepts at most {MAX_LISTEN_IPS} addresses"
+        ));
+    }
+
+    let wildcard_v4 = ips
+        .iter()
+        .filter(|ip| ip.is_ipv4() && ip.is_unspecified())
+        .count();
+    let wildcard_v6 = ips
+        .iter()
+        .filter(|ip| ip.is_ipv6() && ip.is_unspecified())
+        .count();
+    if wildcard_v4 > 1 || wildcard_v6 > 1 {
+        return Err("p2p.listen_ip accepts at most one wildcard address per family".to_owned());
+    }
+
+    Ok(ips)
+}
+
 pub fn load_env_config() -> config::Config {
     config::ConfigBuilder::<DefaultState>::default()
         .add_source(config::Environment::with_prefix("VPN").separator("_"))
@@ -183,6 +231,45 @@ mod tests {
             .unwrap()
             .build()
             .unwrap()
+    }
+
+    #[test]
+    fn listen_ip_defaults_to_ipv4_and_ipv6_wildcards() {
+        let ips = parse_listen_ips(DEFAULT_LISTEN_IP).unwrap();
+
+        assert_eq!(
+            ips,
+            vec![
+                std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
+            ]
+        );
+    }
+
+    #[test]
+    fn listen_ip_accepts_ipv6_and_mixed_lists_in_order() {
+        let ips = parse_listen_ips("0.0.0.0, ::").unwrap();
+
+        assert_eq!(
+            ips,
+            vec![
+                std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
+            ]
+        );
+        assert_eq!(parse_listen_ips("::1").unwrap().len(), 1);
+        assert!(parse_listen_ips("[::]").is_err());
+    }
+
+    #[test]
+    fn listen_ip_rejects_invalid_and_ambiguous_inputs() {
+        assert!(parse_listen_ips("").is_err());
+        assert!(parse_listen_ips("not-an-ip").is_err());
+        assert!(parse_listen_ips("localhost").is_err());
+        assert!(parse_listen_ips("0.0.0.0,0.0.0.0").is_err());
+        assert!(parse_listen_ips("::,::").is_err());
+        assert!(parse_listen_ips("0.0.0.0,0.0.0.0,0.0.0.0").is_err());
+        assert!(parse_listen_ips("0.0.0.0,::,::1,::2,::3").is_err());
     }
 
     fn temp_setting_path() -> PathBuf {

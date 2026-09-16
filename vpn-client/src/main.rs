@@ -8,7 +8,10 @@ mod setting;
 mod windows_main;
 
 use crate::api::Api;
-use crate::cli::{Cli, LocalApiConfig, load_env_config, load_file_config, resolve_data_dir};
+use crate::cli::{
+    Cli, DEFAULT_LISTEN_IP, LocalApiConfig, load_env_config, load_file_config, parse_listen_ips,
+    resolve_data_dir,
+};
 use crate::p2p_vpn::{
     JoinRecord, P2pVpnClientKey, init_p2p_vpn_client_manager, vpn_client_manager,
 };
@@ -19,18 +22,20 @@ use p2p_frame::x509::{X509IdentityCertFactory, X509IdentityFactory};
 use sfo_http::http_server::HttpServerConfig;
 use sfo_http::tide_server::TideHttpServer;
 use std::fs::create_dir_all;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
 const SN_PORT: u16 = 3624;
 
-fn p2p_listen_endpoints(p2p_port: u16) -> Vec<Endpoint> {
-    let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, p2p_port));
-    vec![
-        Endpoint::from((Protocol::Quic, addr)),
-        Endpoint::from((Protocol::Tcp, addr)),
-    ]
+fn p2p_listen_endpoints(listen_ips: &[IpAddr], p2p_port: u16) -> Vec<Endpoint> {
+    let mut endpoints = Vec::with_capacity(listen_ips.len() * 2);
+    for ip in listen_ips.iter().copied() {
+        let addr = SocketAddr::new(ip, p2p_port);
+        endpoints.push(Endpoint::from((Protocol::Quic, addr)));
+        endpoints.push(Endpoint::from((Protocol::Tcp, addr)));
+    }
+    endpoints
 }
 
 async fn run_daemon() {
@@ -38,6 +43,9 @@ async fn run_daemon() {
     let vpn_config_path = resolve_data_dir(&config);
 
     let p2p_port = config.get_int("p2p.port").unwrap_or(3622) as u16;
+    let listen_ip_value = config
+        .get_string("p2p.listen_ip")
+        .unwrap_or_else(|_| String::from(DEFAULT_LISTEN_IP));
 
     if !vpn_config_path.exists() {
         let _ = create_dir_all(vpn_config_path.as_path());
@@ -64,7 +72,16 @@ async fn run_daemon() {
             .unwrap();
     }
 
-    let eps = p2p_listen_endpoints(p2p_port);
+    let listen_ips = parse_listen_ips(listen_ip_value.as_str()).unwrap_or_else(|err| {
+        log::error!("invalid p2p.listen_ip {:?}: {}", listen_ip_value, err);
+        panic!("invalid p2p.listen_ip {listen_ip_value:?}: {err}");
+    });
+    log::info!(
+        "client p2p listen addresses: {:?} port: {}",
+        listen_ips,
+        p2p_port
+    );
+    let eps = p2p_listen_endpoints(listen_ips.as_slice(), p2p_port);
     log::info!("client p2p listen endpoints: {:?}", eps);
     let server_runtime = ServerRuntime::start(ServerRuntimeConfig::default()).unwrap();
     let p2p_config = P2pConfig::new(
@@ -234,16 +251,36 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
     #[test]
-    fn p2p_listen_endpoints_register_quic_and_tcp() {
-        let endpoints = p2p_listen_endpoints(3622);
-        let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 3622));
+    fn p2p_listen_endpoints_register_quic_and_tcp_for_both_families() {
+        let listen_ips = parse_listen_ips(DEFAULT_LISTEN_IP).unwrap();
+        let endpoints = p2p_listen_endpoints(listen_ips.as_slice(), 3622);
+        let ipv4 = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 3622));
+        let ipv6 = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 3622, 0, 0));
 
-        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints.len(), 4);
         assert_eq!(endpoints[0].protocol(), Protocol::Quic);
-        assert_eq!(endpoints[0].addr(), &addr);
+        assert_eq!(endpoints[0].addr(), &ipv4);
         assert_eq!(endpoints[1].protocol(), Protocol::Tcp);
-        assert_eq!(endpoints[1].addr(), &addr);
+        assert_eq!(endpoints[1].addr(), &ipv4);
+        assert_eq!(endpoints[2].protocol(), Protocol::Quic);
+        assert_eq!(endpoints[2].addr(), &ipv6);
+        assert_eq!(endpoints[3].protocol(), Protocol::Tcp);
+        assert_eq!(endpoints[3].addr(), &ipv6);
+    }
+
+    #[test]
+    fn p2p_listen_endpoints_register_ipv6_quic_then_tcp_per_address() {
+        let listen_ips = parse_listen_ips("0.0.0.0,::").unwrap();
+        let endpoints = p2p_listen_endpoints(listen_ips.as_slice(), 3622);
+        let ipv6 = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 3622, 0, 0));
+
+        assert_eq!(endpoints.len(), 4);
+        assert_eq!(endpoints[2].protocol(), Protocol::Quic);
+        assert_eq!(endpoints[2].addr(), &ipv6);
+        assert_eq!(endpoints[3].protocol(), Protocol::Tcp);
+        assert_eq!(endpoints[3].addr(), &ipv6);
     }
 }

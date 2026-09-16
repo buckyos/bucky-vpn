@@ -1,0 +1,41 @@
+schema_version: 1
+workflow_tier: high-risk
+version: v0.1
+packet_module: globals
+task_name: 036-support-ipv6-client-sn
+stage: design
+mode: auto-pipeline
+auto_pipeline_start_stage: design
+proposal: proposal.md
+design:
+testing:
+testplan:
+acceptance_report: acceptance-report.md
+completion_report:
+change_record:
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+changed_paths_file: .harness/evidence/v0.1/stage-scope/036-support-ipv6-client-sn-design.txt
+baseline_manifest:
+changes:
+  - id: CHG-client-ipv6-listen
+    target_module: bucky-vpn
+    scope_paths: ["vpn-client/src/main.rs", "vpn-client/src/cli.rs"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/036-support-ipv6-client-sn-implementation-bucky-vpn.txt
+  - id: CHG-server-ipv6-listen
+    target_module: bucky-vpn-server
+    scope_paths: ["vpn-server/src/server_config.rs", "vpn-server/src/main.rs", "vpn-server/config/config.example.yaml", "vpn-server/tests/**"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/036-support-ipv6-client-sn-implementation-bucky-vpn-server.txt
+  - id: CHG-client-sn-ipv6-endpoint
+    target_module: bucky-vpn
+    scope_paths: ["vpn-client/src/p2p_vpn.rs"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/036-support-ipv6-client-sn-implementation-bucky-vpn.txt
+  - id: CHG-sn-comms-ipv6-surfaces
+    target_module: bucky-vpn-server
+    scope_paths: ["vpn-server/src/server_config.rs", "vpn-server/config/config.example.yaml", "vpn-server/tests/**"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/036-support-ipv6-client-sn-implementation-bucky-vpn-server.txt
+  - id: CHG-ipv6-capability-boundaries
+    target_module: bucky-vpn
+    scope_paths: ["vpn-client/src/main.rs", "vpn-client/src/p2p_vpn.rs"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/036-support-ipv6-client-sn-implementation-bucky-vpn.txt
