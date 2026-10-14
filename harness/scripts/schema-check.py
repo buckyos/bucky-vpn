@@ -3,7 +3,7 @@
 
 This template intentionally uses only the Python standard library. Adapt paths
 or stricter YAML parsing after the target repository chooses its dependencies.
-Proposal.md and design.md are the mandatory manual-flow implementation inputs.
+Proposal.md and design.md are the mandatory implementation inputs.
 testplan.yaml is validated when present; testing-coverage-check.py enforces it
 for completed testing work.
 """
@@ -18,12 +18,7 @@ import re
 import sys
 from pathlib import Path
 
-from task_manifest import (
-    PIPELINE_STAGES,
-    TaskManifestError,
-    stage_is_automatic,
-    task_policy as parse_task_policy,
-)
+from task_manifest import TaskManifestError, parse_task_manifest
 
 
 REQUIRED_DOCUMENT_FRONT_MATTER = ("status",)
@@ -71,25 +66,6 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def task_policy(packet: Path) -> dict[str, str | None]:
-    """Read the canonical stage policy through the shared manifest parser."""
-    manifest = packet / "task.yaml"
-    if not manifest.is_file():
-        return {"stage": None, "mode": None, "start": None}
-    try:
-        policy = parse_task_policy(manifest)
-    except TaskManifestError as error:
-        fail(str(error))
-    if policy["mode"] == "auto-pipeline":
-        if policy["start"] not in PIPELINE_STAGES:
-            fail(
-                f"{manifest} auto-pipeline mode requires auto_pipeline_start_stage"
-            )
-    elif policy["start"] is not None:
-        fail(f"{manifest} manual mode must not set auto_pipeline_start_stage")
-    return policy
-
-
 def front_matter(text: str, path: Path) -> dict[str, str]:
     if not text.startswith("---\n"):
         fail(f"missing front matter: {path}")
@@ -111,86 +87,6 @@ def validate_task_name(value: str, label: str) -> None:
             f"{label} must match <task-seq>-<task-slug> with a 3+ digit version-local "
             f"sequence prefix, for example 001-example-task: {value}"
         )
-
-
-def pipeline_trigger_value(text: str, label: str) -> str | None:
-    match = re.search(rf"(?mi)^\s*-\s*{re.escape(label)}:\s*(.+)$", text)
-    return match.group(1).strip() if match else None
-
-
-def validate_pipeline_binding(
-    root: Path,
-    version: str,
-    module: str,
-    task_name: str | None,
-    policy: dict[str, str | None],
-) -> bool:
-    if policy["mode"] != "auto-pipeline" or not task_name:
-        return False
-    plan = root / "docs" / "versions" / version / "modules" / module / task_name / "pipeline" / "plan.md"
-    if not plan.exists():
-        fail(f"auto-pipeline requires task-local plan: {plan}")
-    text = plan.read_text(encoding="utf-8")
-    launch = (pipeline_trigger_value(text, "User launch confirmed") or "").lower()
-    launch_statement = pipeline_trigger_value(text, "User launch statement") or ""
-    valid = (
-        launch in {"yes", "true", "confirmed"}
-        and len(launch_statement.strip()) >= 8
-        and pipeline_trigger_value(text, "Version") == version
-        and pipeline_trigger_value(text, "Packet module") == module
-        and pipeline_trigger_value(text, "Task name") == task_name
-        and (pipeline_trigger_value(text, "Proposal") or "").strip("`")
-        == f"docs/versions/{version}/modules/{module}/{task_name}/proposal.md"
-        and pipeline_trigger_value(text, "First auto stage") == policy["start"]
-    )
-    if not valid:
-        fail(f"auto-pipeline plan binding does not match {plan.parent.parent / 'task.yaml'}")
-    return True
-
-
-def pipeline_no_stage_docs(
-    root: Path, version: str, module: str, task_name: str | None
-) -> bool:
-    """Compatibility helper for a pipeline whose first automatic stage is design."""
-    if not task_name:
-        return False
-    plan = (
-        root
-        / "docs"
-        / "versions"
-        / version
-        / "modules"
-        / module
-        / task_name
-        / "pipeline"
-        / "plan.md"
-    )
-    if not plan.is_file():
-        return False
-    text = plan.read_text(encoding="utf-8")
-    return (
-        (pipeline_trigger_value(text, "User launch confirmed") or "").lower()
-        in {"yes", "true", "confirmed"}
-        and pipeline_trigger_value(text, "Version") == version
-        and pipeline_trigger_value(text, "Packet module") == module
-        and pipeline_trigger_value(text, "Task name") == task_name
-        and pipeline_trigger_value(text, "First auto stage") == "design"
-    )
-
-
-def validate_pipeline_state_link(
-    root: Path, packet: Path, version: str, module: str, task_name: str
-) -> None:
-    plan = packet / "pipeline" / "plan.md"
-    state_path = root / ".harness" / "pipelines" / version / module / task_name / "state.json"
-    if not state_path.is_file():
-        fail(f"auto-pipeline requires runtime execution state: {state_path}")
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        fail(f"invalid pipeline state {state_path}: {error}")
-    if not isinstance(state, dict) or state.get("schema_version") != 1:
-        fail(f"{state_path} schema_version must be 1")
 
 
 def validate_doc(
@@ -224,7 +120,7 @@ def validate_doc(
             + ", ".join(sorted(ALLOWED_DOCUMENT_STATUSES))
         )
     if require_approved and status != "approved":
-        fail(f"{path} must be approved before manual implementation; got status: {status}")
+        fail(f"{path} must be approved before implementation; got status: {status}")
 
 
 def extract_level_blocks(text: str) -> dict[str, str]:
@@ -232,6 +128,9 @@ def extract_level_blocks(text: str) -> dict[str, str]:
     if not match:
         fail("testplan.yaml missing levels")
     levels_text = text[match.end() :]
+    next_section = re.search(r"(?m)^[A-Za-z0-9_-]+:", levels_text)
+    if next_section:
+        levels_text = levels_text[:next_section.start()]
     starts = list(re.finditer(r"(?m)^  ([A-Za-z0-9_-]+):\s*$", levels_text))
     blocks: dict[str, str] = {}
     for index, start in enumerate(starts):
@@ -367,7 +266,7 @@ def main() -> int:
     parser.add_argument(
         "--require-approved",
         action="store_true",
-        help="require mandatory manual-flow proposal/design documents to be approved",
+        help="require mandatory proposal/design documents to be approved",
     )
     args = parser.parse_args()
 
@@ -379,22 +278,17 @@ def main() -> int:
 
     task_index = load_task_index_module()
     task_index.load_index(root.resolve(), args.version)
-    packet = root / "docs" / "versions" / args.version / "modules" / args.module
+    packet = root / ".harness" / "tasks" / args.version / "modules" / args.module
     if args.submodule:
         packet = packet / args.submodule
-    policy = task_policy(packet)
-    pipeline_active = validate_pipeline_binding(
-        root, args.version, args.module, args.submodule, policy
-    )
-    stage = policy["stage"]
-    automatic_design = stage_is_automatic(policy, "design")
-    automatic_testing = stage_is_automatic(policy, "testing")
-    # A canonical proposal packet may omit design.md. Preserve fail-closed
-    # behavior for malformed/legacy manifests whose stage cannot be resolved.
-    design_required = not automatic_design and stage != "proposal"
+    manifest = packet / "task.yaml"
+    try:
+        task = parse_task_manifest(manifest) if manifest.is_file() else {}
+    except TaskManifestError as error:
+        fail(str(error))
+    stage = task.get("stage")
+    design_required = stage != "proposal"
     required_docs = ["proposal.md"] + (["design.md"] if design_required else [])
-    if args.require_approved and automatic_design:
-        fail("--require-approved applies only to manual-flow proposal/design documents")
     for name in required_docs:
         validate_doc(
             root,
@@ -404,36 +298,10 @@ def main() -> int:
             args.submodule,
             require_approved=args.require_approved,
         )
-    if pipeline_active:
-        validate_pipeline_state_link(root, packet, args.version, args.module, args.submodule)
-        forbidden: list[str] = []
-        if automatic_design and stage in {"design", "implementation", "testing", "acceptance"}:
-            forbidden.append("design.md")
-        if automatic_testing and stage in {"testing", "acceptance"}:
-            forbidden.append("testing.md")
-        present = [name for name in forbidden if (packet / name).exists()]
-        if present:
-            fail(
-                "auto-pipeline document policy forbids generated stage docs in this packet: "
-                + ", ".join(str(packet / name) for name in present)
-            )
-        if (
-            automatic_design
-            and stage in {"design", "implementation", "testing", "acceptance"}
-            and (packet / "design").exists()
-        ):
-            fail("automatic design forbids task-local design/ directories")
-        if (
-            automatic_testing
-            and stage in {"testing", "acceptance"}
-            and (packet / "testing").exists()
-        ):
-            fail("automatic testing forbids task-local testing/ directories")
     optional_testing = packet / "testing.md"
     if (
         stage in {"testing", "acceptance"}
         and optional_testing.exists()
-        and not automatic_testing
     ):
         validate_doc(root, optional_testing, args.module, args.version, args.submodule)
     optional_testplan = packet / "testplan.yaml"

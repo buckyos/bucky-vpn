@@ -5,13 +5,11 @@
 - Make task lifecycle checks fail closed on missing fields, invalid approval state, or change-level traceability.
 
 ## Scope
-- Full lifecycle schema validation is a high-risk workflow mechanism. Trivial and standard flows still create common `task.yaml` plus `proposal.md`, but do not run the high-risk schema/risk/design checks.
-- Task packet proposal/design/testing/testplan files, lower-tier `completion-report.md`, and high-risk `acceptance-report.md` under `docs/versions/<version>/modules/<project>/<task-seq>-<task-slug>/`.
-- Cross-project task packets under `docs/versions/<version>/modules/globals/<task-seq>-<task-slug>/`.
-- Canonical high-risk stage checker `harness-check.py`, legal manual transition command `task-transition.py`, lifecycle receipt checker `lifecycle-check.py`, lower-tier delivery checker `lower-tier-check.py`, plus internal checkers: `completion-report-check.py`, `schema-check.py`, `stage-scope-check.py`, `doc-structure-check.py`, `testing-coverage-check.py`, `acceptance-report-check.py`, and `pipeline-plan-check.py`.
+- Full lifecycle schema validation is a high-risk workflow mechanism. Standard flows still create common `task.yaml` plus `proposal.md`, but do not run the high-risk schema/risk/design checks.
+- Task packet proposal/design/testing/testplan files, lower-tier `completion-report.md`, and high-risk `acceptance-report.md` under `.harness/tasks/<version>/modules/<project>/<task-seq>-<task-slug>/`.
+- Cross-project task packets under `.harness/tasks/<version>/modules/globals/<task-seq>-<task-slug>/`.
 
 ## Required Front Matter
-Proposal stage requires only `proposal.md`, regardless of whether auto-pipeline has just been launched; schema validation MUST NOT inspect whether `design.md` or task-local `design/` exists at that stage. From a manual design stage onward, both `proposal.md` and `design.md` are required. In a launched pipeline, stages before `auto_pipeline_start_stage` keep these manual requirements, while automatic design uses `pipeline/plan.md`; manual testing uses `testing.md` plus `testplan.yaml`, while automatic testing uses runtime-state evidence plus `testplan.yaml`. Each human-readable stage document that applies MUST contain YAML-style front matter:
 
 ```yaml
 task_manifest: task.yaml
@@ -19,13 +17,9 @@ status: draft | approved | rejected | superseded
 ```
 
 
-Stage documents MUST NOT repeat `module`, `version`, `task_name`, or `submodule`; those identity fields come only from `task.yaml`. A launched pipeline records `auto_pipeline_start_stage`: stages before it use manual document requirements, while automatic design uses plan mappings. Explicit user launch confirms the bound proposal and does not require separate proposal approval metadata.
-
-`schema-check.py --require-approved` MUST fail unless the mandatory manual proposal/design documents have `status: approved`. `harness-check.py --profile pre-edit` MUST use this flag whenever the active design source is manual `design.md`, including later automatic stages launched after manual design; it MUST NOT use the flag when automatic design uses `pipeline/plan.md`.
-
 ## Canonical Task Manifest
 Every proposal packet MUST contain `task.yaml` with schema version `1`, canonical
-`version`, `packet_module`, `task_name`, active `stage`, workflow `mode`, artifact
+`version`, `packet_module`, `task_name`, active `stage`, artifact
 references, and `workflow_tier`, which is `pending` before confirmation and the
 user-selected tier afterward. Confirmed lower-tier manifests bind `completion_report`
 and one or more change entries; standard also binds `change_record`.
@@ -40,7 +34,6 @@ require every target module to equal the packet module.
 
 Stage documents and `testplan.yaml` use `task_manifest: task.yaml` and MUST NOT
 repeat task identity fields. Acceptance reports use `Task manifest: task.yaml`. Scope Paths
-in `task.yaml` MUST exactly match the corresponding design or pipeline-plan
 binding before implementation and at downstream completion.
 
 ## Task Risk Profile Schema
@@ -48,6 +41,10 @@ binding before implementation and at downstream completion.
 - The profile contains exactly `contract`, `data`, `security`, `runtime`, `build`, `ui`, and `harness`. Proposal owns each category's `applies` and `evidence`; design owns `required_checks` for applicable categories; testing implements those checks.
 - `risk-profile-check.py --prepare --task <packet>/task.yaml` machine-writes the task `change_ids`, proposal path, and active design-source path. Normal validation fails when task/change or source-path binding drifts.
 - `harness-check.py` derives context trigger ids only from applicable categories in this profile. Per-stage matrices and per-change `triggers` fields are invalid duplicate sources.
+
+## Receipt Binding
+- Proposal receipts bind requirement identity and proposal content, but MUST NOT freeze `Scope Paths`. Design owns their refinement and freezes them in its completion receipt; design and later receipts bind those paths. Later path revisions return to design, preserving the unchanged proposal receipt. Paths remain traceability metadata, never file permissions.
+- Testing receipts require the latest task-scoped `all` run for the bound packet to pass with matching run-input fingerprints. A newer failed run, stale input, missing fingerprint, or superseding run invalidates reuse, including at final receipt verification. Run input mechanics are owned by [Unified Test Entry Rules](unified-test-entry-rules.md#execution-contract).
 
 ## Approval State
 - Machine validation checks only the document `status` value and, when `--require-approved` is used, requires `status: approved`.
@@ -123,21 +120,23 @@ Rules:
 - Unknown levels fail validation.
 
 ## Checker Contract
-- `harness-check.py --task <packet>/task.yaml --profile pre-edit|completion` is the canonical per-stage check command. `task-transition.py` wraps the completion profile when advancing or completing a manual high-risk stage.
-- `lower-tier-check.py --task <packet>/task.yaml --profile pre-edit` validates the confirmed tier and approved proposal and captures the required canonical task-start repository baseline before trivial/standard project edits. Its `completion` profile requires that baseline, writes the canonical changed-path manifest, then runs `completion-report-check.py`; `task-index.py remove` invokes that profile and fails closed on missing baseline/path evidence, a missing report, incomplete standard change record, uncovered task `change_id`, incomplete or failing proportional defect-discovery coverage, non-passing targeted verification, blocking finding, or non-accepted conclusion.
-- Manual high-risk stage changes use `task-transition.py --task <packet>/task.yaml advance`; direct edits to `task.yaml.stage` do not create a valid transition. The command runs completion before writing a content-bound stage receipt to task-packet `lifecycle.json` and advancing the stage.
-- `lifecycle-check.py --require-prior acceptance` prevents acceptance from waiving earlier manual stages. `lifecycle-check.py --require-complete` is mandatory before high-risk removal and requires proposal, design, implementation, testing, and acceptance receipts in manual mode; auto-pipeline mode requires receipts for every manual-prefix stage plus `pipeline-plan-check.py --require-complete`.
-- When explicit auto-pipeline launch occurs after one or more manual-prefix stages already wrote receipts, run `lifecycle-check.py --task <packet>/task.yaml --refresh-manual-bindings` once after the launch plan validates and before automatic execution. Current versioned receipts must match the exact manual-to-auto launch delta. For unversioned legacy receipts, the validated current plan plus revalidated receipt inputs establishes the migration boundary. The command writes the current binding schema; mode/start-stage, plan-path, Scope Path, change identity, and durable artifact changes remain receipt-invalidating afterward.
-- `schema-check.py` derives the active stage from packet `task.yaml`, validates only `proposal.md` during proposal stage, requires `design.md` from manual design stage onward, and validates document status plus optional testplan shape, with `--submodule <task-seq>-<task-slug>` for task directories.
-- A task-start working-tree baseline plus exact changed-path manifest is mandatory completion-scope evidence for confirmed trivial/standard tasks. High-risk stages use the same mechanism only when their active flow requires it. Capture copies only already-dirty tracked files and existing non-ignored untracked files; `harness/`, `.harness/`, `docs/`, and Git-ignored paths are excluded from capture and completion diffing.
-- `doc-structure-check.py` validates proposal core sections, design UML diagrams, source-language file-level interface blocks, acyclic relationships, useful design sections, testing case coverage, and mandatory tables needed by implementation/testing.
+- `harness-check.py --task <packet>/task.yaml --profile pre-edit|completion` is the canonical per-stage check command. `task-transition.py` wraps the completion profile when advancing or completing a high-risk stage.
+- `lower-tier-check.py --task <packet>/task.yaml --profile pre-edit` validates the confirmed tier and approved proposal and captures the required canonical task-start repository baseline before standard project edits. Its `completion` profile requires that baseline, writes the canonical changed-path manifest, then runs `completion-report-check.py`; `task-index.py remove` invokes that profile and fails closed on missing baseline/path evidence, a missing report, incomplete standard change record, uncovered task `change_id`, incomplete or failing proportional defect-discovery coverage, non-passing targeted verification, blocking finding, or non-accepted conclusion.
+- High-risk stage changes use `task-transition.py --task <packet>/task.yaml advance`; direct edits to `task.yaml.stage` do not create a valid transition. The command runs completion before writing a content-bound stage receipt to task-packet `lifecycle.json` and advancing the stage.
+- `schema-check.py` derives the active stage from packet `task.yaml`, validates only `proposal.md` during proposal stage, requires `design.md` from design stage onward, and validates document status plus optional testplan shape, with `--submodule <task-seq>-<task-slug>` for task directories.
+- A task-start working-tree baseline plus exact changed-path manifest is mandatory completion-scope evidence for confirmed standard tasks. High-risk stages use the same mechanism only when their active flow requires it. Capture copies only already-dirty tracked files and existing non-ignored untracked files; `harness/`, `.harness/`, `docs/`, and Git-ignored paths are excluded from capture and completion diffing.
+- `doc-structure-check.py` validates proposal core sections, structured design dependencies and cycles, source-language interface contracts, state ownership, change mappings, and the implementation sequence. Design/testing artifacts have no presentation or line-count gate. `testing-coverage-check.py` validates the single coverage record and runnable bindings; optional `testing.md` carries no duplicate coverage requirement.
 - `testing-coverage-check.py` validates direct `change_id` coverage, gap reasons, testplan mapping, case-type coverage, and unified test entrypoint reachability.
 - `test-run.py` writes machine-readable task run artifacts under `.harness/test-results/test-runs/`; artifacts record exact task scope, testplan, `change_id` values, commands, sources, evidence-input paths, and exit codes.
 - Changes under `harness/**` or `docs/**` do not invalidate task evidence and MUST NOT trigger package/module or whole-project tests.
 - `acceptance-report-check.py` validates task binding, exact `change_id` coverage, every required independent defect-discovery category, concrete evidence or task-specific not-applicable reasons, blocking findings, conclusion consistency, and conditional design/testing document consistency. It enforces review coverage but cannot prove that every real defect was found.
 - `task-transition.py complete` requires the canonical acceptance report to conclude `accepted`; `needs changes` uses `return --to <design|implementation|testing>`, and requirement rejection stops without a completion receipt.
-- `completion-report-check.py` validates the proportional trivial/standard review: canonical task/report binding, exact task `change_id` coverage, proposal consistency, all three proportional defect-discovery categories, passing targeted verification, standard change-record completion, findings, and accepted conclusion.
-- `pipeline-plan-check.py` validates task-local immutable `pipeline/plan.md`, matching runtime `.harness/pipelines/.../state.json`, launch evidence, stage graph dependencies, task statuses, automatic-testing runtime evidence when testing is automatic, and exit-condition evidence. Manual testing remains validated from `testing.md` plus `testplan.yaml` and is not duplicated into runtime testing evidence. `harness-check.py --profile pre-edit` runs full structural validation before every automatic stage starts; scope-binding table parsing alone is not sufficient.
+- `completion-report-check.py` validates the proportional standard review: canonical task/report binding, exact task `change_id` coverage, proposal consistency, all three proportional defect-discovery categories, passing targeted verification, standard change-record completion, findings, and accepted conclusion.
 - All checkers MUST exit non-zero on missing mandatory files, invalid document status, missing traceability, ambiguous active module, malformed optional metadata, or out-of-stage paths.
-- Stage scope checks fail proposal, design, testing, acceptance, or implementation task manifests that contain paths outside their stage and the explicit durable companion paths above. Runtime `.harness/` writes are omitted. In auto-pipeline mode, child manifests contain only reserved durable direct-write paths; parent-orchestrator merges of `pipeline/plan.md`, shared `testplan.yaml`, indexes, or shared runner registration are recorded and checked as parent-owned coordination updates, while runtime state is never attributed to a parallel child.
 - An out-of-stage result blocks workflow completion until the task is returned, split, or corrected.
+
+## Unified Stage Lifecycle
+- task.yaml contains tier, identity, stage, artifact paths, and change bindings. There is no task execution mode or alternate document source.
+- Proposal-stage schema checks require only proposal.md and do not read design.md. Later high-risk stages require proposal.md and design.md; testing coverage uses the single testplan.yaml coverage list, or the explicit missing-plan exception in testing.md.
+- Proposal completion requires user-approved status. Design/testing completion checks structure and coverage before task-transition.py marks their documents approved and records receipts.
+- task-transition.py advances every stage, returns in-scope defects from acceptance, and records accepted completion. lifecycle-check.py verifies prior or complete receipts; task-index.py remove requires acceptance-stage completion.

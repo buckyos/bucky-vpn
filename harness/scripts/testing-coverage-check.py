@@ -11,17 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from task_manifest import (
-    PIPELINE_STAGES,
-    TaskManifestError,
-    stage_is_automatic as policy_stage_is_automatic,
-    task_policy,
-)
-
 
 TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
-GAP_VALUES = {"yes", "manual", "disabled", "deferred", "gap"}
-NO_GAP_VALUES = {"", "no", "none", "n/a", "na"}
 CASE_TYPES = {"normal", "boundary", "negative", "error", "compatibility", "lifecycle", "cross-module"}
 TEST_LEVELS = {"unit", "dv", "integration"}
 EMPTY_VALUES = {"", "-", "n/a", "na", "none", "tbd", "todo", "pending"}
@@ -94,7 +85,7 @@ def require_columns(path: Path, heading: str, rows: list[dict[str, str]], column
 
 
 def packet_path(root: Path, version: str, module: str, submodule: str | None) -> Path:
-    packet = root / "docs" / "versions" / version / "modules" / module
+    packet = root / ".harness" / "tasks" / version / "modules" / module
     if submodule:
         packet = packet / submodule
     return packet
@@ -104,102 +95,19 @@ def has_value(value: str) -> bool:
     return value.strip().strip('"').strip("'").lower() not in EMPTY_VALUES
 
 
-def pipeline_trigger_value(text: str, label: str) -> str | None:
-    match = re.search(rf"(?mi)^\s*-\s*{re.escape(label)}:\s*(.+)$", text)
-    return match.group(1).strip() if match else None
-
-
-def task_pipeline_policy(packet: Path) -> tuple[bool, str | None]:
-    manifest = packet / "task.yaml"
-    if not manifest.is_file():
-        return False, None
-    try:
-        policy = task_policy(manifest)
-    except TaskManifestError as error:
-        fail(str(error))
-    start_value = policy["start"]
-    active = policy["mode"] == "auto-pipeline"
-    if active and start_value not in PIPELINE_STAGES:
-        fail(f"{manifest} auto-pipeline mode requires auto_pipeline_start_stage")
-    return active, start_value
-
-
-def stage_is_automatic(active: bool, start: str | None, stage: str) -> bool:
-    return policy_stage_is_automatic(
-        {
-            "stage": None,
-            "mode": "auto-pipeline" if active else "manual",
-            "start": start,
-        },
-        stage,
-    )
-
-
-def pipeline_plan_path(root: Path, version: str, module: str, task_name: str) -> Path:
-    plan = root / "docs" / "versions" / version / "modules" / module / task_name / "pipeline" / "plan.md"
-    if not plan.exists():
-        fail(f"auto-pipeline no-doc testing coverage requires task-local plan: {plan}")
-    return plan
-
-
-def change_ids_from_docs(packet: Path, plan: Path | None = None) -> set[str]:
+def change_ids_from_docs(packet: Path) -> set[str]:
     proposal = packet / "proposal.md"
     proposal_rows = table_rows_after_heading(read_text(proposal), "Proposal Items", proposal)
     require_columns(proposal, "Proposal Items", proposal_rows, ("proposal_id", "change_id", "requirement", "success_evidence"))
     proposal_ids = {row["change_id"] for row in proposal_rows if row.get("change_id")}
-    if plan is not None:
-        design_rows = table_rows_after_heading(read_text(plan), "Implementation Scope Bindings", plan)
-        require_columns(plan, "Implementation Scope Bindings", design_rows, ("change_id", "target_module", "proposal_id", "design_coverage", "scope_paths"))
-        design_ids = {row["change_id"] for row in design_rows if row.get("change_id")}
-    else:
-        design = packet / "design.md"
-        design_rows = table_rows_after_heading(read_text(design), "Directly Mapped Change Items", design)
-        require_columns(design, "Directly Mapped Change Items", design_rows, ("change_id", "target_module", "proposal_id", "design_coverage", "scope_paths"))
-        design_ids = {row["change_id"] for row in design_rows if row.get("change_id")}
+    design = packet / "design.md"
+    design_rows = table_rows_after_heading(read_text(design), "Directly Mapped Change Items", design)
+    require_columns(design, "Directly Mapped Change Items", design_rows, ("change_id", "target_module", "proposal_id", "design_coverage", "scope_paths"))
+    design_ids = {row["change_id"] for row in design_rows if row.get("change_id")}
     missing_design = proposal_ids - design_ids
     if missing_design:
         fail(f"change_ids missing from design mapping: {', '.join(sorted(missing_design))}")
     return proposal_ids & design_ids
-
-
-def pipeline_state_rows(state_path: Path, key: str) -> list[dict[str, str]]:
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        fail(f"invalid pipeline state {state_path}: {error}")
-    if not isinstance(state, dict) or state.get("schema_version") != 1:
-        fail(f"{state_path} schema_version must be 1")
-    raw_rows = state.get(key) if isinstance(state, dict) else None
-    if not isinstance(raw_rows, list) or any(not isinstance(row, dict) for row in raw_rows):
-        fail(f"{state_path} {key} must be an array of objects")
-    return [{str(column): str(value) for column, value in row.items()} for row in raw_rows]
-
-
-def direct_coverage_rows(packet: Path, state_path: Path | None = None) -> dict[str, dict[str, str]]:
-    testing = state_path or (packet / "testing.md")
-    if state_path is not None:
-        rows = pipeline_state_rows(state_path, "testing_evidence")
-        columns = ("change_id", "validation_id", "testplan_level", "testplan_step_id", "evidence", "gap", "gap_manual_reason")
-        missing = sorted(set(columns) - (set(rows[0]) if rows else set()))
-        if missing:
-            fail(f"{state_path} testing_evidence missing fields: {', '.join(missing)}")
-    else:
-        rows = table_rows_after_heading(read_text(testing), "Direct Change Coverage", testing)
-        require_columns(
-            testing,
-            "Direct Change Coverage",
-            rows,
-            ("change_id", "design_source", "validation_id", "testplan_level", "testplan_step_id", "gap", "gap_manual_reason"),
-        )
-    coverage: dict[str, dict[str, str]] = {}
-    for row in rows:
-        change_id = row.get("change_id", "")
-        if not change_id:
-            continue
-        if change_id in coverage:
-            fail(f"{testing} duplicates Direct Change Coverage row for {change_id}")
-        coverage[change_id] = row
-    return coverage
 
 
 def parse_inline_list(value: str) -> list[str]:
@@ -223,8 +131,8 @@ def impact_value(text: str, label: str, path: Path) -> str:
     return value
 
 
-def design_api_contract(packet: Path, plan: Path | None) -> tuple[dict[str, object], list[dict[str, str]]]:
-    source = plan or (packet / "design.md")
+def design_api_contract(packet: Path) -> tuple[dict[str, object], list[dict[str, str]]]:
+    source = packet / "design.md"
     text = read_text(source)
     public_api = impact_value(text, "Public API impact", source)
     if public_api not in PUBLIC_API_IMPACTS:
@@ -239,14 +147,10 @@ def design_api_contract(packet: Path, plan: Path | None) -> tuple[dict[str, obje
         if value not in {"yes", "no"}:
             fail(f"{source} {label} must be yes or no")
         flags[key] = value == "yes"
-    if plan is not None:
-        interfaces = table_rows_after_heading(text, "Exported Interfaces", source)
-        compatibilities = {row.get("compatibility", "").strip().lower() for row in interfaces}
-    else:
-        compatibilities = {
-            value.strip().lower()
-            for value in re.findall(r"(?im)^\s*-\s*Compatibility:\s*([^\n]+)$", text)
-        }
+    compatibilities = {
+        value.strip().lower()
+        for value in re.findall(r"(?im)^\s*-\s*Compatibility:\s*([^\n]+)$", text)
+    }
     breaking = public_api == "breaking" or "breaking" in compatibilities
     migration = public_api == "migration-required" or "migration-required" in compatibilities
     risky = breaking or migration or any(flags.values())
@@ -317,9 +221,9 @@ def path_covered_by_inputs(path: str, inputs: list[str]) -> bool:
     return any(target == Path(item) or Path(item) in target.parents for item in inputs)
 
 
-def design_scope_paths(packet: Path, plan: Path | None, requested: set[str]) -> set[str]:
-    source = plan or (packet / "design.md")
-    heading = "Implementation Scope Bindings" if plan is not None else "Directly Mapped Change Items"
+def design_scope_paths(packet: Path, requested: set[str]) -> set[str]:
+    source = packet / "design.md"
+    heading = "Directly Mapped Change Items"
     rows = table_rows_after_heading(read_text(source), heading, source)
     result: set[str] = set()
     for row in rows:
@@ -333,14 +237,139 @@ def design_scope_paths(packet: Path, plan: Path | None, requested: set[str]) -> 
     return result
 
 
-def check_api_contract_closure(
-    root: Path,
-    packet: Path,
-    plan: Path | None,
-    requested: set[str],
-    target_module: str,
+def concrete_file(root: Path, value: str, label: str) -> str:
+    value = value.strip().strip("`").replace("\\", "/")
+    path = Path(value)
+    if not value or path.is_absolute() or re.search(r"[*?\[]", value) or ".." in path.parts:
+        fail(f"{label} must be a concrete repository-relative file: {value}")
+    resolved = (root / path).resolve()
+    if not resolved.is_relative_to(root.resolve()) or not resolved.is_file():
+        fail(f"{label} is not a current repository file: {value}")
+    return resolved.relative_to(root.resolve()).as_posix()
+
+
+def concrete_contract_inputs(
+    root: Path, packet: Path, requested: set[str], consumers: list[dict[str, str]],
+) -> set[str]:
+    result: set[str] = set()
+    for index, row in enumerate(consumers, start=1):
+        status = row.get("migration_status", "").strip().lower()
+        if status not in MIGRATION_STATUSES:
+            fail(f"consumer migration row {index} has invalid or incomplete status: {status}")
+        if row.get("change_id", "").strip() not in requested:
+            fail(f"consumer migration row uses change_id outside requested coverage: {row.get('change_id', '')}")
+        if status != "verified-none":
+            result.add(concrete_file(root, row.get("consumer_path", ""), "consumer migration path"))
+    source = packet / "design.md"
+    text = read_text(source)
+    for heading, column in (("File-Level Implementation Sequence", "file_level_module"),
+                            ("API Closure Evidence Inputs", "path")):
+        if not re.search(rf"(?m)^##\s+{re.escape(heading)}\s*$", text):
+            continue
+        rows = table_rows_after_heading(text, heading, source)
+        require_columns(source, heading, rows, ("change_id", column))
+        for row in rows:
+            changes = {item.strip().strip("`") for item in row["change_id"].split(",")}
+            if not changes & requested:
+                continue
+            if heading == "File-Level Implementation Sequence" and row.get("action", "").strip().lower() in {"retired", "delete", "deleted", "remove", "removed"}:
+                continue
+            result.add(concrete_file(root, row[column], heading))
+    return result
+
+
+def contract_language(root: Path, impact: dict[str, object], concrete_inputs: set[str]) -> str:
+    languages: set[str] = set()
+    passive = {".md", ".json", ".yaml", ".yml", ".bat", ".sh"}
+    for value in sorted(concrete_inputs):
+        path = Path(value)
+        if path.suffix == ".py":
+            languages.add("python")
+        elif path.suffix == ".rs" or path.name in {"Cargo.toml", "Cargo.lock"}:
+            languages.add("rust")
+        elif path.suffix not in passive:
+            fail(f"unsupported API/build closure source: {value}; explicit bounded closure required")
+    if impact.get("crate_root_export_change"):
+        languages.add("rust")
+    if len(languages) != 1:
+        fail(f"API/build closure has mixed or unknown language impact: {', '.join(sorted(languages)) or 'unknown'}")
+    return next(iter(languages))
+
+
+def check_language_command(
+    root: Path, kind: str, command: list[str], language: str,
+    concrete_inputs: set[str], evidence_inputs: list[str],
 ) -> None:
-    impact, consumers = design_api_contract(packet, plan)
+    if kind not in {"repository-compile-closure", "documentation-examples"}:
+        return
+    if language == "rust":
+        if kind == "repository-compile-closure":
+            if command[:2] != ["cargo", "test"] or "--no-run" not in command or "--all-targets" not in command:
+                fail("Rust repository compile closure must use cargo test --no-run --all-targets")
+        elif command[:2] != ["cargo", "test"] or "--doc" not in command or "--no-run" in command:
+            fail("Rust documentation example closure must use cargo test --doc")
+        return
+    executable = Path(command[0]).name.lower()
+    if not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?", executable):
+        fail("Python closure must invoke a Python interpreter")
+    if kind == "repository-compile-closure":
+        if command[1:3] != ["-m", "compileall"]:
+            fail("Python repository compile closure must use python -m compileall")
+        # Only bounded compileall options are accepted; exclusions/limits can omit affected files.
+        targets = [item for item in command[3:] if item not in {"-q", "-qq", "-f"}]
+        if not targets or any(item.startswith("-") for item in targets):
+            fail("Python compile closure requires concrete targets without exclusions or depth limits")
+        sources = {value for value in concrete_inputs if Path(value).suffix == ".py"}
+        covered: set[str] = set()
+        for value in targets:
+            path = Path(value)
+            resolved = (root / path).resolve()
+            if path.is_absolute() or ".." in path.parts or not resolved.is_relative_to(root.resolve()) or not resolved.exists():
+                fail(f"Python compile target must be a current repository path: {value}")
+            matches = {source for source in sources if (root / source).resolve() == resolved or
+                       (resolved.is_dir() and (root / source).resolve().is_relative_to(resolved))}
+            if not matches:
+                fail(f"Python compile target does not cover affected sources: {value}")
+            covered.update(matches)
+        if covered != sources:
+            fail(f"Python compile closure omits affected sources: {', '.join(sorted(sources - covered))}")
+        return
+    if len(command) < 3 or "--documentation-examples" not in command[2:]:
+        fail("Python documentation closure requires a local wrapper with --documentation-examples")
+    wrapper = concrete_file(root, command[1], "documentation example wrapper")
+    if Path(wrapper).suffix != ".py" or not path_covered_by_inputs(wrapper, evidence_inputs):
+        fail(f"Python documentation wrapper must be a fingerprinted Python file: {wrapper}")
+    try:
+        tree = ast.parse(read_text(root / wrapper))
+    except SyntaxError:
+        fail(f"Python documentation wrapper cannot be parsed: {wrapper}")
+    modes = {node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+    if "--documentation-examples" not in modes:
+        fail(f"Python documentation wrapper does not implement --documentation-examples: {wrapper}")
+    modules = {alias.asname or alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
+               for alias in node.names if alias.name == "subprocess"}
+    functions = {alias.asname or alias.name: alias.name for node in ast.walk(tree)
+                 if isinstance(node, ast.ImportFrom) and node.module == "subprocess" for alias in node.names}
+    verifying_calls = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = ""
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) and node.func.value.id in modules:
+            name = node.func.attr
+        elif isinstance(node.func, ast.Name):
+            name = functions.get(node.func.id, "")
+        if name in {"check_call", "check_output"} or (name == "run" and any(
+            keyword.arg == "check" and isinstance(keyword.value, ast.Constant) and keyword.value.value is True
+            for keyword in node.keywords
+        )):
+            verifying_calls.append(node)
+    if not verifying_calls:
+        fail(f"Python documentation wrapper must execute CLI examples and propagate failures: {wrapper}")
+
+
+def check_api_contract_closure(root: Path, packet: Path, requested: set[str]) -> None:
+    impact, consumers = design_api_contract(packet)
     required = set(impact["required"])
     testplan = packet / "testplan.yaml"
     if not testplan.is_file():
@@ -354,16 +383,28 @@ def check_api_contract_closure(
     recorded = testplan_api_impact(text, testplan)
     for key in ("public_api", "crate_root_export_change", "build_surface_change", "documentation_examples_affected"):
         if recorded.get(key) != impact.get(key):
-            fail(f"{testplan} api_impact.{key} does not match design/pipeline evidence")
+            fail(f"{testplan} api_impact.{key} does not match design evidence")
     if not required:
         return
     inputs_match = re.search(r"(?m)^evidence_inputs:\s*(\[[^\n]*\])\s*$", text)
     inputs = parse_inline_list(inputs_match.group(1)) if inputs_match else []
     if not inputs:
         fail(f"{testplan} risk-triggered contract checks require evidence_inputs")
-    for scope_path in sorted(design_scope_paths(packet, plan, requested)):
-        if not path_covered_by_inputs(scope_path, inputs):
-            fail(f"design Scope Paths entry is not bound by testplan evidence_inputs: {scope_path}")
+    for value in inputs:
+        path = Path(value)
+        resolved = (root / path).resolve()
+        if path.is_absolute() or ".." in path.parts or re.search(r"[*?\[]", value) or not resolved.is_relative_to(root.resolve()) or not resolved.exists():
+            fail(f"contract evidence input must be a current repository file or source directory: {value}")
+        relative = resolved.relative_to(root.resolve()).as_posix()
+        if (resolved.is_dir() and (relative == "." or relative == ".harness" or relative.startswith(".harness/"))) or (
+            relative.startswith(".harness/") and path.name in {"task.yaml", "lifecycle.json", "tasks.json"}
+        ) or relative.startswith(".harness/test-results/"):
+            fail(f"contract evidence input cannot bind mutable task/runtime trees: {value}")
+    concrete_inputs = concrete_contract_inputs(root, packet, requested, consumers)
+    language = contract_language(root, impact, concrete_inputs)
+    for value in sorted(concrete_inputs):
+        if not path_covered_by_inputs(value, inputs):
+            fail(f"current API/build closure input is not bound by testplan evidence_inputs: {value}")
     for index, row in enumerate(consumers, start=1):
         status = row.get("migration_status", "").strip().lower()
         if status not in MIGRATION_STATUSES:
@@ -395,20 +436,7 @@ def check_api_contract_closure(
             for item in command
         ):
             fail("removed-symbol-scan must invoke harness/scripts/consumer-closure-check.py")
-        if (
-            kind == "repository-compile-closure"
-            and target_module != "repo-governance"
-            and (root / "Cargo.toml").exists()
-        ):
-            if command[:2] != ["cargo", "test"] or "--no-run" not in command or "--all-targets" not in command:
-                fail("Rust repository compile closure must use cargo test --no-run --all-targets")
-        if (
-            kind == "documentation-examples"
-            and target_module != "repo-governance"
-            and (root / "Cargo.toml").exists()
-        ):
-            if command[:2] != ["cargo", "test"] or "--doc" not in command:
-                fail("Rust documentation example closure must use cargo test --doc or a repo-local wrapper")
+        check_language_command(root, kind, command, language, concrete_inputs, inputs)
 
 
 def extract_level_blocks(text: str) -> dict[str, str]:
@@ -416,6 +444,9 @@ def extract_level_blocks(text: str) -> dict[str, str]:
     if not match:
         return {}
     levels_text = text[match.end() :]
+    next_section = re.search(r"(?m)^[A-Za-z0-9_-]+:", levels_text)
+    if next_section:
+        levels_text = levels_text[:next_section.start()]
     starts = list(re.finditer(r"(?m)^  ([A-Za-z0-9_-]+):\s*$", levels_text))
     blocks: dict[str, str] = {}
     for index, start in enumerate(starts):
@@ -446,99 +477,163 @@ def yaml_list_contains(block: str, key: str, value: str) -> bool:
     return False
 
 
-def check_testplan_mapping(packet: Path, change_id: str, row: dict[str, str]) -> None:
-    testplan = packet / "testplan.yaml"
-    if not testplan.exists():
-        fail(f"missing required post-implementation test metadata: {testplan}")
-    text = read_text(testplan)
-    levels = extract_level_blocks(text)
-    level = row.get("testplan_level", "").strip()
-    step_id = row.get("testplan_step_id", "").strip()
-    gap = row.get("gap", "").strip().lower()
-    reason = row.get("gap_manual_reason", "").strip()
-    if level not in levels:
-        fail(f"{change_id} references missing testplan level: {level}")
-    level_block = levels[level]
-    mode_match = re.search(r"(?m)^    mode:\s*([A-Za-z0-9_-]+)\s*$", level_block)
-    mode = mode_match.group(1).lower() if mode_match else ""
-    if mode in {"manual", "disabled"} or gap in GAP_VALUES:
-        if not reason:
-            fail(f"{change_id} has manual/disabled/gap coverage without a reason")
-        if not yaml_list_contains(level_block, "change_ids", change_id):
-            fail(f"{change_id} missing from testplan level {level} change_ids")
-        return
-    if gap not in NO_GAP_VALUES:
-        fail(f"{change_id} uses unknown Gap? value: {gap}")
-    if not step_id:
-        fail(f"{change_id} automated coverage must declare testplan_step_id")
-    step_block = extract_steps(level_block).get(step_id)
-    if not step_block:
-        fail(f"{change_id} references missing testplan step: {level}/{step_id}")
-    if not yaml_list_contains(step_block, "change_ids", change_id):
-        fail(f"{change_id} missing from testplan step {level}/{step_id} change_ids")
-    if not re.search(r"(?m)^        run:\s*\[.+\]\s*$", step_block):
-        fail(f"{change_id} testplan step {level}/{step_id} missing run command")
+DESIGN_ELEMENT_TYPES = {"parameter-domain", "state-transition", "failure-path", "error-handling", "invariant", "concurrency"}
+COVERAGE_STATUSES = {"covered", "gap", "manual", "disabled", "not-applicable"}
+LIST_FIELDS = {"change_ids", "case_types", "element_types"}
+COVERAGE_FIELDS = LIST_FIELDS | {"id", "design_source", "target", "level", "status", "test", "step_id", "assertion", "reason"}
 
 
-def check_case_type_coverage(packet: Path, requested: set[str], state_path: Path | None = None) -> None:
-    testing = state_path or (packet / "testing.md")
-    if state_path is not None:
-        rows = pipeline_state_rows(state_path, "testing_case_type_coverage")
-        columns = ("change_id", "case_type", "required", "validation_id", "level", "status", "gap_manual_reason")
-        missing = sorted(set(columns) - (set(rows[0]) if rows else set()))
-        if missing:
-            fail(f"{state_path} testing_case_type_coverage missing fields: {', '.join(missing)}")
-    else:
-        rows = table_rows_after_heading(read_text(testing), "Case-Type Coverage", testing)
-        require_columns(
-            testing,
-            "Case-Type Coverage",
-            rows,
-            ("change_id", "case_type", "required", "validation_id", "level", "status", "gap_manual_reason"),
-        )
-    coverage: dict[str, set[str]] = {change_id: set() for change_id in requested}
-    for index, row in enumerate(rows, start=1):
-        change_id = row.get("change_id", "").strip()
-        if change_id not in requested:
+def coverage_rows(packet: Path, *, allow_missing_testplan: bool = False) -> tuple[Path, list[dict[str, object]]]:
+    """Read one authoritative coverage list; Markdown is only an explicit plan exception."""
+    plan = packet / "testplan.yaml"
+    if not plan.is_file():
+        if not allow_missing_testplan:
+            fail(f"missing required post-implementation test metadata: {plan}")
+        source = packet / "testing.md"
+        rows = table_rows_after_heading(read_text(source), "Coverage", source)
+        converted: list[dict[str, object]] = []
+        for row in rows:
+            converted.append({key: coverage_list(value, source) if key in LIST_FIELDS else value for key, value in row.items()})
+        return source, converted
+    text = read_text(plan)
+    blocks = list(re.finditer(r"(?ms)^coverage:\s*\n(.*?)(?=^[A-Za-z_][A-Za-z0-9_-]*:|\Z)", text))
+    if len(blocks) != 1:
+        fail(f"{plan} requires exactly one coverage list")
+    rows: list[dict[str, object]] = []
+    current: dict[str, object] | None = None
+    for line in blocks[0].group(1).splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
-        case_type = row.get("case_type", "").strip().lower()
-        required = row.get("required", "").strip().lower()
-        status = row.get("status", "").strip().lower()
-        reason = row.get("gap_manual_reason", "").strip()
-        if case_type not in CASE_TYPES:
-            fail(f"{testing} Case-Type Coverage row {index} has unknown case_type: {case_type}")
-        if required not in {"yes", "no"}:
-            fail(f"{testing} Case-Type Coverage row {index} Required must be yes or no")
-        if status not in {"covered", "gap", "manual", "disabled", "not-applicable"}:
-            fail(f"{testing} Case-Type Coverage row {index} has invalid status: {status}")
-        if required == "yes" and status == "not-applicable":
-            fail(f"{testing} Case-Type Coverage row {index} cannot mark required coverage not-applicable")
-        if status in {"gap", "manual", "disabled", "not-applicable"} and not reason:
-            fail(f"{testing} Case-Type Coverage row {index} requires Gap / Manual Reason")
-        level = row.get("level", "").strip().lower()
-        if status == "covered" and level not in TEST_LEVELS:
-            fail(
-                f"{testing} Case-Type Coverage row {index} covered cases must declare the implementing "
-                f"level (unit/dv/integration): {level or '<empty>'}"
-            )
-        coverage[change_id].add(case_type)
-    for change_id, seen in coverage.items():
-        missing = CASE_TYPES - seen
-        if missing:
-            fail(f"{testing} change_id {change_id} missing Case-Type Coverage rows: {', '.join(sorted(missing))}")
+        item = re.fullmatch(r"  - id:\s*(.+)", line)
+        if item:
+            current = {"id": coverage_scalar(item.group(1), plan)}
+            rows.append(current)
+            continue
+        field = re.fullmatch(r"    ([a-z_]+):\s*(.*?)\s*", line)
+        if current is None or not field:
+            fail(f"{plan} malformed coverage entry: {line.strip()}")
+        key, value = field.groups()
+        if key not in COVERAGE_FIELDS or key in current:
+            fail(f"{plan} unknown or duplicate coverage field: {key}")
+        if key in LIST_FIELDS:
+            current[key] = coverage_list(value, plan)
+        else:
+            current[key] = coverage_scalar(value, plan)
+    if not rows:
+        fail(f"{plan} coverage must contain cases or explicit gaps")
+    return plan, rows
 
 
-def check_row(change_id: str, row: dict[str, str]) -> None:
-    level_column = "testplan_level"
-    for column in ("validation_id", level_column):
-        if not row.get(column, "").strip():
-            fail(f"{change_id} coverage row missing {column}")
-    gap = row.get("gap", "").strip().lower()
-    reason = row.get("gap_manual_reason", "").strip()
-    if gap in GAP_VALUES and not reason:
-        fail(f"{change_id} declares {gap} coverage without Gap / Manual Reason")
-    if gap not in GAP_VALUES and gap not in NO_GAP_VALUES:
-        fail(f"{change_id} uses unknown Gap? value: {gap}")
+def coverage_list(value: str, path: Path) -> list[str]:
+    try:
+        parsed = ast.literal_eval(value)
+    except (SyntaxError, ValueError):
+        fail(f"{path} coverage lists require inline quoted strings")
+    if not isinstance(parsed, list) or any(not isinstance(item, str) or not item.strip() for item in parsed):
+        fail(f"{path} coverage lists require non-empty strings")
+    return parsed
+
+
+def coverage_scalar(value: str, path: Path) -> str:
+    if value.startswith(('"', "'")):
+        try:
+            parsed = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            fail(f"{path} invalid coverage scalar: {value}")
+        if not isinstance(parsed, str):
+            fail(f"{path} coverage scalar must be a string")
+        return parsed
+    return value
+
+
+def check_coverage(
+    packet: Path, requested: set[str], *, allow_missing_testplan: bool = False,
+    known_changes: set[str] | None = None,
+) -> None:
+    source, rows = coverage_rows(packet, allow_missing_testplan=allow_missing_testplan)
+    plan = packet / "testplan.yaml"
+    levels = extract_level_blocks(read_text(plan)) if plan.is_file() else {}
+    seen_ids: set[str] = set()
+    covered_changes: set[str] = set()
+    case_types: dict[str, set[str]] = {change_id: set() for change_id in requested}
+    elements: set[str] = set()
+    seen_levels: set[str] = set()
+    dv_case_types: set[str] = set()
+    dv_applicable = False
+    known_changes = requested if known_changes is None else known_changes
+    for row in rows:
+        label = str(row.get("id", ""))
+        if not has_value(label) or label in seen_ids:
+            fail(f"{source} missing or duplicate coverage id: {label}")
+        seen_ids.add(label)
+        for field in ("design_source", "target", "level", "status"):
+            if not has_value(str(row.get(field, ""))):
+                fail(f"{source} coverage {label} missing {field}")
+        changes = row.get("change_ids", [])
+        if not isinstance(changes, list) or not changes or not set(changes) <= known_changes:
+            fail(f"{source} coverage {label} must bind known change_ids")
+        status, level = str(row["status"]), str(row["level"])
+        if status not in COVERAGE_STATUSES or level not in TEST_LEVELS:
+            fail(f"{source} coverage {label} invalid status or level")
+        seen_levels.add(level)
+        for field, allowed in (("case_types", CASE_TYPES), ("element_types", DESIGN_ELEMENT_TYPES)):
+            values = row.get(field, [])
+            if not isinstance(values, list) or not set(values) <= allowed:
+                fail(f"{source} coverage {label} invalid {field}")
+        if not row.get("case_types") and not row.get("element_types"):
+            fail(f"{source} coverage {label} requires case_types or element_types")
+        elements.update(row.get("element_types", []))
+        for change_id in changes:
+            if change_id in requested:
+                case_types[change_id].update(row.get("case_types", []))
+        if status != "not-applicable":
+            covered_changes.update(set(changes) & requested)
+        if status == "covered":
+            for field in ("test", "assertion"):
+                if not has_value(str(row.get(field, ""))):
+                    fail(f"{source} covered case {label} missing {field}")
+            if not plan.is_file():
+                fail(f"{source} automated coverage {label} requires testplan.yaml; use manual/disabled/gap under an exception")
+            if level not in levels:
+                fail(f"{source} coverage {label} references missing testplan level {level}")
+            block = levels[level]
+            if not re.search(r"(?m)^    mode:\s*enabled\s*$", block):
+                fail(f"{source} covered case {label} requires enabled level {level}")
+            step_id = str(row.get("step_id", ""))
+            step = extract_steps(block).get(step_id)
+            if not step:
+                fail(f"{source} coverage {label} references missing step {level}/{step_id}")
+            if not re.search(r"(?m)^        run:\s*\[.+\]\s*$", step):
+                fail(f"{source} coverage {label} step must have a run command")
+            if any(not yaml_list_contains(step, "change_ids", change_id) for change_id in changes):
+                fail(f"{source} coverage {label} step does not bind its change_ids")
+        else:
+            reason = str(row.get("reason", ""))
+            # Level mode/reason is authoritative for a manual or disabled layer.
+            if not has_value(reason) and status in {"manual", "disabled"} and level in levels:
+                block = levels[level]
+                mode = re.search(r"(?m)^    mode:\s*(\w+)\s*$", block)
+                match = re.search(r"(?m)^    reason:\s*(.+)$", block)
+                if mode and mode.group(1) == status and match:
+                    reason = match.group(1)
+            if not has_value(reason):
+                fail(f"{source} coverage {label} {status} requires a concrete reason")
+        if level == "dv":
+            # A stateless module may explicitly exclude lifecycle coverage.
+            dv_case_types.update(row.get("case_types", []))
+            dv_applicable = dv_applicable or status != "not-applicable"
+    missing_changes = requested - covered_changes
+    if missing_changes:
+        fail(f"{source} changes need direct cases or explicit gaps: {sorted(missing_changes)}")
+    for change_id, seen in case_types.items():
+        if CASE_TYPES - seen:
+            fail(f"{source} {change_id} missing case types: {sorted(CASE_TYPES - seen)}")
+    if DESIGN_ELEMENT_TYPES - elements:
+        fail(f"{source} missing design element types: {sorted(DESIGN_ELEMENT_TYPES - elements)}")
+    if TEST_LEVELS - seen_levels:
+        fail(f"{source} missing test levels or explicit gaps: {sorted(TEST_LEVELS - seen_levels)}")
+    if dv_applicable and not {"normal", "error", "lifecycle"} <= dv_case_types:
+        fail(f"{source} DV coverage requires main, failure, and lifecycle accounting (normal/error/lifecycle tags) or explicit gaps")
 
 
 def run_test_runner_dry_run(root: Path, module_key: str) -> None:
@@ -584,48 +679,18 @@ def main() -> int:
 
     root = Path(args.root)
     packet = packet_path(root, args.version, args.module, args.submodule)
-    pipeline_active, pipeline_start = task_pipeline_policy(packet)
-    automatic_design = stage_is_automatic(pipeline_active, pipeline_start, "design")
-    automatic_testing = stage_is_automatic(pipeline_active, pipeline_start, "testing")
-    plan = (
-        pipeline_plan_path(root, args.version, args.module, args.submodule)
-        if automatic_design
-        else None
-    )
-    state_path = (
-        root / ".harness" / "pipelines" / args.version / args.module / args.submodule / "state.json"
-        if automatic_testing and args.submodule is not None
-        else None
-    )
-    if automatic_testing:
-        forbidden = ["testing.md"]
-        present = [name for name in forbidden if (packet / name).exists()]
-        if present or (packet / "testing").exists():
-            fail("auto-pipeline document policy forbids generated testing Markdown docs in this packet")
-        if not (packet / "testplan.yaml").exists():
-            fail(f"missing required auto-pipeline test metadata: {packet / 'testplan.yaml'}")
-    elif args.allow_missing_testplan and not (packet / "testplan.yaml").exists():
+    if args.allow_missing_testplan and not (packet / "testplan.yaml").exists():
         print("testing-coverage-check: warning: testplan.yaml missing by explicit local exception", file=sys.stderr)
-    doc_change_ids = change_ids_from_docs(packet, plan)
+    doc_change_ids = change_ids_from_docs(packet)
     requested = set(args.change_ids or doc_change_ids)
     unknown = requested - doc_change_ids
     if unknown:
         fail(f"requested change_ids are not directly mapped by proposal/design: {', '.join(sorted(unknown))}")
 
-    coverage = direct_coverage_rows(packet, state_path)
-    missing = requested - set(coverage)
-    if missing:
-        fail(f"change_ids missing from testing coverage evidence: {', '.join(sorted(missing))}")
+    check_coverage(packet, requested, allow_missing_testplan=args.allow_missing_testplan, known_changes=doc_change_ids)
+    check_api_contract_closure(root, packet, requested)
 
-    for change_id in sorted(requested):
-        row = coverage[change_id]
-        check_row(change_id, row)
-        if automatic_testing or (packet / "testplan.yaml").exists() or not args.allow_missing_testplan:
-            check_testplan_mapping(packet, change_id, row)
-    check_case_type_coverage(packet, requested, state_path)
-    check_api_contract_closure(root, packet, plan, requested, args.module)
-
-    if not args.skip_test_run_check:
+    if not args.skip_test_run_check and (packet / "testplan.yaml").is_file():
         module_key = (
             f"{args.module}/{args.submodule}"
             if args.submodule

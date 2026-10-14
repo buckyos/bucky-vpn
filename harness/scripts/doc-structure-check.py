@@ -8,10 +8,10 @@ import re
 import sys
 from pathlib import Path
 
-from task_manifest import TaskManifestError, stage_is_automatic, task_policy
+from task_manifest import TaskManifestError, parse_task_manifest
 
 
-MAX_HUMAN_DOC_LINES = 1000
+MAX_PROPOSAL_LINES = 1000
 TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
 EMPTY_VALUES = {"", "-", "n/a", "na", "none", "tbd", "todo"}
 
@@ -25,35 +25,14 @@ REQUIRED_SECTIONS = {
         "Risks",
     ),
     "design.md": (
-        "Design Scope",
-        "Useful Context",
-        "Overall Approach",
-        "Layered Design Document Index",
-        "Module Relationship UML",
+        "Module Dependencies",
         "File-Level Interfaces",
         "Key Flows",
         "State and Ownership",
         "Directly Mapped Change Items",
-        "Implementation Order",
         "File-Level Implementation Sequence",
-        "Design Notes",
-        "Risks and Rollback",
     ),
-    "testing.md": (
-        "Test Document Index",
-        "Unified Test Entry",
-        "Submodule Tests",
-        "Module-Level Tests",
-        "External Interface Tests",
-        "Direct Change Coverage",
-        "Case-Type Coverage",
-        "Design Element Coverage",
-        "Validation Rationale",
-        "Unit Tests",
-        "DV Tests",
-        "Integration Tests",
-        "Definition of Done",
-    ),
+    "testing.md": (),
 }
 
 REQUIRED_TABLE_COLUMNS = {
@@ -73,99 +52,17 @@ REQUIRED_TABLE_COLUMNS = {
         "design_coverage",
         "scope_paths",
     ),
-    ("design.md", "Implementation Order"): ("phase", "goal", "depends_on", "output"),
-    ("design.md", "Layered Design Document Index"): (
-        "level",
-        "parent_document",
-        "unit",
-        "design_document",
-        "responsibility",
-    ),
+    ("design.md", "Module Dependencies"): ("level", "parent", "node", "depends_on"),
     ("design.md", "File-Level Implementation Sequence"): (
-        "sequence",
-        "file_level_module",
-        "action",
-        "depends_on",
-        "change_id",
-        "scope_path",
-        "implementation_task",
-    ),
-    ("testing.md", "Direct Change Coverage"): (
-        "change_id",
-        "design_source",
-        "validation_id",
-        "testplan_level",
-        "testplan_step_id",
-        "gap",
-        "gap_manual_reason",
-    ),
-    ("testing.md", "Case-Type Coverage"): (
-        "change_id",
-        "case_type",
-        "required",
-        "validation_id",
-        "level",
-        "status",
-        "gap_manual_reason",
-    ),
-    ("testing.md", "Design Element Coverage"): (
-        "element_type",
-        "design_source",
-        "derived_cases",
-        "level",
-        "status",
-        "gap_manual_reason",
-    ),
-    ("testing.md", "Unit Tests"): (
-        "function_or_unit",
-        "branch_or_condition",
-        "covered_behavior",
-        "test_file",
-        "status",
-        "gap_manual_reason",
-    ),
-    ("testing.md", "DV Tests"): (
-        "workflow",
-        "kind",
-        "entry",
-        "expected_result",
-        "test_file_or_script",
-        "status",
-        "gap_manual_reason",
-    ),
-    ("testing.md", "Integration Tests"): (
-        "contract_or_flow",
-        "modules_involved",
-        "success_case",
-        "failure_case",
-        "test_file",
-        "status",
-        "gap_manual_reason",
+        "sequence", "file_level_module", "action", "depends_on", "change_id",
     ),
 }
 
-CASE_TYPES = {"normal", "boundary", "negative", "error", "compatibility", "lifecycle", "cross-module"}
-TEST_LEVELS = {"unit", "dv", "integration"}
-DESIGN_ELEMENT_TYPES = {
-    "parameter-domain",
-    "state-transition",
-    "failure-path",
-    "error-handling",
-    "invariant",
-    "concurrency",
-}
-COVERAGE_STATUSES = {"covered", "gap", "manual", "disabled", "not-applicable"}
-DV_KINDS = {"lifecycle", "main", "failure", "config", "persistence"}
-LEVEL_TABLE_HEADINGS = ("Unit Tests", "DV Tests", "Integration Tests")
-SUBMODULE_TYPES = {"business", "shared", "technical", "assembly"}
-GRAB_BAG_SHARED_NAMES = {"common", "utils", "util", "misc", "helpers", "helper"}
 COMPATIBILITY_VALUES = {"new", "backward-compatible", "migration-required", "breaking"}
 PUBLIC_API_IMPACTS = {"none", "backward-compatible", "migration-required", "breaking"}
 MIGRATION_STATUSES = {"migrated", "allowed-negative-fixture", "allowed-compatibility-shim", "verified-none"}
 NOT_APPLICABLE_RE = re.compile(r"(?i)^not-applicable\s*:\s*\S.*$")
-MERMAID_BLOCK_RE = re.compile(r"```mermaid\s+([\s\S]*?)```", re.IGNORECASE)
 CODE_BLOCK_RE = re.compile(r"```([A-Za-z0-9_+-]+)\s+([\s\S]*?)```", re.IGNORECASE)
-UML_EDGE_RE = re.compile(r"(?m)^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s+[-.o*<|]+[-.]+[>.o*|]*\s+([A-Za-z_][A-Za-z0-9_.-]*)")
 HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
 
 def fail(message: str) -> None:
@@ -200,7 +97,6 @@ def section_body(text: str, heading: str, path: Path) -> str:
     next_heading = re.search(r"(?m)^##\s+", text[match.end() :])
     end = match.end() + next_heading.start() if next_heading else len(text)
     return text[match.end() : end]
-
 
 
 def visible_section_body(text: str, heading: str, path: Path) -> str:
@@ -285,11 +181,6 @@ def check_tables(path: Path, text: str) -> None:
                     fail(f"{path} ## {heading} row {index} column {column} is empty placeholder content")
 
 
-def mermaid_blocks_for_section(text: str, heading: str, path: Path) -> list[str]:
-    body = section_body(text, heading, path)
-    return MERMAID_BLOCK_RE.findall(body)
-
-
 FORBIDDEN_DESIGN_TEST_HEADINGS = {
     "test cases",
     "test plan",
@@ -313,27 +204,46 @@ def check_design_has_no_test_design(path: Path, text: str) -> None:
         fail(f"{path} design-stage documents must not define testing details: {match.group(1)}")
 
 
-def check_design_uml(path: Path, text: str) -> None:
-    body = visible_section_body(text, "Module Relationship UML", path)
-    if section_declares_not_applicable(body):
-        return
-    blocks = MERMAID_BLOCK_RE.findall(body)
-    if not blocks:
-        fail(f"{path} ## Module Relationship UML must include a Mermaid UML diagram or not-applicable reason")
-    if not any(re.search(r"(?m)^\s*classDiagram\b", block) for block in blocks):
-        fail(f"{path} ## Module Relationship UML must use a Mermaid classDiagram for module relationships")
-    check_uml_dependency_cycles(path, blocks)
+def check_module_dependencies(path: Path, text: str) -> None:
+    rows = table_after_heading(text, "Module Dependencies", path)
+    graph: dict[tuple[str, str, str], list[str]] = {}
+    for row in rows:
+        key = tuple(row.get(field, "").strip().strip("`") for field in ("level", "parent", "node"))
+        if not all(non_empty(value) for value in key):
+            fail(f"{path} module dependency rows require level, parent, and node")
+        if key in graph:
+            fail(f"{path} duplicate dependency node: {key}")
+        raw = row.get("depends_on", "").strip().strip("`")
+        if not raw:
+            fail(f"{path} node {key} requires depends_on; use none for no dependencies")
+        graph[key] = [] if raw.lower() == "none" else [item.strip().strip("`") for item in raw.split(",")]
+    visiting: set[tuple[str, str, str]] = set()
+    visited: set[tuple[str, str, str]] = set()
+
+    def visit(node: tuple[str, str, str]) -> None:
+        if node in visiting:
+            fail(f"{path} module dependency cycle at {node}")
+        if node in visited:
+            return
+        visiting.add(node)
+        for target in graph[node]:
+            dependency = (node[0], node[1], target)
+            if dependency not in graph:
+                fail(f"{path} unknown or cross-parent dependency {node} -> {target}")
+            visit(dependency)
+        visiting.remove(node)
+        visited.add(node)
+
+    for node in graph:
+        visit(node)
 
 
-def check_key_flow_diagrams(path: Path, text: str) -> None:
-    body = visible_section_body(text, "Key Flows", path)
-    if section_declares_not_applicable(body):
-        return
-    blocks = MERMAID_BLOCK_RE.findall(body)
-    if not blocks:
-        fail(f"{path} ## Key Flows must include a sequenceDiagram for cross-boundary flows or not-applicable reason")
-    if not any(re.search(r"(?m)^\s*sequenceDiagram\b", block) for block in blocks):
-        fail(f"{path} ## Key Flows must use Mermaid sequenceDiagram when flows are described")
+def check_key_flows(path: Path, text: str) -> None:
+    body = visible_section_body(text, "Key Flows", path).strip()
+    if not non_empty(body):
+        fail(f"{path} Key Flows requires relevant call/failure behavior or not-applicable reason")
+    if is_not_applicable(body):
+        require_not_applicable_reason(path, "Key Flows", body)
 
 
 def check_state_ownership(path: Path, text: str) -> None:
@@ -341,42 +251,7 @@ def check_state_ownership(path: Path, text: str) -> None:
     if section_declares_not_applicable(body):
         return
     if not re.search(r"(?im)^\s*-\s*Owner\s*:\s*\S", body):
-        fail(f"{path} ## State and Ownership must name the single owner or record not-applicable")
-    if re.search(r"(?i)state|lifecycle|transition", body):
-        blocks = MERMAID_BLOCK_RE.findall(body)
-        if blocks and not any(re.search(r"(?m)^\s*stateDiagram(?:-v2)?\b", block) for block in blocks):
-            fail(f"{path} ## State and Ownership lifecycle diagrams must use Mermaid stateDiagram-v2")
-
-
-def check_uml_dependency_cycles(path: Path, blocks: list[str]) -> None:
-    graph: dict[str, set[str]] = {}
-    for block in blocks:
-        if not re.search(r"(?m)^\s*classDiagram\b", block):
-            continue
-        for source, target in UML_EDGE_RE.findall(block):
-            graph.setdefault(source, set()).add(target)
-            graph.setdefault(target, set())
-
-    visiting: set[str] = set()
-    visited: set[str] = set()
-    stack: list[str] = []
-
-    def visit(node: str) -> None:
-        if node in visited:
-            return
-        if node in visiting:
-            cycle = " -> ".join([*stack, node])
-            fail(f"{path} ## Module Relationship UML contains a dependency cycle: {cycle}")
-        visiting.add(node)
-        stack.append(node)
-        for dependency in sorted(graph.get(node, ())):
-            visit(dependency)
-        stack.pop()
-        visiting.remove(node)
-        visited.add(node)
-
-    for node in sorted(graph):
-        visit(node)
+        fail(f"{path} State and Ownership must name the single owner or record not-applicable")
 
 
 def check_file_level_interfaces(path: Path, text: str) -> None:
@@ -445,29 +320,6 @@ def require_not_applicable_reason(path: Path, context: str, value: str) -> None:
         fail(f"{path} {context}: not-applicable entries need a concrete reason: `not-applicable: <reason>`")
 
 
-def check_layered_design_index(path: Path, text: str) -> None:
-    rows = table_after_heading(text, "Layered Design Document Index", path)
-    for index, row in enumerate(rows, start=1):
-        document = row.get("design_document", "").strip().strip("`")
-        level = row.get("level", "").strip()
-        if is_not_applicable(level):
-            require_not_applicable_reason(path, f"## Layered Design Document Index row {index}", level)
-            continue
-        unit = row.get("unit", "").strip()
-        if is_not_applicable(document):
-            require_not_applicable_reason(path, f"## Layered Design Document Index row {index}", document)
-            continue
-        if document == "design.md":
-            continue
-        if not document.startswith("design/") or not document.endswith(".md"):
-            fail(f"{path} ## Layered Design Document Index row {index} must use design/<submodule>.md style path")
-        if not unit or unit.lower() in EMPTY_VALUES:
-            fail(f"{path} ## Layered Design Document Index row {index} must name the submodule or nested submodule")
-        child = path.parent / document
-        if not child.exists():
-            fail(f"{path} indexed child design document does not exist: {child}")
-
-
 def check_file_level_implementation_sequence(path: Path, text: str) -> None:
     rows = table_after_heading(text, "File-Level Implementation Sequence", path)
     for index, row in enumerate(rows, start=1):
@@ -479,108 +331,9 @@ def check_file_level_implementation_sequence(path: Path, text: str) -> None:
         if is_not_applicable(module):
             require_not_applicable_reason(path, f"## File-Level Implementation Sequence row {index}", module)
             continue
-        for column in ("sequence", "file_level_module", "action", "change_id", "scope_path", "implementation_task"):
+        for column in ("sequence", "file_level_module", "action", "change_id"):
             if not non_empty(row.get(column, "")):
                 fail(f"{path} ## File-Level Implementation Sequence row {index} column {column} is empty placeholder content")
-
-
-def check_case_type_coverage(path: Path, text: str) -> None:
-    if path.name != "testing.md":
-        return
-    rows = table_after_heading(text, "Case-Type Coverage", path)
-    seen: set[str] = set()
-    for index, row in enumerate(rows, start=1):
-        case_type = row.get("case_type", "").strip().lower()
-        required = row.get("required", "").strip().lower()
-        status = row.get("status", "").strip().lower()
-        seen.add(case_type)
-        if case_type not in CASE_TYPES:
-            fail(f"{path} ## Case-Type Coverage row {index} has unknown case_type: {case_type}")
-        if required not in {"yes", "no"}:
-            fail(f"{path} ## Case-Type Coverage row {index} Required must be yes or no")
-        if status not in {"covered", "gap", "manual", "disabled", "not-applicable"}:
-            fail(f"{path} ## Case-Type Coverage row {index} has invalid status: {status}")
-        if required == "yes" and status == "not-applicable":
-            fail(f"{path} ## Case-Type Coverage row {index} cannot mark required coverage not-applicable")
-        if status in {"gap", "manual", "disabled", "not-applicable"} and not non_empty(row.get("gap_manual_reason", "")):
-            fail(f"{path} ## Case-Type Coverage row {index} requires Gap / Manual Reason")
-        level = row.get("level", "").strip().lower()
-        if status == "covered" and level not in TEST_LEVELS:
-            fail(
-                f"{path} ## Case-Type Coverage row {index} covered cases must declare the implementing "
-                f"level (unit/dv/integration): {level or '<empty>'}"
-            )
-    missing = sorted(CASE_TYPES - seen)
-    if missing:
-        fail(f"{path} ## Case-Type Coverage missing case types: {', '.join(missing)}")
-
-
-def check_design_element_coverage(path: Path, text: str) -> None:
-    if path.name != "testing.md":
-        return
-    rows = table_after_heading(text, "Design Element Coverage", path)
-    seen: set[str] = set()
-    for index, row in enumerate(rows, start=1):
-        element_type = row.get("element_type", "").strip().lower()
-        status = row.get("status", "").strip().lower()
-        reason = row.get("gap_manual_reason", "")
-        seen.add(element_type)
-        if element_type not in DESIGN_ELEMENT_TYPES:
-            fail(f"{path} ## Design Element Coverage row {index} has unknown element_type: {element_type}")
-        if status not in COVERAGE_STATUSES:
-            fail(f"{path} ## Design Element Coverage row {index} has invalid status: {status}")
-        if status == "covered":
-            if not non_empty(row.get("design_source", "")):
-                fail(f"{path} ## Design Element Coverage row {index} covered rows must name the design source")
-            if not non_empty(row.get("derived_cases", "")):
-                fail(f"{path} ## Design Element Coverage row {index} covered rows must list derived cases")
-            level = row.get("level", "").strip().lower()
-            if level not in TEST_LEVELS:
-                fail(
-                    f"{path} ## Design Element Coverage row {index} covered rows must declare the "
-                    f"implementing level (unit/dv/integration): {level or '<empty>'}"
-                )
-        elif not non_empty(reason):
-            fail(f"{path} ## Design Element Coverage row {index} requires Gap / Manual Reason")
-    missing = sorted(DESIGN_ELEMENT_TYPES - seen)
-    if missing:
-        fail(f"{path} ## Design Element Coverage missing element types: {', '.join(missing)}")
-
-
-def check_level_tables(path: Path, text: str) -> None:
-    if path.name != "testing.md":
-        return
-    for heading in LEVEL_TABLE_HEADINGS:
-        rows = table_after_heading(text, heading, path)
-        first_column = REQUIRED_TABLE_COLUMNS[(path.name, heading)][0]
-        seen_kinds: set[str] = set()
-        escaped_rows = 0
-        for index, row in enumerate(rows, start=1):
-            if is_not_applicable(row.get(first_column, "").strip()):
-                escaped_rows += 1
-                continue
-            status = row.get("status", "").strip().lower()
-            if status not in COVERAGE_STATUSES:
-                fail(f"{path} ## {heading} row {index} has invalid status: {status}")
-            if status != "covered" and not non_empty(row.get("gap_manual_reason", "")):
-                fail(f"{path} ## {heading} row {index} requires Gap / Manual Reason")
-            if status == "covered" and "test_file" in row and not non_empty(row.get("test_file", "")):
-                fail(f"{path} ## {heading} row {index} covered rows must name the test file")
-            if heading == "DV Tests":
-                kind = row.get("kind", "").strip().lower()
-                if kind not in DV_KINDS:
-                    fail(
-                        f"{path} ## DV Tests row {index} kind must be one of "
-                        f"{'/'.join(sorted(DV_KINDS))}: {kind or '<empty>'}"
-                    )
-                seen_kinds.add(kind)
-        if heading == "DV Tests" and escaped_rows < len(rows):
-            missing_kinds = sorted({"lifecycle", "main", "failure"} - seen_kinds)
-            if missing_kinds:
-                fail(
-                    f"{path} ## DV Tests must include lifecycle, main, and failure workflow rows "
-                    f"(covered or with recorded gaps); missing kinds: {', '.join(missing_kinds)}"
-                )
 
 
 def check_submodule_doc_placement(packet: Path, stage: str | None) -> None:
@@ -600,45 +353,24 @@ def check_submodule_doc_placement(packet: Path, stage: str | None) -> None:
 
 def check_doc(path: Path, max_lines: int) -> None:
     text = read_text(path)
-    check_line_count(path, max_lines)
+    if path.name == "proposal.md":
+        check_line_count(path, max_lines)
     check_sections(path, text)
     check_tables(path, text)
     if path.name == "design.md":
-        check_design_uml(path, text)
+        check_module_dependencies(path, text)
         check_file_level_interfaces(path, text)
-        check_key_flow_diagrams(path, text)
+        check_key_flows(path, text)
         check_state_ownership(path, text)
         check_design_has_no_test_design(path, text)
-        check_layered_design_index(path, text)
         check_file_level_implementation_sequence(path, text)
-    check_case_type_coverage(path, text)
-    check_design_element_coverage(path, text)
-    check_level_tables(path, text)
-    if path.name == "testing.md" and "harness/scripts/test-run.py" not in text:
-        fail(f"{path} must reference the unified test entrypoint")
 
 
 def packet_path(root: Path, version: str, module: str, submodule: str | None) -> Path:
-    packet = root / "docs" / "versions" / version / "modules" / module
+    packet = root / ".harness" / "tasks" / version / "modules" / module
     if submodule:
         packet = packet / submodule
     return packet
-
-
-def task_stage_policy(packet: Path) -> tuple[str | None, bool, bool]:
-    """Return current stage plus automatic design/testing decisions."""
-    manifest = packet / "task.yaml"
-    if not manifest.is_file():
-        return None, False, False
-    try:
-        policy = task_policy(manifest)
-    except TaskManifestError as error:
-        fail(str(error))
-    return (
-        policy["stage"],
-        stage_is_automatic(policy, "design"),
-        stage_is_automatic(policy, "testing"),
-    )
 
 
 def main() -> int:
@@ -647,7 +379,7 @@ def main() -> int:
     parser.add_argument("--version", required=True)
     parser.add_argument("--module", required=True)
     parser.add_argument("--submodule")
-    parser.add_argument("--max-lines", type=int, default=MAX_HUMAN_DOC_LINES)
+    parser.add_argument("--max-lines", type=int, default=MAX_PROPOSAL_LINES, help="proposal-only line limit")
     parser.add_argument(
         "--docs",
         choices=("all", "mandatory", "proposal", "design", "testing"),
@@ -656,23 +388,22 @@ def main() -> int:
     args = parser.parse_args()
 
     packet = packet_path(Path(args.root), args.version, args.module, args.submodule)
-    stage, automatic_design, automatic_testing = task_stage_policy(packet)
+    manifest = packet / "task.yaml"
+    try:
+        stage = parse_task_manifest(manifest).get("stage") if manifest.is_file() else None
+    except TaskManifestError as error:
+        fail(str(error))
     if args.docs in {"all", "mandatory", "proposal"}:
         check_doc(packet / "proposal.md", args.max_lines)
     if (
         args.docs in {"all", "mandatory", "design"}
         and stage != "proposal"
-        and not automatic_design
     ):
         check_doc(packet / "design.md", args.max_lines)
     if args.docs in {"all", "testing"}:
         testing = packet / "testing.md"
-        if automatic_testing:
-            pass
-        elif testing.exists():
+        if testing.exists():
             check_doc(testing, args.max_lines)
-        elif args.docs == "testing":
-            fail(f"missing required file: {testing}")
 
     check_submodule_doc_placement(packet, stage)
     print("doc-structure-check: passed")

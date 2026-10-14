@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate proportional trivial/standard delivery evidence.
+"""Validate proportional standard delivery evidence.
 
 Lower-tier work captures the same task-start working-tree baseline used by
 high-risk stages before project edits: copies of already-dirty tracked files and
@@ -48,8 +48,8 @@ def load_task(root: Path, raw_task: str) -> tuple[Path, dict[str, object]]:
     except TaskManifestError as error:
         fail(str(error))
     tier = task.get("workflow_tier")
-    if tier not in {"trivial", "standard"}:
-        fail("lower-tier-check applies only to confirmed trivial or standard tasks")
+    if tier != "standard":
+        fail("lower-tier-check applies only to confirmed standard tasks")
     proposal = path.parent / "proposal.md"
     if not proposal.is_file():
         fail(f"missing approved proposal: {proposal}")

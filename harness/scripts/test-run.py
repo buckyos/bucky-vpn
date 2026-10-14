@@ -7,8 +7,8 @@ stable: all test implementation must be reachable through this entrypoint.
 Every real run (not --list / --dry-run) writes a machine-readable run artifact
 to .harness/test-results/test-runs/<timestamp>-<module>-<level>.json recording
 the exact task scope, commands, registration sources, and exit codes.
-`.harness/` is generated runtime state and must be listed in .gitignore. Acceptance cites these
-artifacts instead of pasted command output.
+`.harness/` is local, uncommitted state and must be listed in .gitignore.
+Acceptance cites these artifacts instead of pasted command output.
 """
 
 from __future__ import annotations
@@ -16,11 +16,13 @@ from __future__ import annotations
 import argparse
 import ast
 import datetime
+import hashlib
 import json
 import re
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from task_manifest import TaskManifestError, parse_task_manifest
@@ -45,7 +47,11 @@ CONTRACT_ASSERTIONS = {
 
 # Canonical module-level regression suites. Task testplan.yaml files are
 # discovered separately and are registered only as <module>/<task-name>.
-# `module all` and `all all` use only each module's explicit `all` suite.
+# `module all` and `all all` compose unit, DV, integration, and explicit `all`
+# commands, then de-duplicate identical argv. This keeps newly registered
+# level-specific regressions reachable even when an older `all` suite exists.
+# Upgrade regression classes use runtime fixtures; task 039 separately selects
+# local archive/proposal/authorization provenance through its task testplan.
 MODULE_SUITES: dict[str, dict[str, list[list[str]]]] = {
     "repo-governance": {
         "unit": [
@@ -53,9 +59,17 @@ MODULE_SUITES: dict[str, dict[str, list[list[str]]]] = {
             ["python3", "./harness/tests/test_schema_check_proposal_approval.py"],
             ["python3", "./harness/tests/test_auto_pipeline_proposal_transition.py"],
             ["python3", "./harness/tests/test_test_file_location_rule.py"],
+            ["python3", "./harness/tests/test_harness_upgrade_unit.py", "UpgradeUnitTests"],
+            ["python3", "./harness/tests/test_governance_contracts.py"],
         ],
-        "dv": [["python3", "./harness/scripts/harness-self-check.py", "--root", "."]],
-        "integration": [["python3", "./harness/scripts/check-all.py", "--root", "."]],
+        "dv": [
+            ["python3", "./harness/scripts/harness-self-check.py", "--root", "."],
+            ["python3", "./harness/tests/test_harness_upgrade_migration.py", "MigrationTests"],
+        ],
+        "integration": [
+            ["python3", "./harness/scripts/check-all.py", "--root", "."],
+            ["python3", "./harness/tests/test_harness_upgrade_integration.py", "UpgradeIntegrationTests"],
+        ],
         "all": [["python3", "./harness/scripts/check-all.py", "--root", "."]],
     },
     "vpn-frame": {
@@ -133,7 +147,7 @@ def steps_from_testplan(path: Path, level: str) -> list[tuple[list[str], str, li
     start = re.search(rf"(?m)^  {re.escape(level)}:\s*$", text)
     if not start:
         return []
-    next_level = re.search(r"(?m)^  [A-Za-z0-9_-]+:\s*$", text[start.end() :])
+    next_level = re.search(r"(?m)^(?:  [A-Za-z0-9_-]+:\s*$|[A-Za-z0-9_-]+:)", text[start.end() :])
     end = start.end() + next_level.start() if next_level else len(text)
     body = text[start.end() : end]
     starts = list(re.finditer(r"(?m)^      - id:\s*(\S+)\s*$", body))
@@ -256,6 +270,35 @@ def expanded_evidence_inputs(root: Path, testplans: list[str]) -> list[str]:
     ]
 
 
+def run_input_snapshot(root: Path, testplans: list[str]) -> dict[str, object]:
+    """Bind declared source/test/build trees (including membership) before execution."""
+    paths = set(expanded_evidence_inputs(root, testplans))
+    governing: dict[str, str | None] = {}
+    for relative in testplans:
+        packet = (root / relative).parent
+        manifest = packet / "task.yaml"
+        task = parse_task_manifest(manifest) if manifest.is_file() else {}
+        for field, default in (("proposal", "proposal.md"), ("design", "design.md"), ("risk_profile", "risk-profile.yaml")):
+            value = str(task.get(field) or default)
+            candidate = (packet / value).resolve()
+            try:
+                key = candidate.relative_to(root.resolve()).as_posix()
+            except ValueError:
+                fail(f"governing input resolves outside repository: {value}")
+            governing[key] = hashlib.sha256(candidate.read_bytes()).hexdigest() if candidate.is_file() else None
+    return {
+        "schema": 1,
+        "testplans": sorted(set(testplans)),
+        "roots": evidence_input_roots(root, testplans),
+        "files": {
+            relative: hashlib.sha256((root / relative).read_bytes()).hexdigest()
+            for relative in sorted(paths)
+        },
+        "governing_inputs": governing,
+        "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    }
+
+
 def non_executed_levels_from_testplan(path: Path, requested_level: str) -> list[dict[str, str]]:
     text = path.read_text(encoding="utf-8")
     levels = list(LEVELS) if requested_level == "all" else [requested_level]
@@ -264,7 +307,7 @@ def non_executed_levels_from_testplan(path: Path, requested_level: str) -> list[
         start = re.search(rf"(?m)^  {re.escape(level)}:\s*$", text)
         if not start:
             return []
-        next_level = re.search(r"(?m)^  [A-Za-z0-9_-]+:\s*$", text[start.end() :])
+        next_level = re.search(r"(?m)^(?:  [A-Za-z0-9_-]+:\s*$|[A-Za-z0-9_-]+:)", text[start.end() :])
         end = start.end() + next_level.start() if next_level else len(text)
         body = text[start.end() : end]
         mode_match = re.search(r"(?m)^    mode:\s*(manual|disabled)\s*$", body)
@@ -309,34 +352,19 @@ def repo_relative_testplan(root: Path, path: Path) -> str:
 
 def discover_testplans(root: Path) -> dict[str, Path]:
     plans: dict[str, Path] = {}
-    for path in root.glob("docs/versions/*/modules/**/testplan.yaml"):
-        relative = path.relative_to(root / "docs" / "versions")
+    for path in root.glob(".harness/tasks/*/modules/**/testplan.yaml"):
+        relative = path.relative_to(root / ".harness" / "tasks")
         if any(part.startswith("_") for part in relative.parts):
             continue
-        modules_root = relative.parts.index("modules")
-        packet_parts = relative.parts[modules_root + 1 : -1]
-        # Module-root plans are legacy module metadata; canonical module suites
-        # live in MODULE_SUITES.
-        if len(packet_parts) == 1:
-            continue
-        if len(packet_parts) != 2:
-            fail(f"manifest-bound testplan must live in a task packet with task.yaml: {path}")
         text = path.read_text(encoding="utf-8")
-        if not (path.parent / "task.yaml").is_file():
-            legacy_identity = (
-                all(
-                    re.search(rf"(?m)^{field}:\s*\S+", text)
-                    for field in ("version", "module")
-                )
-                and re.search(r"(?m)^(?:task_name|submodule):\s*\S+", text)
-            )
-            if legacy_identity and not re.search(r"(?m)^task_manifest:\s*", text):
-                continue
-            fail(f"manifest-bound testplan must live in a task packet with task.yaml: {path}")
         if not re.search(r"(?m)^task_manifest:\s*task\.yaml\s*$", text):
             fail(f"testplan must use task_manifest: task.yaml: {path}")
         if re.search(r"(?m)^(module|version|task_name|submodule):\s*\S+", text):
             fail(f"testplan duplicates canonical task identity from task.yaml: {path}")
+        modules_root = relative.parts.index("modules")
+        packet_parts = relative.parts[modules_root + 1 : -1]
+        if len(packet_parts) != 2 or not (path.parent / "task.yaml").is_file():
+            fail(f"manifest-bound testplan must live in a task packet with task.yaml: {path}")
         module, task_name = packet_parts
         key = f"{module}/{task_name}"
         if key in plans:
@@ -380,7 +408,7 @@ def command_sources_for(
         if requested_level == "all":
             if "all" not in suite or not suite["all"]:
                 fail(f"module {scope} must define a non-empty canonical all suite")
-            levels = ["all"]
+            levels = [*LEVELS, "all"]
         else:
             levels = [requested_level]
         for level in levels:
@@ -488,11 +516,15 @@ def command_workdir(root: Path, sources: list[dict[str, object]]) -> Path:
     return root
 
 
-def run_command(command: list[str], cwd: Path, dry_run: bool) -> int:
+def run_command(command: list[str], root: Path, dry_run: bool) -> int:
     print("+ " + " ".join(command))
     if dry_run:
         return 0
-    completed = subprocess.run(command, cwd=cwd)
+    try:
+        completed = subprocess.run(command, cwd=root)
+    except OSError as error:
+        print(f"test-run: command could not start: {error}", file=sys.stderr)
+        return 127
     return completed.returncode
 
 
@@ -521,13 +553,15 @@ def write_run_artifact(
     non_executed_levels: list[dict[str, str]] | None = None,
     bound_testplans: list[str] | None = None,
     bound_change_ids: list[str] | None = None,
+    input_snapshot: dict[str, object] | None = None,
+    inputs_unchanged: bool = False,
 ) -> None:
     artifact_dir = root / ".harness" / "test-results" / "test-runs"
     try:
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         slug_module = requested_module.replace("/", "+")
-        artifact_path = artifact_dir / f"{timestamp}-{slug_module}-{requested_level}.json"
+        artifact_path = artifact_dir / f"{timestamp}-{slug_module}-{requested_level}-{uuid.uuid4().hex}.json"
         head, dirty = git_state(root)
         artifact = {
             "schema": RUN_ARTIFACT_SCHEMA,
@@ -555,16 +589,14 @@ def write_run_artifact(
                     if isinstance(change_id, str)
                 }
             ),
-            "evidence_inputs": [],
-            "evidence_input_roots": [],
+            "input_snapshot": input_snapshot,
+            "inputs_unchanged": inputs_unchanged,
+            "evidence_inputs": list((input_snapshot or {}).get("files", {})),
+            "evidence_input_roots": (input_snapshot or {}).get("roots", []),
             "steps": steps,
             "non_executed_levels": non_executed_levels or [],
             "exit_code": exit_code,
         }
-        artifact["evidence_inputs"] = expanded_evidence_inputs(
-            root, artifact["testplans"]
-        )
-        artifact["evidence_input_roots"] = evidence_input_roots(root, artifact["testplans"])
         artifact_path.write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
         print(f"test-run: run artifact written: {artifact_path}")
     except OSError as error:
@@ -580,7 +612,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="print commands without running them")
     args = parser.parse_args()
 
-    root = Path(args.root)
+    root = Path(args.root).resolve()
     validate_module_suites()
     task_plans = discover_testplans(root)
     modules = sorted({*MODULE_SUITES, *task_plans})
@@ -590,6 +622,16 @@ def main() -> int:
         return 0
 
     scopes = selected_scopes(args.module, task_plans)
+    bound_testplans = sorted({
+        repo_relative_testplan(root, task_plans[scope])
+        for scope in scopes if scope in task_plans
+    })
+    bound_change_ids = sorted({
+        change_id for scope in scopes if scope in task_plans
+        for change_id in task_change_ids_from_testplan(task_plans[scope])
+    })
+    started_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="microseconds")
+    input_snapshot = run_input_snapshot(root, bound_testplans) if not args.dry_run else None
     plan = deduplicated_execution_plan(root, scopes, args.level, task_plans)
     if not plan:
         non_executed_levels = (
@@ -599,7 +641,6 @@ def main() -> int:
         )
         if not non_executed_levels:
             fail("no test commands matched the requested module/task scope and level")
-        started_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         print(
             "test-run: passed without automated commands; selected levels are manual/disabled: "
             + ", ".join(
@@ -609,18 +650,32 @@ def main() -> int:
         )
         if not args.dry_run:
             task_plan = task_plans[args.module]
+            try:
+                inputs_unchanged = input_snapshot == run_input_snapshot(root, bound_testplans)
+            except (OSError, SystemExit, TaskManifestError):
+                inputs_unchanged = False
             write_run_artifact(
                 root,
                 args.module,
                 args.level,
                 started_at,
                 [],
-                0,
+                0 if inputs_unchanged else 1,
                 non_executed_levels,
                 bound_testplans=[repo_relative_testplan(root, task_plan)],
                 bound_change_ids=task_change_ids_from_testplan(task_plan),
+                input_snapshot=input_snapshot,
+                inputs_unchanged=inputs_unchanged,
             )
+            return 0 if inputs_unchanged else 1
         return 0
+    # Preserve manual/disabled reasons in mixed automated/manual runs as well.
+    non_executed_levels = [
+        item
+        for scope in scopes if scope in task_plans
+        for level in (LEVELS if args.level == "all" else [args.level])
+        for item in non_executed_levels_from_testplan(task_plans[scope], level)
+    ]
     source_count = sum(len(entry["sources"]) for entry in plan if isinstance(entry.get("sources"), list))
     if source_count > len(plan):
         print(
@@ -628,7 +683,6 @@ def main() -> int:
             f"into {len(plan)} commands"
         )
 
-    started_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     steps: list[dict[str, object]] = []
     exit_code = 0
     for entry in plan:
@@ -640,8 +694,7 @@ def main() -> int:
             fail(f"registered command has no sources: {command!r}")
         first_source = sources[0]
         step_start = time.monotonic()
-        typed_sources = [source for source in sources if isinstance(source, dict)]
-        code = run_command(command, command_workdir(root, typed_sources), args.dry_run)
+        code = run_command(command, command_workdir(root, sources), args.dry_run)
         steps.append(
             {
                 "module": first_source.get("scope") if isinstance(first_source, dict) else None,
@@ -657,7 +710,19 @@ def main() -> int:
             break
 
     if not args.dry_run:
-        write_run_artifact(root, args.module, args.level, started_at, steps, exit_code)
+        try:
+            inputs_unchanged = input_snapshot == run_input_snapshot(root, bound_testplans)
+        except (OSError, SystemExit, TaskManifestError):
+            inputs_unchanged = False
+        if not inputs_unchanged:
+            print("test-run: inputs changed during execution; rerun with stable inputs", file=sys.stderr)
+            exit_code = exit_code or 1
+        write_run_artifact(
+            root, args.module, args.level, started_at, steps, exit_code,
+            non_executed_levels=non_executed_levels,
+            bound_testplans=bound_testplans, bound_change_ids=bound_change_ids,
+            input_snapshot=input_snapshot, inputs_unchanged=inputs_unchanged,
+        )
     return exit_code
 
 

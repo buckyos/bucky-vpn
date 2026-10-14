@@ -1,48 +1,29 @@
 # 仓库工作流
 
-本仓库在现有 Rust workspace 和 Flutter 前端的基础上，叠加了一层 retrofit 形式的 Harness Engineering 工作流。
+本仓库在 Rust workspace 与 Flutter 前端上使用 Harness Engineering。入口是 AGENTS.md；规则索引和 context.py 提供当前阶段推荐上下文。Scope Paths 与 stage-scope 承担可追溯性和完成证据，文件访问由外部权限与用户范围决定。
 
-## 任务读取顺序
-1. 先读 `AGENTS.md`
-2. 再读 `docs/versions/v0.1/modules/<module>/` 下当前模块 packet
-3. 再读 `docs/modules/<module>.md` 了解长期边界
-4. 再读 `docs/architecture/` 中的项目级约束
-5. 再读 `harness/rules/` 中的稳定规则
-6. 任务命中特定领域或 implementation/bugfix 流程时，再读 `harness/process_rules/` 和 `harness/checklists/`
-7. 任务涉及高风险工件或需要判断协作自治级别时，再读 `harness/human-rules/`
+所有任务材料位于 gitignored .harness：packet 使用 .harness/tasks/<version>/modules/<packet-module>/<task-seq>-<task-slug>/，standard 变更记录使用 .harness/changes/<change>.md。docs/modules 和 docs/architecture 保存长期知识。fresh clone 不包含本地任务、索引或 receipt；持久工具模板位于 harness/templates，可重新初始化本地材料。
 
-## 阶段边界
-- Proposal：负责沉淀目标、范围、非目标和约束。输出：`proposal.md`
-- Design：负责定义实现结构、接口、依赖和落地顺序。输出：`design.md` 与可选 `design/`
-- Testing：负责定义验证策略、稳定入口和通过条件。输出：`testing.md`、可选 `testing/` 与 `testplan.yaml`
-- Implementation：只负责代码和测试代码实现。必须在 `proposal.md`、`design.md`、`testing.md` 都已存在、审批完成且已覆盖当前改动后才允许进入
-- Acceptance：只负责审计证据链并输出独立评审报告，不在 acceptance 阶段直接修代码
+## 任务流与责任
 
-显式从 Proposal 启动自动流水线、且 Design 是第一个自动阶段时，用户启动声明同时确认绑定的 Proposal。Proposal 完成仍执行 schema、结构、风险、流水线计划和阶段范围检查，但不会附加只适用于手工 Proposal/Design 文档的 `schema-check.py --require-approved`。未进入该自动 Design 边界的手工 Proposal 继续强制使用 `--require-approved`。
+普通任务先只读发现边界，创建 common proposal packet，以 pending tier 路由 proposal，展示需求/范围/tier 并获得用户确认。直接维护 Harness 规则政策的例外与 GitHub issue 提交额外确认由 task-entry-gate-rules 和 github-issue-creation-rules 分别拥有。
 
-## 验证面
-- 面向人的文档：
-  - `proposal.md`
-  - `design.md`
-  - `testing.md`
-  - `acceptance.md`
-  - `docs/versions/v0.1/reviews/` 下的独立评审报告
-- 面向脚本的入口：
-  - `testplan.yaml`
-  - `python3 ./harness/scripts/test-run.py <module> unit`
-  - `python3 ./harness/scripts/test-run.py <module> dv`
-  - `python3 ./harness/scripts/test-run.py <module> integration`
+standard 使用一个变更记录、比例适当的验证和独立发现缺陷的 completion-report；high-risk 依次执行 proposal、design、implementation、testing、acceptance。每个 high-risk 阶段使用没有父上下文的新子代理；父代理负责确认、注册、合法转换和收口。实施后的 testing 负责完整测试设计与实现，acceptance 独立判断交付缺陷。
 
-## 治理 overlay
-- 稳定规则：`harness/rules/`
-- 任务流程 overlay：`harness/process_rules/`
-- 领域 checklist：`harness/checklists/`
-- 协作模式与模块分级：`harness/human-rules/`
-- 高风险变更触发：`harness/custom-rules/trigger-based-validation-rules.md`
-- 独立测试文件目录：`harness/custom-rules/test-file-location-rule.md`；独立测试文件不得放入 `src` 或其子目录，必须放入与对应 `src` 同级的 `tests`
+proposal/tier 确认授权必要下游执行，不重复询问阶段许可。task-transition.py 拥有 high-risk completion check、内容绑定 receipt 和 stage 转换；不手改 stage 或 receipt。失败返回负责阶段，修改需求或验收边界时返回 proposal 重新确认。standard 收口由 task-index.py remove 验证 baseline、实际 changed paths、完成记录和独立报告。
 
-## 当前已初始化模块
-- `vpn-frame`：共享 VPN 协议与运行时库
-- `bucky-vpn`：客户端二进制
-- `bucky-vpn-server`：服务端二进制
-- `vpn_web`：Flutter Web 前端
+## 验证与证据
+
+统一入口是 python ./harness/scripts/test-run.py <module-or-module/task-name> <unit|dv|integration|all>。任务运行从当前 testplan 注册并写 .harness/test-results 下的机器证据；module suite 保留项目实际命令。治理验证不能因 harness/docs 改动运行无关 Rust workspace 或 Flutter 测试。check-all 是 scaffold audit，不回放历史任务验收。
+
+receipt 依赖当前批准内容、Scope Paths 和有效运行输入；新失败或输入改变使旧通过不能复用。schema/scope/run artifact 是完成证据，不能替代独立缺陷发现。质量检查只在用户明确要求或匹配 custom 策略时执行。
+
+## 项目政策与历史迁移
+
+harness/custom-rules 保持项目优先级与原字节；工具对已知旧 modes/trivial 元数据作限定兼容，新 generated 索引仍严格，旧 trivial 不是新任务选项。专用领域流程、清单、human-rules 与实际产品注册保留其责任。
+
+历史任务迁至 .harness 并保留原件、逐文件 hash 和状态出处；task-index.py init/add 按真实未完成状态重建索引。缺 manifest 历史是档案，不补造审批。旧 receipt/run/launch 只说明当时事实，不重新签成当前通过，不代关闭未完成产品任务。
+
+039 的已批准前置同步只覆盖其 draft testing.md/testplan.yaml 治理验证面，绑定 canonical packet、批准 proposal hash 与限定阶段；完整案例、代码、运行证据仍由实施后的 testing 提供。
+
+长期责任模块：vpn-frame、bucky-vpn、bucky-vpn-server、vpn_web 与 repo-governance。具体任务事实仅存在本地 packet，边界见 docs/modules。

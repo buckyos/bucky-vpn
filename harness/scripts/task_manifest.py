@@ -12,9 +12,6 @@ import re
 from pathlib import Path
 
 
-PIPELINE_STAGES = ("design", "implementation", "testing", "acceptance")
-
-
 class TaskManifestError(ValueError):
     pass
 
@@ -107,27 +104,8 @@ def parse_task_manifest(path: Path) -> dict[str, object]:
             if value.strip().startswith("[")
             else scalar(value)
         )
+    removed = {"mode", "auto_pipeline_start_stage", "pipeline_plan"} & task.keys()
+    if removed:
+        raise TaskManifestError(f"{path}: execution-mode fields are no longer supported: {sorted(removed)}")
     task["changes"] = changes
     return task
-
-
-def task_policy(path: Path) -> dict[str, str | None]:
-    task = parse_task_manifest(path)
-    return {
-        "stage": str(task["stage"]) if task.get("stage") is not None else None,
-        "mode": str(task["mode"]) if task.get("mode") is not None else None,
-        "start": (
-            str(task["auto_pipeline_start_stage"])
-            if task.get("auto_pipeline_start_stage") is not None
-            else None
-        ),
-    }
-
-
-def stage_is_automatic(policy: dict[str, str | None], stage: str) -> bool:
-    start = policy.get("start")
-    return (
-        policy.get("mode") == "auto-pipeline"
-        and start in PIPELINE_STAGES
-        and PIPELINE_STAGES.index(stage) >= PIPELINE_STAGES.index(str(start))
-    )

@@ -2,7 +2,7 @@
 """Allocate version-local Harness task sequence names.
 
 Task packet names use <task-seq>-<task-slug>, for example 001-login-flow.
-The sequence is allocated per docs/versions/<version>/ across every project
+The sequence is allocated per .harness/tasks/<version>/ across every project
 module and globals. This tool scans both existing packet directories and the
 machine-owned unfinished-task index so agents do not hand-pick sequence numbers.
 """
@@ -57,10 +57,10 @@ def load_task_index_module():
 
 def collect_from_task_index(root: Path, version: str) -> dict[str, str]:
     found: dict[str, str] = {}
-    path = root / "docs" / "versions" / version / "modules" / "tasks.json"
+    task_index = load_task_index_module()
+    path = task_index.index_path(root, version)
     if not path.is_file():
         return found
-    task_index = load_task_index_module()
     for entry in task_index.selected_entries(root.resolve(), version, None):
         found[entry["task_id"]] = entry["task_manifest"]
     return found
@@ -86,7 +86,7 @@ def collect_from_directories(modules_dir: Path) -> dict[str, str]:
 
 
 def collect_task_names(root: Path, version: str) -> dict[str, str]:
-    modules_dir = root / "docs" / "versions" / version / "modules"
+    modules_dir = root / ".harness" / "tasks" / version / "modules"
     found = collect_from_directories(modules_dir)
     for name, source in collect_from_task_index(root, version).items():
         found.setdefault(name, source)

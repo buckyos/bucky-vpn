@@ -8,7 +8,7 @@
 - Version:
 - Packet Module:
 - Target Module:
-- Task Packet: `docs/versions/<version>/modules/<project-or-globals>/<task-seq>-<task-slug>/`
+- Task Packet: `.harness/tasks/<version>/modules/<project-or-globals>/<task-seq>-<task-slug>/`
 - Submodule:
 - change_id:
 - Owner:
@@ -35,7 +35,7 @@
 - Constraints:
 
 ## Entry Checks
-- [ ] This generic downstream staged-task template is used only for confirmed high-risk work; lower tiers still retain their common `task.yaml` plus approved `proposal.md`, and standard additionally uses `docs/changes/<change>.md`
+- [ ] This generic downstream staged-task template is used only for confirmed high-risk work; lower tiers still retain their common `task.yaml` plus approved `proposal.md`, and standard additionally uses `.harness/changes/<change>.md`
 - [ ] If this task may affect code, tests, runtime behavior, UI behavior, build behavior, bugfixes, optimization, or refactoring, `harness/rules/task-entry-gate-rules.md` was applied first
 - [ ] Required upstream documents exist
 - [ ] Required upstream approvals exist
@@ -87,7 +87,6 @@
 
 ## Next-Stage Gate
 - [ ] Preconditions for the next stage are satisfied
-- [ ] If the next stage is implementation, manual flow has approved proposal/design; auto-pipeline has a launch-confirmed proposal plus validated pipeline-plan mappings and `Scope Paths`
 - [ ] If the next stage is implementation, those approved docs already contain the next task's required content
 
 ## Return Routing On Failure

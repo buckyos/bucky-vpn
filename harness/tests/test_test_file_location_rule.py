@@ -71,19 +71,19 @@ class TestFileLocationRuleTests(unittest.TestCase):
         cases = (
             (
                 "root src in implementation",
-                ("--workflow-tier", "high-risk", "--stage", "implementation", "--mode", "auto-pipeline", "--auto-pipeline-start-stage", "implementation", "--module", "repo-governance", "--trigger", "test", "--changed-path", "src/example_tests.rs"),
+                ("--workflow-tier", "high-risk", "--stage", "implementation", "--module", "repo-governance", "--trigger", "test", "--changed-path", "src/example_tests.rs"),
             ),
             (
                 "module src in testing",
-                ("--workflow-tier", "high-risk", "--stage", "testing", "--mode", "manual", "--module", "repo-governance", "--trigger", "testing", "--changed-path", "vpn-frame/src/client/example_tests.rs"),
+                ("--workflow-tier", "high-risk", "--stage", "testing", "--module", "repo-governance", "--trigger", "testing", "--changed-path", "vpn-frame/src/client/example_tests.rs"),
             ),
             (
                 "root tests in acceptance",
-                ("--workflow-tier", "standard", "--stage", "acceptance", "--mode", "manual", "--module", "repo-governance", "--changed-path", "tests/example_test.py"),
+                ("--workflow-tier", "standard", "--stage", "acceptance", "--module", "repo-governance", "--changed-path", "tests/example_test.py"),
             ),
             (
                 "module tests in implementation",
-                ("--workflow-tier", "trivial", "--stage", "implementation", "--mode", "manual", "--module", "repo-governance", "--changed-path", "vpn-frame/tests/client/example.rs"),
+                ("--workflow-tier", "standard", "--stage", "implementation", "--module", "repo-governance", "--changed-path", "vpn-frame/tests/client/example.rs"),
             ),
         )
 
@@ -103,8 +103,6 @@ class TestFileLocationRuleTests(unittest.TestCase):
             "high-risk",
             "--stage",
             "design",
-            "--mode",
-            "manual",
             "--module",
             "repo-governance",
             "--trigger",

@@ -1,7 +1,7 @@
 # Build, Config, Dependency, And Deployment Trigger
 
 ## Materiality Decision
-- Keep documentation-only and configuration-only corrections in trivial/standard when they do not change governed intent or runtime behavior.
+- Keep documentation-only and configuration-only corrections in standard when they do not change governed intent or runtime behavior.
 - Upgrade only when evidence confirms impact to the dependency/build graph, supply-chain trust, produced artifacts, production configuration/defaults, feature rollout, release/deployment surfaces, compatibility coordination, or rollback requirements.
 
 ## Required Coverage After High-Risk Confirmation

@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import re
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
-from task_manifest import TaskManifestError, parse_task_manifest, stage_is_automatic
+from task_manifest import TaskManifestError, parse_task_manifest
 
 
 STAGES = {"proposal", "design", "testing", "implementation", "acceptance"}
@@ -326,7 +327,7 @@ def packet_parts(path: str) -> tuple[str, str, str] | None:
     parts = path.split("/")
     if len(parts) < 6:
         return None
-    if parts[0] != "docs" or parts[1] != "versions" or parts[3] != "modules":
+    if parts[0] != ".harness" or parts[1] != "tasks" or parts[3] != "modules":
         return None
     version = parts[2]
     module = parts[4]
@@ -374,6 +375,8 @@ def is_review_report(path: str) -> bool:
 
 
 def is_legacy_review_area(path: str) -> bool:
+    # Retired pre-`.harness` review locations are still rejected, so an old
+    # scaffold cannot smuggle review artifacts into the implementation stage.
     if path.startswith("docs/reviews/") and path.endswith(".md"):
         return True
     parts = path.split("/")
@@ -386,69 +389,8 @@ def is_legacy_review_area(path: str) -> bool:
     )
 
 
-def is_task_index(path: str, version: str | None = None) -> bool:
-    parts = path.split("/")
-    return (
-        len(parts) == 5
-        and parts[0] == "docs"
-        and parts[1] == "versions"
-        and (version is None or parts[2] == version)
-        and parts[3] == "modules"
-        and parts[4] == "tasks.json"
-    )
-
-
-def pipeline_artifact_path(
-    path: str, leaf: str, version: str | None, module: str | None, submodule: str | None
-) -> bool:
-    if not version or not module or not submodule:
-        return False
-    return path == f"docs/versions/{version}/modules/{module}/{submodule}/pipeline/{leaf}"
-
-
-def is_any_pipeline_artifact(path: str) -> bool:
-    return bool(
-        re.fullmatch(
-            r"docs/versions/[^/]+/modules/[^/]+/.+/pipeline/(?:plan\.md|state\.json)",
-            path,
-        )
-    )
-
-
 def has_value(value: str) -> bool:
     return value.strip().strip('"').strip("'").lower() not in {"", "-", "n/a", "na", "none", "tbd", "todo", "pending"}
-
-
-def pipeline_trigger_value(text: str, label: str) -> str | None:
-    match = re.search(rf"(?mi)^\s*-\s*{re.escape(label)}:\s*(.+)$", text)
-    return match.group(1).strip() if match else None
-
-
-def pipeline_uses_plan_design(
-    root: Path, version: str, module: str, task_name: str | None
-) -> bool:
-    if not task_name:
-        return False
-    plan = root / "docs" / "versions" / version / "modules" / module / task_name / "pipeline" / "plan.md"
-    if not plan.exists():
-        return False
-    manifest = plan.parent.parent / "task.yaml"
-    if not manifest.is_file():
-        return False
-    try:
-        task = parse_task_manifest(manifest)
-    except TaskManifestError as error:
-        fail(str(error))
-    policy = {
-        "stage": str(task["stage"]) if task.get("stage") is not None else None,
-        "mode": str(task["mode"]) if task.get("mode") is not None else None,
-        "start": (
-            str(task["auto_pipeline_start_stage"])
-            if task.get("auto_pipeline_start_stage") is not None
-            else None
-        ),
-    }
-    return stage_is_automatic(policy, "design")
 
 
 def is_unified_test_entrypoint(path: str) -> bool:
@@ -675,21 +617,14 @@ def design_scope_paths(
     target_module: str,
     change_ids: list[str],
 ) -> list[str]:
-    if pipeline_uses_plan_design(root, version, module, submodule):
-        design = root / "docs" / "versions" / version / "modules" / module / str(submodule) / "pipeline" / "plan.md"
-        if not design.exists():
-            fail(f"missing task-local pipeline plan for auto-pipeline scope binding: {design}")
-        text = design.read_text(encoding="utf-8")
-        section = "Implementation Scope Bindings"
-    else:
-        design = root / "docs" / "versions" / version / "modules" / module
-        if submodule:
-            design = design / submodule
-        design = design / "design.md"
-        if not design.exists():
-            fail(f"missing design document for scope binding: {design}")
-        text = design.read_text(encoding="utf-8")
-        section = "Directly Mapped Change Items"
+    design = root / ".harness" / "tasks" / version / "modules" / module
+    if submodule:
+        design = design / submodule
+    design = design / "design.md"
+    if not design.exists():
+        fail(f"missing design document for scope binding: {design}")
+    text = design.read_text(encoding="utf-8")
+    section = "Directly Mapped Change Items"
 
     heading = re.search(rf"(?m)^##\s+{re.escape(section)}\s*$", text)
     if not heading:
@@ -756,10 +691,24 @@ def in_scope_paths(path: str, scope_paths: list[str]) -> bool:
     return False
 
 
+def is_harness_runtime_state(path: str) -> bool:
+    """True for `.harness` runtime state, false for its task documents."""
+    if not path.startswith(".harness/"):
+        return path == ".harness"
+    if path.startswith(".harness/changes/"):
+        return False
+    if path.startswith(".harness/tasks/"):
+        # Only version-scoped packet documents are task documents; the
+        # machine-owned unfinished-task index stays runtime state.
+        return packet_parts(path) is None
+    return True
+
+
 def allowed_for_stage(path: str, stage: str, version: str | None, module: str | None, submodule: str | None = None) -> bool:
-    # `.harness/` contains generated runtime state. It is git-ignored and never
-    # belongs in the task changed-path manifest being validated.
-    if path == ".harness" or path.startswith(".harness/"):
+    # `.harness/` is a git-ignored local tree and never belongs in the task
+    # changed-path manifest being validated. Its task documents under
+    # `.harness/tasks/` and `.harness/changes/` are classified below.
+    if is_harness_runtime_state(path):
         return False
 
     packet = active_packet(path, version, module, submodule)
@@ -772,7 +721,7 @@ def allowed_for_stage(path: str, stage: str, version: str | None, module: str | 
         return True
 
     if stage == "proposal":
-        return (packet is not None and leaf in {"proposal.md", "risk-profile.yaml"}) or is_task_index(path, version)
+        return packet is not None and leaf in {"proposal.md", "risk-profile.yaml"}
 
     if stage == "design":
         if packet is not None and (leaf in {"design.md", "risk-profile.yaml"} or relative.startswith("design/")):
@@ -780,7 +729,6 @@ def allowed_for_stage(path: str, stage: str, version: str | None, module: str | 
         return (
             is_module_boundary_sync(path, module)
             or is_architecture_doc(path)
-            or pipeline_artifact_path(path, "plan.md", version, module, submodule)
         )
 
     if stage == "testing":
@@ -798,13 +746,9 @@ def allowed_for_stage(path: str, stage: str, version: str | None, module: str | 
     if stage == "acceptance":
         if packet is not None and leaf == "acceptance-report.md":
             return True
-        return is_review_report(path) or is_task_index(path, version)
+        return is_review_report(path)
 
     if stage == "implementation":
-        if is_any_pipeline_artifact(path):
-            return False
-        if is_task_index(path, version):
-            return False
         if packet_parts(path) is not None and path.rsplit("/", 1)[-1] == "task.yaml":
             return False
         if is_stage_doc_path(path) or is_review_report(path) or is_legacy_review_area(path) or is_module_boundary_sync(path, module) or is_architecture_doc(path):
@@ -813,13 +757,129 @@ def allowed_for_stage(path: str, stage: str, version: str | None, module: str | 
             return False
         if path == "AGENTS.md":
             return False
-        # Rules, scripts, checkers, and pipeline plans are
+        # Rules, scripts, and checkers are
         # governance surfaces that implementation tasks must not modify.
         if path.startswith("harness/"):
             return False
         return True
 
     fail(f"unknown stage: {stage}")
+
+
+def approved_governance_sync(root: Path, task_path: Path, changed_path: str) -> bool:
+    import hashlib
+    packet = ".harness/tasks/v0.1/modules/repo-governance/039-harness-full-upgrade"
+    expected_task = (root / packet / "task.yaml").resolve()
+    if task_path.resolve() != expected_task:
+        return False
+    try:
+        task = parse_task_manifest(expected_task)
+        proposal = root / packet / "proposal.md"
+        authorization = json.loads((root / ".harness/upgrade-039/scope-authorization.json").read_text(encoding="utf-8"))
+        fields = {"schema_version", "task_manifest", "proposal_sha256", "change_ids", "allowed_paths", "allowed_stages", "authorization_source"}
+        expected_changes = sorted(["CHG-harness-current-tooling", "CHG-harness-local-task-migration", "CHG-harness-governance-regression"])
+        return (
+            set(authorization) == fields
+            and authorization["schema_version"] == 1
+            and authorization["task_manifest"] == packet + "/task.yaml"
+            and authorization["proposal_sha256"] == hashlib.sha256(proposal.read_bytes()).hexdigest()
+            and authorization["change_ids"] == expected_changes
+            and sorted(item["id"] for item in task["changes"]) == expected_changes
+            and authorization["allowed_paths"] == [packet + "/testing.md", packet + "/testplan.yaml"]
+            and authorization["allowed_stages"] == ["design", "implementation"]
+            and isinstance(authorization["authorization_source"], str)
+            and bool(authorization["authorization_source"].strip())
+            and task.get("workflow_tier") == "high-risk"
+            and task.get("version") == "v0.1"
+            and task.get("packet_module") == "repo-governance"
+            and task.get("task_name") == "039-harness-full-upgrade"
+            and task.get("stage") in authorization["allowed_stages"]
+            and changed_path in authorization["allowed_paths"]
+            and re.search(r"(?m)^status:[ \t]*approved[ \t]*$", proposal.read_text(encoding="utf-8")) is not None
+        )
+    except (OSError, ValueError, KeyError, TypeError, TaskManifestError):
+        return False
+
+
+def governance_implementation_record() -> dict:
+    """Fixed D-039-001 binding, never derived from task Scope Paths."""
+    return {
+        "schema_version": 1,
+        "task_manifest": ".harness/tasks/v0.1/modules/repo-governance/039-harness-full-upgrade/task.yaml",
+        "proposal_sha256": "3a737966b1df0c38ead3bcae932ecdc71fdb9ef9c5430121ae28d2b61778984d",
+        "change_ids": ["CHG-harness-current-tooling", "CHG-harness-governance-regression", "CHG-harness-local-task-migration"],
+        "allowed_stages": ["implementation"],
+        "allowed_artifact_groups": ["workflow-tools", "durable-templates", "process-instructions", "project-entrypoints", "stable-documentation", "verified-legacy-removals"],
+        "changed_paths_file": ".harness/evidence/v0.1/stage-scope/039-harness-full-upgrade-implementation.paths",
+        "changed_paths_sha256": "d8980645f5dbff16577b22bd38593db545d1ac41e19f0abf56a7c2607f6bf831",
+        "changed_paths_count": 279,
+        "authorization_source": "039 approved proposal P-001/P-002 and legal design reentry D-039-001",
+    }
+
+
+def approved_governance_implementation(root: Path, task_path: Path, changed_path: str) -> bool:
+    """Classify only the pinned, approved 039 governance production delivery."""
+    expected = governance_implementation_record()
+    root = root.resolve()
+    def local(relative: str) -> Path:
+        if not isinstance(relative, str) or not relative or "\\" in relative:
+            raise ValueError("noncanonical repository path")
+        parts = PurePosixPath(relative)
+        if parts.is_absolute() or ".." in parts.parts or parts.as_posix() != relative:
+            raise ValueError("unsafe repository path")
+        result = (root / relative).resolve()
+        if not result.is_relative_to(root):
+            raise ValueError("repository path escape")
+        return result
+    try:
+        manifest = local(expected["task_manifest"])
+        if task_path.resolve() != manifest:
+            return False
+        record = json.loads(local(".harness/upgrade-039/governance-implementation-authorization.json").read_text(encoding="utf-8"))
+        if record != expected or type(record.get("schema_version")) is not int or type(record.get("changed_paths_count")) is not int:
+            return False
+        task = parse_task_manifest(manifest)
+        if (task.get("workflow_tier"), task.get("version"), task.get("packet_module"), task.get("task_name"), task.get("stage")) != ("high-risk", "v0.1", "repo-governance", "039-harness-full-upgrade", "implementation"):
+            return False
+        if sorted(item["id"] for item in task["changes"]) != expected["change_ids"] or any(item["target_module"] != "repo-governance" for item in task["changes"]):
+            return False
+        proposal = local(expected["task_manifest"].rsplit("/", 1)[0] + "/proposal.md")
+        if hashlib.sha256(proposal.read_bytes()).hexdigest() != expected["proposal_sha256"] or not re.search(r"(?m)^status:[ \t]*approved[ \t]*$", proposal.read_text(encoding="utf-8")):
+            return False
+        paths_file = local(expected["changed_paths_file"])
+        data = paths_file.read_bytes()
+        paths = data.decode("utf-8").splitlines()
+        if hashlib.sha256(data).hexdigest() != expected["changed_paths_sha256"] or len(paths) != expected["changed_paths_count"] or len(set(paths)) != len(paths):
+            return False
+        for path in paths:
+            local(path)
+        local(changed_path)
+        if changed_path not in paths:
+            return False
+        scripts = {"task_manifest", "context", "risk-profile-check", "schema-check", "baseline-snapshot", "doc-structure-check", "stage-scope-check", "consumer-closure-check", "architecture-doc-check", "completion-report-check", "acceptance-report-check", "test-run", "testing-coverage-check", "lifecycle-check", "harness-check", "lower-tier-check", "task-transition", "task-index", "task-seq", "harness-self-check", "check-all", "quality-check", "admission-check", "edit-guard", "pipeline-plan-check", "legacy-task-migrate"}
+        templates = {"change-record.md", "task-index.json", "evidence/admission-evidence.md", "evidence/stage-scope-manifest-meta.json", *["task-packet/" + name for name in ("task.yaml", "proposal.md", "design.md", "risk-profile.yaml", "testing.md", "testplan.yaml", "acceptance-report.md", "completion-report.md")]}
+        process = {"implementation-task.md", "task-template.md", "task_templates/acceptance-return-task.md", "task_templates/pipeline-stage-task.md", "task_templates/pipeline-submodule-task.md"}
+        if changed_path in {"harness/scripts/" + name + ".py" for name in scripts} | {"harness/templates/" + name for name in templates} | {"harness/process_rules/" + name for name in process} | {"AGENTS.md", "test-run.bat", "test-run.sh", "docs/modules/README.md", "docs/modules/repo-governance.md", "docs/architecture/repository-workflow.md"}:
+            return True
+        if changed_path.startswith(("docs/versions/", "docs/changes/")) and not local(changed_path).exists():
+            originals = json.loads(local(".harness/upgrade-039/originals-manifest.json").read_text(encoding="utf-8"))
+            journal = json.loads(local(".harness/upgrade-039/migration-journal.json").read_text(encoding="utf-8"))
+            original = next((item for item in originals["files"] if item["path"] == changed_path), None)
+            mapping = next((item for item in journal["files"] if item["source"] == changed_path), None)
+            if not original or not mapping or journal["status"] != "cleaned" or mapping["source_sha256"] != original["sha256"] or mapping["archive"] != ".harness/archives/legacy-upgrade-039/" + changed_path:
+                return False
+            destinations = {mapping["archive"]}
+            if changed_path.startswith("docs/changes/"):
+                destinations.add(changed_path.replace("docs/changes/", ".harness/changes/", 1))
+            else:
+                canonical = changed_path.replace("docs/versions/", ".harness/tasks/", 1)
+                destinations.update({canonical, canonical.replace("/modules/", "/history/modules/", 1)})
+            if mapping["destination"] not in destinations:
+                return False
+            return hashlib.sha256(local(mapping["archive"]).read_bytes()).hexdigest() == original["sha256"] and hashlib.sha256(local(mapping["destination"]).read_bytes()).hexdigest() == mapping["destination_sha256"]
+        return False
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, TaskManifestError):
+        return False
 
 
 def main() -> int:
@@ -912,19 +972,17 @@ def main() -> int:
         if args.baseline_manifest
         else {}
     )
-    scope_paths = (
-        design_scope_paths(
-            root,
-            str(args.version),
-            str(args.module),
-            args.submodule,
-            str(target_module),
-            list(args.change_ids or []),
-        )
-        if args.stage == "implementation"
-        else []
-    )
     paths = explicit_changed_paths(args, root)
+    if args.stage == "implementation" and (args.version, args.module, args.submodule) == ("v0.1", "repo-governance", "039-harness-full-upgrade"):
+        # D-039-001 binds the actual submission, not just the stored reference
+        # manifest. Empty, truncated or extended deliveries cannot use it.
+        expected = governance_implementation_record()
+        try:
+            pinned = (root / expected["changed_paths_file"]).read_bytes()
+        except OSError as error:
+            fail(f"missing pinned governance production manifest: {error}")
+        if hashlib.sha256(pinned).hexdigest() != expected["changed_paths_sha256"] or len(paths) != expected["changed_paths_count"] or set(paths) != set(pinned.decode("utf-8").splitlines()):
+            fail("039 implementation requires the complete pinned production manifest")
     if not paths:
         print("stage-scope-check: no task changed paths")
         return 0
@@ -934,27 +992,17 @@ def main() -> int:
         path_allowed = allowed_for_stage(
             path, args.stage, args.version, args.module, args.submodule
         )
-        if args.stage == "implementation":
-            within_design_scope = in_scope_paths(path, scope_paths)
-            if target_module == "repo-governance" and within_design_scope:
-                # Harness scripts and routing files are the production surface
-                # of the repository-governance module. Keep task coordination
-                # and review artifacts stage-owned even if a broad design path
-                # would otherwise include them.
-                path_allowed = not (
-                    is_any_pipeline_artifact(path)
-                    or is_task_index(path, args.version)
-                    or is_stage_doc_path(path)
-                    or is_review_report(path)
-                )
-            else:
-                path_allowed = path_allowed and within_design_scope
         if (
             not path_allowed
             and args.stage == "testing"
             and rust_inline_test_only_change(root, path, baselines)
         ):
             path_allowed = True
+        if not path_allowed and args.stage in {"design", "implementation"} and args.version == "v0.1" and args.module == "repo-governance" and args.submodule == "039-harness-full-upgrade":
+            task_path = root / ".harness/tasks/v0.1/modules/repo-governance/039-harness-full-upgrade/task.yaml"
+            path_allowed = approved_governance_sync(root, task_path, path)
+            if not path_allowed and args.stage == "implementation" and sorted(args.change_ids or []) == governance_implementation_record()["change_ids"] and target_module == "repo-governance":
+                path_allowed = approved_governance_implementation(root, task_path, path)
         if not path_allowed:
             violations.append(path)
     if violations:

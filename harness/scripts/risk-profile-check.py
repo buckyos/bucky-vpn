@@ -155,8 +155,7 @@ def replace_scalar(text: str, key: str, value: str, *, indent: int = 0) -> str:
 def active_design_source(task: dict[str, object], task_path: Path) -> Path | None:
     if str(task["stage"]) == "proposal":
         return None
-    harness_check = load_harness_check()
-    field = "pipeline_plan" if harness_check.uses_pipeline_design(task) else "design"
+    field = "design"
     value = task.get(field)
     if not value:
         fail(f"task stage {task['stage']} requires {field}")
@@ -246,10 +245,7 @@ def validate(profile_path: Path, task_path: Path, task: dict[str, object]) -> No
                 fail(f"non-applicable risk {key} must use required_checks: []")
 
     require_reference(task_path.parent / str(task["proposal"]))
-    harness_check = load_harness_check()
-    if harness_check.uses_pipeline_design(task) and task["stage"] in POST_PROPOSAL_STAGES:
-        require_reference(task_path.parent / str(task["pipeline_plan"]))
-    elif task["stage"] in POST_PROPOSAL_STAGES:
+    if task["stage"] in POST_PROPOSAL_STAGES:
         require_reference(task_path.parent / str(task["design"]))
     if task["stage"] in {"testing", "acceptance"}:
         testing = task_path.parent / str(task.get("testing") or "testing.md")

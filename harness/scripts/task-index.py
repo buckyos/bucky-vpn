@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Manage the version-local unfinished Harness task index.
 
-The index is a machine-owned `docs/versions/<version>/modules/tasks.json` file.
+The index is a machine-owned `.harness/tasks/<version>/tasks.json` file.
 Agents and humans use this command instead of editing the JSON directly.
 """
 
@@ -19,7 +19,7 @@ from task_manifest import TaskManifestError, parse_task_manifest
 
 TASK_NAME_RE = re.compile(r"^\d{3,}-[a-z0-9][a-z0-9_.-]*$")
 MODULE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-WORKFLOW_TIERS = {"pending", "trivial", "standard", "high-risk"}
+WORKFLOW_TIERS = {"pending", "standard", "high-risk"}
 INDEX_FIELDS = {"schema_version", "version", "tasks"}
 TASK_FIELDS = {"task_id", "task_manifest"}
 
@@ -42,7 +42,7 @@ def safe_relative(root: Path, value: str, label: str) -> Path:
 
 
 def index_path(root: Path, version: str) -> Path:
-    return root / "docs" / "versions" / version / "modules" / "tasks.json"
+    return root / ".harness" / "tasks" / version / "tasks.json"
 
 
 def task_parts(root: Path, task_path: Path) -> tuple[str, str, str, str]:
@@ -53,14 +53,14 @@ def task_parts(root: Path, task_path: Path) -> tuple[str, str, str, str]:
     parts = relative.parts
     if (
         len(parts) != 7
-        or parts[0] != "docs"
-        or parts[1] != "versions"
+        or parts[0] != ".harness"
+        or parts[1] != "tasks"
         or parts[3] != "modules"
         or parts[6] != "task.yaml"
     ):
         fail(
             "task manifest must use "
-            "docs/versions/<version>/modules/<packet-module>/<task-name>/task.yaml: "
+            ".harness/tasks/<version>/modules/<packet-module>/<task-name>/task.yaml: "
             + relative.as_posix()
         )
     version, packet_module, task_name = parts[2], parts[4], parts[5]
@@ -154,7 +154,7 @@ def validate_task_completed(root: Path, task_path: Path) -> None:
     tier = task.get("workflow_tier", "high-risk")
     if tier == "pending":
         fail("task workflow tier must be user-confirmed before removal")
-    if tier not in {"trivial", "standard", "high-risk"}:
+    if tier not in {"standard", "high-risk"}:
         fail(f"unsupported confirmed workflow tier: {tier}")
 
     proposal = task_path.parent / "proposal.md"
@@ -169,7 +169,7 @@ def validate_task_completed(root: Path, task_path: Path) -> None:
     ):
         fail(f"task proposal final tier does not match task.yaml: {proposal}")
 
-    if tier in {"trivial", "standard"}:
+    if tier == "standard":
         report_value = task.get("completion_report") or "completion-report.md"
         if report_value != "completion-report.md":
             fail("lower-tier completion_report must use task-packet completion-report.md")
@@ -203,14 +203,11 @@ def validate_task_completed(root: Path, task_path: Path) -> None:
         return
 
     stage = task.get("stage")
-    mode = task.get("mode")
-    if mode == "manual" and stage != "acceptance":
+    if stage != "acceptance":
         current = str(stage) if stage is not None else "missing"
         fail(
             f"task must be in acceptance stage before removal; current stage: {current}"
         )
-    if mode not in {"manual", "auto-pipeline"}:
-        fail(f"task has unsupported workflow mode before removal: {mode}")
 
     report = task_path.parent / "acceptance-report.md"
     if not report.is_file():

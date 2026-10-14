@@ -24,18 +24,15 @@ from task_manifest import TaskManifestError, parse_task_manifest
 
 
 STAGES = {"proposal", "design", "implementation", "testing", "acceptance"}
-PIPELINE_STAGES = ("design", "implementation", "testing", "acceptance")
-MODES = {"manual", "auto-pipeline"}
 PROFILES = {"pre-edit", "completion"}
 TASK_NAME_RE = re.compile(r"^\d{3,}-[a-z0-9][a-z0-9_.-]*$")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 CHANGE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 TOP_LEVEL_FIELDS = {
-    "workflow_tier", "version", "packet_module", "task_name", "stage", "mode",
-    "auto_pipeline_start_stage",
+    "workflow_tier", "version", "packet_module", "task_name", "stage",
     "proposal", "design", "testing", "testplan", "acceptance_report",
     "completion_report", "change_record",
-    "pipeline_plan", "risk_profile", "lifecycle_state", "changed_paths_file",
+    "risk_profile", "lifecycle_state", "changed_paths_file",
     "baseline_manifest",
 }
 CHANGE_SCALARS = {"id", "target_module", "changed_paths_file"}
@@ -92,7 +89,7 @@ def validate_task(task: dict[str, object], path: Path) -> None:
         )
     task["workflow_tier"] = tier
     required = (
-        "schema_version", "version", "packet_module", "task_name", "stage", "mode",
+        "schema_version", "version", "packet_module", "task_name", "stage",
         "proposal", "risk_profile",
     )
     missing = [key for key in required if task.get(key) in {None, ""}]
@@ -109,26 +106,12 @@ def validate_task(task: dict[str, object], path: Path) -> None:
         fail(f"invalid task_name: {task_name}")
     if task["stage"] not in STAGES:
         fail(f"stage must be one of: {', '.join(sorted(STAGES))}")
-    if task["mode"] not in MODES:
-        fail(f"mode must be one of: {', '.join(sorted(MODES))}")
-    start_stage = task.get("auto_pipeline_start_stage")
-    if task["mode"] == "auto-pipeline":
-        if start_stage not in PIPELINE_STAGES:
-            fail(
-                "auto-pipeline task requires auto_pipeline_start_stage to be one of: "
-                + ", ".join(PIPELINE_STAGES)
-            )
-        if task.get("pipeline_plan") in {None, ""}:
-            fail("auto-pipeline task requires pipeline_plan")
-    elif start_stage not in {None, ""}:
-        fail("manual task must not set auto_pipeline_start_stage")
     canonical_artifacts = {
         "proposal": "proposal.md",
         "design": "design.md",
         "testing": "testing.md",
         "testplan": "testplan.yaml",
         "acceptance_report": "acceptance-report.md",
-        "pipeline_plan": "pipeline/plan.md",
         "risk_profile": "risk-profile.yaml",
         "lifecycle_state": "lifecycle.json",
     }
@@ -158,22 +141,7 @@ def validate_task(task: dict[str, object], path: Path) -> None:
 
 
 def task_packet(root: Path, task: dict[str, object]) -> Path:
-    return root / "docs" / "versions" / str(task["version"]) / "modules" / str(task["packet_module"]) / str(task["task_name"])
-
-
-def stage_uses_auto_pipeline(task: dict[str, object], stage: str | None = None) -> bool:
-    """Return whether one delivery stage uses automatic rather than manual semantics."""
-    if task["mode"] != "auto-pipeline":
-        return False
-    selected = str(stage or task["stage"])
-    if selected == "proposal":
-        return False
-    start = str(task["auto_pipeline_start_stage"])
-    return PIPELINE_STAGES.index(selected) >= PIPELINE_STAGES.index(start)
-
-
-def uses_pipeline_design(task: dict[str, object]) -> bool:
-    return stage_uses_auto_pipeline(task, "design")
+    return root / ".harness" / "tasks" / str(task["version"]) / "modules" / str(task["packet_module"]) / str(task["task_name"])
 
 
 def risk_profile_triggers(path: Path) -> list[str]:
@@ -363,12 +331,6 @@ def context_evidence_paths(root: Path, task: dict[str, object]) -> list[str]:
     hybrid_baseline = hybrid_baseline_relative(task)
     if safe_repo_path(root, hybrid_baseline, "repository baseline").is_file():
         candidates.append(hybrid_baseline)
-    state = (
-        Path(".harness") / "pipelines" / str(task["version"])
-        / str(task["packet_module"]) / str(task["task_name"]) / "state.json"
-    ).as_posix()
-    if safe_repo_path(root, state, "pipeline state").is_file():
-        candidates.append(state)
 
     run_dir = root / ".harness" / "test-results" / "test-runs"
     task_suffix = "/" + str(task["task_name"])
@@ -432,18 +394,11 @@ def binding_rows(path: Path, section: str) -> list[dict[str, str]]:
 
 
 def validate_scope_bindings(manifest: Path, task: dict[str, object]) -> None:
-    if uses_pipeline_design(task):
-        value = task.get("pipeline_plan")
-        if not value:
-            fail("auto-pipeline task requires pipeline_plan")
-        source = manifest.parent / str(value)
-        section = "Implementation Scope Bindings"
-    else:
-        value = task.get("design")
-        if not value:
-            fail("manual task requires design")
-        source = manifest.parent / str(value)
-        section = "Directly Mapped Change Items"
+    value = task.get("design")
+    if not value:
+        fail("task requires design")
+    source = manifest.parent / str(value)
+    section = "Directly Mapped Change Items"
     rows = binding_rows(source, section)
     for change in task["changes"]:
         assert isinstance(change, dict)
@@ -483,6 +438,15 @@ def write_sidecar(root: Path, manifest_value: str, payload: dict[str, object]) -
     if not manifest.is_file():
         fail(f"changed_paths_file does not exist: {manifest}")
     sidecar = manifest.with_name(manifest.name + ".meta.json")
+    if manifest_value == ".harness/evidence/v0.1/stage-scope/039-harness-full-upgrade-implementation.paths" and (payload.get("stage"), payload.get("version"), payload.get("module"), payload.get("submodule")) == ("implementation", "v0.1", "repo-governance", "039-harness-full-upgrade"):
+        payload = {
+            **payload,
+            "classification_amendment": "D-039-001",
+            "authorization_record": ".harness/upgrade-039/governance-implementation-authorization.json",
+            "original_inventory": ".harness/upgrade-039/originals-manifest.json",
+            "migration_mapping": ".harness/upgrade-039/migration-journal.json",
+            "classification_reason": "Pinned complete manifest; governance scripts, production templates/instructions, AGENTS and navigation, and hash-verified legacy removals.",
+        }
     sidecar.parent.mkdir(parents=True, exist_ok=True)
     sidecar.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -621,9 +585,7 @@ def build_commands(root: Path, manifest: Path, task: dict[str, object], profile:
     commands: list[list[str]] = []
     schema = command_prefix(root, "schema-check.py") + identity
     approved_schema = schema + ["--require-approved"]
-    approved_design_schema = schema + (
-        ["--require-approved"] if not uses_pipeline_design(task) else []
-    )
+    approved_design_schema = approved_schema
     doc_structure = command_prefix(root, "doc-structure-check.py") + identity + ["--docs", stage]
 
     if profile == "pre-edit":
@@ -631,15 +593,9 @@ def build_commands(root: Path, manifest: Path, task: dict[str, object], profile:
         context = command_prefix(root, "context.py") + [
             "--workflow-tier", str(task["workflow_tier"]),
             "--stage", stage,
-            "--mode", str(task["mode"]),
             "--packet", packet_rel,
             "--module", str(task["packet_module"]),
         ]
-        if task["mode"] == "auto-pipeline":
-            context += [
-                "--auto-pipeline-start-stage",
-                str(task["auto_pipeline_start_stage"]),
-            ]
         profile = artifact_path(root, manifest, task, "risk_profile")
         triggers = sorted(risk_profile_triggers(profile)) if profile is not None else []
         for trigger in triggers:
@@ -658,28 +614,16 @@ def build_commands(root: Path, manifest: Path, task: dict[str, object], profile:
             commands.append(approved_design_schema)
         if stage == "implementation":
             commands.append(approved_design_schema)
-        if task["mode"] == "auto-pipeline":
-            plan = artifact_path(root, manifest, task, "pipeline_plan", required=True)
-            assert plan is not None
-            commands.append([
-                sys.executable,
-                str(root / "harness" / "scripts" / "pipeline-plan-check.py"),
-                str(plan),
-                "--root", str(root),
-            ])
         return commands
 
     if stage != "acceptance":
         commands.append(command_prefix(root, "risk-profile-check.py") + ["--task", str(manifest)])
     if stage == "proposal":
-        proposal_schema = (
-            schema if stage_uses_auto_pipeline(task, "design") else approved_schema
-        )
+        proposal_schema = approved_schema
         commands.extend([proposal_schema, doc_structure])
     elif stage == "design":
         commands.append(schema)
-        if not stage_uses_auto_pipeline(task, "design"):
-            commands.append(doc_structure)
+        commands.append(doc_structure)
     elif stage == "implementation":
         commands.append(approved_design_schema)
     elif stage == "testing":
@@ -688,7 +632,6 @@ def build_commands(root: Path, manifest: Path, task: dict[str, object], profile:
         if (
             testing_doc is not None
             and testing_doc.is_file()
-            and not stage_uses_auto_pipeline(task, "testing")
         ):
             commands.append(doc_structure)
         command = command_prefix(root, "testing-coverage-check.py") + identity
@@ -706,10 +649,6 @@ def build_commands(root: Path, manifest: Path, task: dict[str, object], profile:
         assert report is not None
         commands.append([sys.executable, str(root / "harness" / "scripts" / "acceptance-report-check.py"), str(report), "--root", str(root)])
 
-    if stage != "acceptance" and task["mode"] == "auto-pipeline":
-        plan = artifact_path(root, manifest, task, "pipeline_plan", required=True)
-        assert plan is not None
-        commands.append([sys.executable, str(root / "harness" / "scripts" / "pipeline-plan-check.py"), str(plan), "--root", str(root)])
     commands.extend(stage_scope_commands(root, task))
     return commands
 

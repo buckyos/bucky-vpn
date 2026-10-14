@@ -2,14 +2,26 @@
 
 ## Goal
 - Define the minimum useful structure and approval requirements for `design.md` and task-local `design/`.
-- Keep design documents readable by using UML diagrams for module relationships and source-language signatures for file-level interfaces.
+- Optimize design artifacts for implementation correctness and handoff. Diagrams, prose polish, document length, and per-level file splitting are not completion requirements.
 
 ## Scope
-- This rule is part of the high-risk workflow. Trivial and standard work does not create `design.md` or task-local `design/` artifacts.
-- Single-project design: `docs/versions/<version>/modules/<project>/<task-seq>-<task-slug>/design.md` and optional task-local `design/`.
-- Cross-project design: `docs/versions/<version>/modules/globals/<task-seq>-<task-slug>/design.md`.
+- Formal design artifacts and completion requirements in this rule are part of the high-risk workflow. Standard work does not create `design.md` or task-local `design/` artifacts. Proposal discussion uses only the applicability guidance below.
+- Single-project design: `.harness/tasks/<version>/modules/<project>/<task-seq>-<task-slug>/design.md` and optional task-local `design/`.
+- Cross-project design: `.harness/tasks/<version>/modules/globals/<task-seq>-<task-slug>/design.md`.
 - Required long-lived boundary sync in `docs/modules/<module>.md`.
 - Project-rule-required updates to global architecture docs under `docs/architecture/`.
+
+## Proposal Applicability
+- In any tier, proposal discussion of a candidate design MUST apply the relevant design-quality guardrails below at the depth actually discussed: top-down reasoning, business responsibility boundaries, acyclic dependency direction, shared-module justification, state ownership, interface compatibility, affected consumers, material failure/lifecycle behavior, and preservation of existing invariants.
+- Describe relationships at the relevant parent boundary; source-language signatures specify file-level interfaces. Exploratory proposal discussion need not reach file-level detail.
+- Keep alternatives and abstractions grounded in the actual requirement and current code. Apply the guardrails against filler, speculative architecture, and unjustified abstractions to candidate solutions too.
+- Formal metadata, complete file sequences, migration closure, architecture synchronization, and completion checks remain downstream obligations. Proposal records material compatibility/migration implications without claiming completed evidence.
+- The prohibition on test planning below applies to design-stage artifacts. Proposal may discuss testing under [Test Design Rules — Proposal Applicability](test-design-rules.md#proposal-applicability); proposal content and its handoff are governed by [Proposal Document Rules](proposal-doc-rules.md#design-and-testing-discussion).
+
+## Proposal Design Handoff
+- When `proposal.md` contains a design solution, the design stage's primary goal is to inspect it for defects and complete it into an implementation-ready design. Start from that solution, retain sound decisions, correct defects, and fill missing detail under the guardrails below. Proposal approval does not prove design correctness.
+- Compare the proposed solution with the requirement baseline, current code, affected consumers, dependencies, ownership, interfaces, and failure behavior. Record material findings, corrections, and their reasons in the active design source, referencing the relevant proposal sections or item IDs; do not recreate a valid solution merely to fill a separate stage document.
+- Review depth and completion work follow what the proposal already establishes. A partial design needs review plus missing design work; when no solution exists, develop one from the approved requirements. In every case, the final design must satisfy the stage's required coverage and implementation-readiness criteria.
 
 ## Required Metadata
 - `task_manifest: task.yaml`
@@ -20,12 +32,12 @@
 - Reference `Risk profile: ./risk-profile.yaml`; for every applicable task-level risk, complete its concrete evidence paths and `required_checks` there, and do not copy a Trigger Matrix into `design.md`.
 - Design scope, useful context, and the smallest sufficient overall approach.
 - A top-down layered design decomposition from the whole affected module to submodules, nested submodules, and file-level modules.
-- A design document index that names each level's independent design document; child level documents live under the parent module document directory's `design/` directory and are named after the child submodule.
-- UML-style Mermaid diagrams for module relationships at every affected level with multiple units.
+- Split task-local design files only when complexity or context loading benefits; reference any split sources from the root design. No per-level file or fixed index table is required.
+- `## Module Dependencies`: one row per affected unit with `level`, `parent`, `node`, and comma-separated `depends_on` (`none` for no dependencies).
 - Source-language fenced code blocks for file-level module interfaces when the design reaches implementation files.
-- Key boundary-crossing flows as sequence diagrams when runtime interaction matters.
+- Key boundary-crossing call order and relevant failure outcomes, using concise steps or another useful representation.
 - State/data ownership only for persistent data or shared state affected by the task.
-- Direct change mapping with stable `change_id` values, a concrete `target_module`, and concrete `Scope Paths`.
+- Direct change mapping with stable `change_id` values, a concrete `target_module`, and concrete `Scope Paths`. Refine task-manifest paths during design; proposal does not freeze them. Receipt binding and later path revisions follow [Schema Validation Rules](schema-validation-rules.md#receipt-binding).
 - File-level modules to create or modify, ordered by same-level dependency for implementation.
 - Implementation ordering constraints, material design notes, risks, and rollback notes.
 
@@ -34,12 +46,11 @@
 - Approval, packet immutability, and stage ownership follow `harness/rules/task-entry-gate-rules.md`; schema validation checks the document status only.
 - Design stays at module shape level: relationships, ownership, interfaces, external dependencies, key flows, state transitions, and implementation order. Avoid low-level implementation detail unless it affects a contract, dependency, state, or control flow.
 - Design docs MUST contain only useful content. Delete filler tables, placeholder sections, repeated proposal text, speculative extension points, idealized architecture, test planning, and facts that do not affect implementation, scope binding, or acceptance.
-- Design MUST proceed top-down: whole affected project/module first, then direct submodules, nested submodules, and finally file-level modules. A lower level is not implementation-ready unless every parent level has a same-level design description and indexed child design document.
-- Each submodule or nested submodule level MUST have an independent design document under the parent module document directory's `design/` directory, with the file name based on the child submodule name, for example `design/<submodule>.md`. The parent design document MUST list the child document in `## Layered Design Document Index`.
+- Design MUST proceed top-down through affected boundaries. Parent responsibilities must be established before lower-level decisions; one document may cover multiple levels.
 - Layered design documents belong to the active task's design artifact group. They describe the same task's decomposition and MUST NOT be used as a substitute for creating a sibling task packet for a new requirement or independent task.
 - Design-stage artifacts MUST NOT define test cases, test plans, test strategy, validation IDs, test fixtures, testability seams, test implementation, or expected test results. Testing-stage artifacts own test-case design and test implementation after implementation completes.
-- Module relationships MUST be represented with UML-style Mermaid diagrams instead of prose tables. Use `classDiagram` for static dependencies/ownership, `sequenceDiagram` for boundary-crossing flows, and `stateDiagram-v2` for lifecycle/state transitions when relevant.
-- UML diagrams describe same-level relationships only. Do not draw dependencies between submodules with different parent modules; represent that relationship at the nearest common parent level.
+- Diagrams are optional aids. The dependency record is authoritative for graph checks; flow and state descriptions need no diagram syntax.
+- Dependency records describe same-level relationships. Cross-parent collaboration is represented at the nearest common parent level.
 - Module and submodule dependency graphs MUST be acyclic. Circular dependencies return to design.
 - Split by business responsibility first. Shared implementation logic used by multiple business submodules belongs in a shared submodule; single-consumer logic stays with its consumer.
 - Technical areas such as HTTP interfaces, persistence, adapters, codecs, schedulers, or storage become technical submodules only when they have clear responsibility boundaries; otherwise keep them inside the owning business submodule and record the reason in `## Design Notes`.
@@ -61,7 +72,6 @@
 - The final design MUST identify every file-level module that will be created or modified. `## File-Level Implementation Sequence` MUST order those files by dependency so implementation child tasks can be created and executed in that order.
 - Existing-code designs describe current structure only where it constrains the change.
 - Large module roots with 3 or more distinct externally visible directories/files MUST model new independent features as direct submodules unless `## Design Notes` explains otherwise.
-- Human-authored design docs SHOULD stay well below 1000 lines; any doc above 1000 lines MUST be split by submodule, responsibility, validation layer, or interface boundary and the relevant document index must be updated.
 - Do not add idealized architecture, speculative features, extension points, configuration, or abstractions beyond the approved proposal.
 - New abstractions MUST match local patterns or remove real duplicated complexity, with the reason recorded in `## Design Notes`.
 - Cross-module work MUST identify every affected module.
@@ -71,4 +81,6 @@
 - Design MUST update `docs/architecture/` only when repo-local project rules require global architecture documentation changes. Default generated rules do not require mirrored implementation directories or proposal/design docs under `docs/architecture/`.
 - Proposal ambiguity routes back to proposal.
 - Downstream testing or acceptance follow-up is recorded unless cross-stage synchronization is explicitly requested.
-- Before completion, run `UV_CACHE_DIR=.harness/uv-cache uv run --active python ./harness/scripts/harness-check.py --task <packet>/task.yaml --profile completion`.
+- Return the design artifacts and evidence to the parent. The parent runs `UV_CACHE_DIR=.harness/uv-cache uv run --active python ./harness/scripts/task-transition.py --task <packet>/task.yaml advance`, which executes completion checks, approves the design, records its receipt, and advances. Do not run a separate completion profile before this transition; follow `harness/rules/task-execution-rules.md`.
+
+Proposal confirmation authorizes downstream execution under `harness/rules/task-execution-rules.md`. Design/testing documents become approved after their stage checks pass; no intermediate user approval is required.

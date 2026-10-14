@@ -5,17 +5,18 @@
 ## 读取顺序
 1. 读取 `AGENTS.md` 与 `harness/rules/task-entry-gate-rules.md`，选择当前 `task.yaml`
 2. 运行 `harness/scripts/harness-check.py --task <packet>/task.yaml --profile pre-edit`
-3. 只读取 context router 输出的 proposal、active design source、模块边界、架构约束和匹配规则
+3. 从 context router 推荐的 proposal、active design source、模块边界、架构约束和匹配规则开始读取，按任务需要继续检查任何项目文件
 4. 按 `harness/rules/implementation-rules.md` 执行实现
 
 ## 开始实现前必须确认
-- manual flow 的 `proposal.md`、`design.md` 都存在且 `status: approved`；auto-pipeline 使用 launch-confirmed proposal 与已验证的 pipeline plan mappings
+- standard 使用已批准 common proposal 和一个变更记录；high-risk 的 `proposal.md`、`design.md` 都存在且 `status: approved`，并由 owning lifecycle 入口验证当前绑定
+- canonical packet 位于 `.harness/tasks/<version>/modules/<packet-module>/<task-seq>-<task-slug>/`；执行不再使用 manual/auto-pipeline 模式或 pipeline plan
 - 当前变更能映射到明确的 proposal、active design source、`change_id` 与 `Scope Paths`
 - 如果 approved 文档没有覆盖当前变更，先退回对应上游阶段补文档
 - 不能用 `docs/modules/<module>.md`、历史记忆或聊天描述替代当前变更的直接覆盖
 
 ## 实施规则
-- implementation 只改 production code 与必需的非测试 runtime/build resources；测试设计和测试代码属于后置 testing 阶段
+- implementation 主责是 production code 与必需的非测试 runtime/build resources；按 approved design 执行。阶段及 Scope Paths 是可追溯性和完成证据，不限制文件访问；完整测试设计和测试代码由后置 testing 阶段负责
 - bugfix 默认也遵循同一准入规则，除非仓库未来增加明确例外
 - 改动必须最小化，优先落在当前模块边界内
 - 命中触发规则时，完成其 implementation 所需检查；测试覆盖在 implementation 完成后由 testing 阶段补齐

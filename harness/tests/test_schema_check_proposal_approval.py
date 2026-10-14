@@ -37,8 +37,8 @@ class ProposalApprovalRegressionTests(unittest.TestCase):
         self.root = Path(self.tempdir.name)
         self.packet = (
             self.root
-            / "docs"
-            / "versions"
+            / ".harness"
+            / "tasks"
             / "v0.1"
             / "modules"
             / "repo-governance"
@@ -52,8 +52,6 @@ version: v0.1
 packet_module: repo-governance
 task_name: 001-proposal-approval
 stage: proposal
-mode: manual
-auto_pipeline_start_stage:
 changes:
   - id: CHG-proposal-approval-gate
     target_module: repo-governance
@@ -61,25 +59,9 @@ changes:
 """,
             encoding="utf-8",
         )
-        index = self.root / "docs" / "versions" / "v0.1" / "modules" / "tasks.json"
-        index.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "version": "v0.1",
-                    "tasks": [
-                        {
-                            "task_id": "001-proposal-approval",
-                            "task_manifest": (
-                                "docs/versions/v0.1/modules/repo-governance/"
-                                "001-proposal-approval/task.yaml"
-                            ),
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
+        self.write_proposal("approved")
+        subprocess.run([sys.executable, str(SCHEMA_CHECK.parent / 'task-index.py'), '--root', str(self.root), 'init', '--version', 'v0.1'], check=True, capture_output=True)
+        subprocess.run([sys.executable, str(SCHEMA_CHECK.parent / 'task-index.py'), '--root', str(self.root), 'add', '--task', (self.packet / 'task.yaml').relative_to(self.root).as_posix()], check=True, capture_output=True)
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
@@ -99,7 +81,7 @@ status: {status}
     def run_schema_check(self) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
-                "python3",
+                sys.executable,
                 str(SCHEMA_CHECK),
                 "--root",
                 str(self.root),
@@ -134,37 +116,6 @@ status: {status}
         self.assertIn("got status: draft", completed.stderr)
 
 
-class VendoredSwaggerUiResolutionTests(unittest.TestCase):
-    def test_application_manifests_enable_vendored_swagger_ui_9_0_2(self) -> None:
-        for relative in ("vpn-client/Cargo.toml", "vpn-server/Cargo.toml"):
-            with self.subTest(manifest=relative):
-                with (ROOT / relative).open("rb") as source:
-                    manifest = tomllib.load(source)
-                dependency = manifest["dependencies"]["utoipa-swagger-ui"]
-                self.assertEqual(dependency["version"], "9.0.2")
-                self.assertIn("vendored", dependency["features"])
-
-    def test_lockfile_links_applications_to_vendored_swagger_ui(self) -> None:
-        with (ROOT / "Cargo.lock").open("rb") as source:
-            packages = tomllib.load(source)["package"]
-
-        by_name = {package["name"]: package for package in packages}
-        for application in ("bucky-vpn", "bucky-vpn-server"):
-            with self.subTest(application=application):
-                self.assertIn(
-                    "utoipa-swagger-ui",
-                    by_name[application].get("dependencies", []),
-                )
-
-        swagger_ui = by_name["utoipa-swagger-ui"]
-        self.assertEqual(swagger_ui["version"], "9.0.2")
-        self.assertIn(
-            "utoipa-swagger-ui-vendored",
-            swagger_ui.get("dependencies", []),
-        )
-        self.assertIn("utoipa-swagger-ui-vendored", by_name)
-
-
 class LifecycleBindingRegressionTests(unittest.TestCase):
     @staticmethod
     def base_task() -> dict[str, object]:
@@ -175,9 +126,7 @@ class LifecycleBindingRegressionTests(unittest.TestCase):
             "packet_module": "globals",
             "task_name": "001-lifecycle-binding",
             "stage": "proposal",
-            "mode": "manual",
-            "auto_pipeline_start_stage": None,
-            "proposal": "proposal.md",
+                                    "proposal": "proposal.md",
             "design": "design.md",
             "testing": "testing.md",
             "testplan": "testplan.yaml",
@@ -185,8 +134,7 @@ class LifecycleBindingRegressionTests(unittest.TestCase):
             "risk_profile": "risk-profile.yaml",
             "completion_report": "completion-report.md",
             "change_record": "change-record.md",
-            "pipeline_plan": "pipeline/plan.md",
-            "lifecycle_state": "lifecycle.json",
+                        "lifecycle_state": "lifecycle.json",
             "changed_paths_file": ".harness/evidence/all.txt",
             "changes": [
                 {
@@ -215,7 +163,6 @@ class LifecycleBindingRegressionTests(unittest.TestCase):
                 self.assertEqual(LIFECYCLE.task_binding(changed), expected)
 
         for field, value in {
-            "scope_paths": ["harness/tests/replacement.py"],
             "changed_paths_file": ".harness/evidence/replaced-change.txt",
         }.items():
             with self.subTest(change_field=field):
@@ -257,8 +204,8 @@ class LifecycleBindingRegressionTests(unittest.TestCase):
         root = Path(directory)
         packet = (
             root
-            / "docs"
-            / "versions"
+            / ".harness"
+            / "tasks"
             / "v0.1"
             / "modules"
             / "globals"
@@ -270,8 +217,6 @@ class LifecycleBindingRegressionTests(unittest.TestCase):
         (packet / "proposal.md").write_text("approved proposal\n", encoding="utf-8")
         task = self.base_task()
         task["stage"] = "implementation"
-        task["mode"] = "auto-pipeline"
-        task["auto_pipeline_start_stage"] = "design"
         receipt = LIFECYCLE.receipt_payload(root, task_path, task, "proposal")
         receipt["task_binding_sha256"] = "legacy-task-binding"
         if stale_inputs:
@@ -287,35 +232,6 @@ class LifecycleBindingRegressionTests(unittest.TestCase):
             json.dumps(state, indent=2) + "\n", encoding="utf-8"
         )
         return root, task_path, task
-
-    def test_refresh_migrates_legacy_binding_when_receipt_inputs_are_current(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root, task_path, task = self.lifecycle_fixture(directory)
-
-            with mock.patch.object(LIFECYCLE, "run_pipeline_check") as pipeline_check:
-                refreshed = LIFECYCLE.refresh_manual_bindings(root, task_path, task)
-
-            self.assertEqual(refreshed, ("proposal",))
-            pipeline_check.assert_called_once_with(root, task_path, task, complete=False)
-            state = json.loads((task_path.parent / "lifecycle.json").read_text(encoding="utf-8"))
-            self.assertEqual(
-                state["stages"]["proposal"]["task_binding_sha256"],
-                LIFECYCLE.task_binding(task),
-            )
-
-    def test_refresh_refuses_stale_receipt_inputs_without_mutating_state(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root, task_path, task = self.lifecycle_fixture(directory, stale_inputs=True)
-            state_path = task_path.parent / "lifecycle.json"
-            before = state_path.read_bytes()
-            stderr = io.StringIO()
-
-            with mock.patch.object(LIFECYCLE, "run_pipeline_check"):
-                with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
-                    LIFECYCLE.refresh_manual_bindings(root, task_path, task)
-
-            self.assertIn("receipt inputs are missing or stale", stderr.getvalue())
-            self.assertEqual(state_path.read_bytes(), before)
 
     def test_ordinary_verify_refuses_legacy_binding_without_mutating_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

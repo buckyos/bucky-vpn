@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate lightweight trivial/standard acceptance against an approved proposal."""
+"""Validate lightweight standard acceptance against an approved proposal."""
 
 from __future__ import annotations
 
@@ -13,8 +13,28 @@ from task_manifest import TaskManifestError, parse_task_manifest
 
 TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
 EMPTY_VALUES = {"", "-", "none", "null", "pending", "tbd", "todo"}
-RESULTS = {"accepted", "needs-changes", "rejected"}
+RESULTS = {"accepted", "needs changes", "rejected"}
 REVIEW_STATUSES = {"pass", "fail"}
+DISCOVERY_STATUSES = {"pass", "fail", "not-applicable"}
+REQUIRED_DISCOVERY_CATEGORIES = {
+    "behavior-and-logic",
+    "boundaries-and-failure-paths",
+    "regression-and-side-effects",
+}
+ALWAYS_APPLICABLE_CATEGORIES = {
+    "behavior-and-logic",
+    "regression-and-side-effects",
+}
+GENERIC_EVIDENCE = {
+    "reviewed code",
+    "reviewed implementation",
+    "looks correct",
+    "tests pass",
+    "no issue",
+    "no issues",
+    "no defect",
+    "no defects",
+}
 
 
 def fail(message: str) -> None:
@@ -29,6 +49,16 @@ def non_empty(value: str, *, allow_not_applicable: bool = False) -> bool:
     if allow_not_applicable and normalized.lower() in {"none", "n/a", "na", "not-applicable"}:
         return True
     return normalized.lower() not in EMPTY_VALUES | {"n/a", "na", "not-applicable"}
+
+
+def concrete(value: str) -> bool:
+    normalized = re.sub(r"\s+", " ", value.strip().lower())
+    return (
+        non_empty(value)
+        and len(normalized) >= 12
+        and normalized not in GENERIC_EVIDENCE
+        and not re.search(r"<[^>]+>", normalized)
+    )
 
 
 def read_text(path: Path) -> str:
@@ -130,8 +160,8 @@ def validate_change_record(root: Path, task_path: Path, task: dict[str, object])
         fail(f"{task_path} standard task requires change_record")
     relative, path = safe_root_relative(root, value, "change_record")
     parts = PurePosixPath(relative).parts
-    if len(parts) != 3 or parts[:2] != ("docs", "changes") or not relative.endswith(".md"):
-        fail("standard change_record must use docs/changes/<change>.md")
+    if len(parts) != 3 or parts[:2] != (".harness", "changes") or not relative.endswith(".md"):
+        fail("standard change_record must use .harness/changes/<change>.md")
     text = read_text(path)
     status = re.search(r"(?mi)^\s*-\s*Status:\s*(.+)$", text)
     if not status or status.group(1).strip().lower() != "complete":
@@ -163,6 +193,16 @@ def check_report(path: Path, root: Path) -> None:
     except ValueError:
         fail(f"completion report resolves outside repository: {path}")
     text = read_text(path)
+    discovery_heading = re.search(
+        r"(?m)^##\s+Independent Defect Discovery\s*$", text
+    )
+    conclusion_heading = re.search(r"(?m)^##\s+Conclusion\s*$", text)
+    if not discovery_heading or not conclusion_heading:
+        fail(
+            f"{path} requires Independent Defect Discovery and Conclusion sections"
+        )
+    if discovery_heading.start() > conclusion_heading.start():
+        fail(f"{path} must complete independent defect discovery before conclusion")
     scope = section_body(text, "Object and Scope", path)
     manifest_value = bullet(scope, "Task manifest", path)
     if manifest_value != "task.yaml":
@@ -173,8 +213,8 @@ def check_report(path: Path, root: Path) -> None:
     except TaskManifestError as error:
         fail(str(error))
     tier = str(task.get("workflow_tier") or "")
-    if tier not in {"trivial", "standard"}:
-        fail(f"{path} applies only to confirmed trivial or standard tasks")
+    if tier != "standard":
+        fail(f"{path} applies only to confirmed standard tasks")
     if bullet(scope, "Workflow tier", path).lower() != tier:
         fail(f"{path} Workflow tier does not match task.yaml: {tier}")
     report_value = task.get("completion_report") or "completion-report.md"
@@ -213,12 +253,9 @@ def check_report(path: Path, root: Path) -> None:
         fail(f"{proposal} Proposal Items change_id coverage must exactly match task.yaml")
 
     change_record = bullet(scope, "Change record", path, allow_not_applicable=True)
-    if tier == "standard":
-        expected_record = validate_change_record(root, task_path, task)
-        if change_record != expected_record:
-            fail(f"{path} Change record must bind {expected_record}")
-    elif change_record.lower() not in {"n/a", "na", "not-applicable"}:
-        fail(f"{path} trivial task Change record must be not-applicable")
+    expected_record = validate_change_record(root, task_path, task)
+    if change_record != expected_record:
+        fail(f"{path} Change record must bind {expected_record}")
 
     delivery = section_body(text, "Delivery Summary", path)
     bullet(delivery, "Outcome", path)
@@ -236,16 +273,63 @@ def check_report(path: Path, root: Path) -> None:
         if row["status"].lower() not in REVIEW_STATUSES:
             fail(f"{path} ## Proposal Consistency row {index} has invalid status: {row['status']}")
 
-    implementation = table_rows(text, "Implementation Review", path)
+    discovery = table_rows(text, "Independent Defect Discovery", path)
     require_columns(
         path,
-        "Implementation Review",
-        implementation,
-        ("area", "evidence", "finding", "status"),
+        "Independent Defect Discovery",
+        discovery,
+        (
+            "category",
+            "evidence_inspected",
+            "adversarial_check",
+            "finding_or_not_applicable_reason",
+            "status",
+        ),
     )
-    for index, row in enumerate(implementation, start=1):
-        if row["status"].lower() not in REVIEW_STATUSES:
-            fail(f"{path} ## Implementation Review row {index} has invalid status: {row['status']}")
+    rows_by_category: dict[str, dict[str, str]] = {}
+    for index, row in enumerate(discovery, start=1):
+        category = row["category"].lower()
+        if category in rows_by_category:
+            fail(f"{path} Independent Defect Discovery repeats category: {category}")
+        rows_by_category[category] = row
+        if category not in REQUIRED_DISCOVERY_CATEGORIES:
+            fail(
+                f"{path} Independent Defect Discovery row {index} has unknown "
+                f"category: {category}"
+            )
+        status = row["status"].lower()
+        if status not in DISCOVERY_STATUSES:
+            fail(
+                f"{path} Independent Defect Discovery row {index} has invalid "
+                f"status: {status}"
+            )
+        for column in (
+            "evidence_inspected",
+            "adversarial_check",
+            "finding_or_not_applicable_reason",
+        ):
+            if not concrete(row[column]):
+                fail(
+                    f"{path} Independent Defect Discovery row {index} needs "
+                    f"concrete {column.replace('_', ' ')}"
+                )
+        if status == "not-applicable" and len(
+            re.sub(r"\s+", " ", row["finding_or_not_applicable_reason"].strip())
+        ) < 24:
+            fail(
+                f"{path} Independent Defect Discovery row {index} needs a "
+                "task-specific not-applicable reason"
+            )
+        if status == "not-applicable" and category in ALWAYS_APPLICABLE_CATEGORIES:
+            fail(f"{path} category {category} cannot be not-applicable")
+    missing_categories = sorted(
+        REQUIRED_DISCOVERY_CATEGORIES - set(rows_by_category)
+    )
+    if missing_categories:
+        fail(
+            f"{path} Independent Defect Discovery missing categories: "
+            + ", ".join(missing_categories)
+        )
 
     verification = section_body(text, "Verification", path)
     check = bullet(verification, "Targeted check", path)
@@ -278,8 +362,8 @@ def check_report(path: Path, root: Path) -> None:
             fail(f"{path} accepted conclusion requires completed passing targeted verification")
         if any(row["status"].lower() != "pass" for row in consistency):
             fail(f"{path} accepted conclusion has failing proposal consistency")
-        if any(row["status"].lower() != "pass" for row in implementation):
-            fail(f"{path} accepted conclusion has failing implementation review")
+        if any(row["status"].lower() == "fail" for row in discovery):
+            fail(f"{path} accepted conclusion has failing defect-discovery category")
         if any(row["blocking"].lower() == "yes" for row in findings):
             fail(f"{path} accepted conclusion contains blocking findings")
 

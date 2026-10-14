@@ -8,7 +8,7 @@ Gates are declared in harness/quality-gates.yaml. This checker fails closed:
 
 Every explicitly requested real run writes a machine-readable artifact to
 .harness/test-results/quality-runs/<timestamp>.json recording each gate's
-command and exit code. `.harness/` is generated runtime state and must be
+command and exit code. `.harness/` is local, uncommitted state and must be
 listed in .gitignore.
 Task execution and acceptance do not invoke this checker automatically.
 """

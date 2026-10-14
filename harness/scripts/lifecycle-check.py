@@ -3,13 +3,14 @@
 
 `acceptance-report-check.py` owns only the acceptance document.  This checker
 owns the separate invariant that every required high-risk stage completed in
-order.  Manual-stage receipts are written by `task-transition.py`; automatic
-stages are proved by the auto-pipeline runtime state.
+order. Stage receipts are written by `task-transition.py` after checks pass.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
+import importlib.util
 import hashlib
 import json
 import subprocess
@@ -17,15 +18,14 @@ import sys
 from pathlib import Path
 
 from task_manifest import (
-    PIPELINE_STAGES,
     TaskManifestError,
     parse_task_manifest,
-    stage_is_automatic,
 )
 
 
 STAGES = ("proposal", "design", "implementation", "testing", "acceptance")
 STATE_FIELDS = {"schema_version", "task_manifest", "stages"}
+TASK_BINDING_SCHEMA = 4
 
 
 def fail(message: str) -> None:
@@ -56,44 +56,41 @@ def sha256_file(path: Path) -> str:
         fail(f"cannot read receipt input {path}: {error}")
 
 
-def task_binding(task: dict[str, object]) -> str:
-    """Hash stable lifecycle identity, excluding legal launch/evidence mutations."""
+def task_binding_payload(
+    task: dict[str, object], stage: str = "design"
+) -> dict[str, object]:
+    """Return receipt-bound identity and policy, excluding runtime evidence paths."""
     fields = (
         "schema_version", "workflow_tier", "version", "packet_module", "task_name",
-        "proposal", "design", "testing", "testplan", "acceptance_report",
-        "risk_profile", "completion_report", "change_record", "lifecycle_state",
+        "proposal", "design", "testing",
+        "testplan", "acceptance_report", "risk_profile",
+        "completion_report", "change_record", "lifecycle_state",
     )
     payload = {field: task.get(field) for field in fields}
     changes = task.get("changes")
-    assert isinstance(changes, list)
+    if not isinstance(changes, list):
+        fail("task binding requires canonical changes")
     payload["changes"] = [
         {
             "id": change.get("id"),
             "target_module": change.get("target_module"),
+            **({"scope_paths": change.get("scope_paths")} if stage != "proposal" else {}),
         }
         for change in changes
         if isinstance(change, dict)
     ]
+    return payload
+
+
+def task_binding(task: dict[str, object], stage: str = "design") -> str:
+    """Hash stable identity and frozen policy while excluding stage/evidence paths."""
     encoded = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        task_binding_payload(task, stage),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     ).encode("utf-8")
     return sha256_bytes(encoded)
-
-
-def task_policy(task: dict[str, object]) -> dict[str, str | None]:
-    return {
-        "stage": str(task.get("stage")) if task.get("stage") is not None else None,
-        "mode": str(task.get("mode")) if task.get("mode") is not None else None,
-        "start": (
-            str(task.get("auto_pipeline_start_stage"))
-            if task.get("auto_pipeline_start_stage") is not None
-            else None
-        ),
-    }
-
-
-def automatic_stage(task: dict[str, object], stage: str) -> bool:
-    return stage in PIPELINE_STAGES and stage_is_automatic(task_policy(task), stage)
 
 
 def validate_task(task_path: Path) -> dict[str, object]:
@@ -105,8 +102,6 @@ def validate_task(task_path: Path) -> dict[str, object]:
         fail(f"{task_path} lifecycle receipts apply only to workflow_tier: high-risk")
     if task.get("stage") not in STAGES:
         fail(f"{task_path} has invalid or missing stage")
-    if task.get("mode") not in {"manual", "auto-pipeline"}:
-        fail(f"{task_path} has invalid or missing mode")
     return task
 
 
@@ -220,18 +215,65 @@ def latest_test_artifact(root: Path, task_path: Path, task: dict[str, object]) -
         for change in task.get("changes", [])
         if isinstance(change, dict) and change.get("id")
     }
-    matches: list[Path] = []
+    matches: list[tuple[datetime.datetime, Path, dict[str, object]]] = []
     artifact_root = root / ".harness" / "test-results" / "test-runs"
     for path in artifact_root.glob("*.json") if artifact_root.is_dir() else ():
         try:
             artifact = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             continue
-        if successful_test_run(artifact, scope, expected, change_ids):
-            matches.append(path)
-    if not matches:
+        if not isinstance(artifact, dict):
+            continue
+        if artifact.get("requested_module") != scope or artifact.get("requested_level") not in {"all", "unit", "dv", "integration"}:
+            continue
+        if expected not in (artifact.get("testplans") or []):
+            continue
+        try:
+            started = datetime.datetime.fromisoformat(str(artifact.get("started_at")))
+            if started.tzinfo is None:
+                raise ValueError("missing timezone")
+        except ValueError:
+            # Old artifacts remain historical evidence. Let a fresh run supersede
+            # them, but never accept one as current evidence without fingerprints.
+            started = datetime.datetime.fromtimestamp(path.stat().st_mtime, datetime.timezone.utc)
+        matches.append((started, path, artifact))
+    complete_runs = [match for match in matches if match[2].get("requested_level") == "all"]
+    if not complete_runs:
         fail(f"testing completion requires a successful task test-run artifact for {scope} all")
-    return max(matches, key=lambda path: (path.stat().st_mtime_ns, path.name))
+    latest = max(complete_runs, key=lambda match: (match[0], match[1].name))
+    started, path, artifact = latest
+    for later_start, later_path, later in matches:
+        if (later_start, later_path.name) > (started, path.name) and (
+            later.get("exit_code") != 0 or later.get("inputs_unchanged") is not True
+        ):
+            fail(f"newer task test-run failed or had unstable inputs; rerun all: {later_path}")
+    if not successful_test_run(artifact, scope, expected, change_ids):
+        fail(f"latest task test-run did not succeed: {path}")
+    validate_test_inputs(root, artifact)
+    return path
+
+
+def validate_test_inputs(root: Path, artifact: dict[str, object]) -> None:
+    snapshot = artifact.get("input_snapshot")
+    if not isinstance(snapshot, dict) or snapshot.get("schema") != 1 or artifact.get("inputs_unchanged") is not True:
+        fail("task test-run lacks stable input fingerprints; rerun tests")
+    script = sibling_script("test-run")
+    spec = importlib.util.spec_from_file_location("lifecycle_test_runner", script)
+    if spec is None or spec.loader is None:
+        fail(f"cannot load test runner: {script}")
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    testplans = artifact.get("testplans")
+    if not isinstance(testplans, list) or not all(isinstance(path, str) for path in testplans):
+        fail("task test-run has invalid testplan bindings")
+    for path in testplans:
+        safe_repo_path(root, path, "test-run testplan")
+    try:
+        current = runner.run_input_snapshot(root, testplans)
+    except (OSError, SystemExit, TaskManifestError):
+        fail("task test-run inputs are missing or stale; rerun tests")
+    if snapshot != current:
+        fail("task test-run inputs changed since execution; rerun tests")
 
 
 def receipt_payload(root: Path, task_path: Path, task: dict[str, object], stage: str) -> dict[str, object]:
@@ -241,7 +283,8 @@ def receipt_payload(root: Path, task_path: Path, task: dict[str, object], stage:
     }
     payload: dict[str, object] = {
         "status": "complete",
-        "task_binding_sha256": task_binding(task),
+        "task_binding_schema": TASK_BINDING_SCHEMA,
+        "task_binding_sha256": task_binding(task, stage),
         "inputs": inputs,
     }
     if stage == "testing":
@@ -263,15 +306,13 @@ def write_state(path: Path, state: dict[str, object]) -> None:
 def record_stage(root: Path, task_path: Path, task: dict[str, object], stage: str) -> None:
     if task.get("stage") != stage:
         fail(f"cannot record {stage} while task.yaml stage is {task.get('stage')}")
-    if automatic_stage(task, stage):
-        fail(f"automatic stage {stage} must be recorded in pipeline runtime state")
     state = load_state(task_path, task, required=False)
     stages = state["stages"]
     assert isinstance(stages, dict)
     index = STAGES.index(stage)
-    missing = [name for name in STAGES[:index] if not automatic_stage(task, name) and name not in stages]
+    missing = [name for name in STAGES[:index] if name not in stages]
     if missing:
-        fail(f"cannot record {stage} before prior manual stages: {', '.join(missing)}")
+        fail(f"cannot record {stage} before prior stages: {', '.join(missing)}")
     stages[stage] = receipt_payload(root, task_path, task, stage)
     for later in STAGES[index + 1 :]:
         stages.pop(later, None)
@@ -285,6 +326,28 @@ def clear_from(task_path: Path, task: dict[str, object], stage: str) -> None:
     for name in STAGES[STAGES.index(stage) :]:
         stages.pop(name, None)
     write_state(state_path(task_path, task), state)
+
+
+def verify_receipts(root: Path, task_path: Path, task: dict[str, object], required: tuple[str, ...]) -> None:
+    if not required:
+        return
+    state = load_state(task_path, task, required=True)
+    stages = state["stages"]
+    assert isinstance(stages, dict)
+    for stage in required:
+        receipt = stages.get(stage)
+        if not isinstance(receipt, dict) or receipt.get("status") != "complete":
+            fail(f"high-risk stage has no completion receipt: {stage}")
+        receipt_schema = receipt.get("task_binding_schema")
+        receipt_binding = receipt.get("task_binding_sha256")
+        if receipt_schema != TASK_BINDING_SCHEMA:
+            fail(
+                f"high-risk stage receipt uses a legacy task binding: {stage}; "
+                "rerun the owning stage to record current completion evidence"
+            )
+        if receipt_binding != task_binding(task, stage):
+            fail(f"high-risk stage receipt has stale task binding: {stage}")
+        verify_receipt_evidence(root, task_path, task, stage, receipt)
 
 
 def expected_receipt_inputs(
@@ -313,71 +376,14 @@ def verify_receipt_evidence(
         artifact = safe_repo_path(root, value, "testing receipt test_run")
         if not artifact.is_file() or sha256_file(artifact) != digest:
             fail("testing receipt task test-run artifact is missing or stale")
-
-
-def verify_receipts(root: Path, task_path: Path, task: dict[str, object], required: tuple[str, ...]) -> None:
-    if not required:
-        return
-    state = load_state(task_path, task, required=True)
-    stages = state["stages"]
-    assert isinstance(stages, dict)
-    binding = task_binding(task)
-    for stage in required:
-        receipt = stages.get(stage)
-        if not isinstance(receipt, dict) or receipt.get("status") != "complete":
-            fail(f"high-risk stage has no completion receipt: {stage}")
-        if receipt.get("task_binding_sha256") != binding:
-            fail(f"high-risk stage receipt has stale task binding: {stage}")
-        verify_receipt_evidence(root, task_path, task, stage, receipt)
+        latest = latest_test_artifact(root, task_path, task)
+        if latest != artifact:
+            fail("testing receipt is superseded by a newer task test-run; renew testing completion")
 
 
 def sibling_script(name: str) -> Path:
     installed = Path(__file__).with_name(f"{name}.py")
     return installed if installed.is_file() else Path(__file__).with_name(f"{name}.template.py")
-
-
-def run_pipeline_check(root: Path, task_path: Path, task: dict[str, object], *, complete: bool) -> None:
-    plan = task_path.parent / str(task.get("pipeline_plan") or "pipeline/plan.md")
-    command = [sys.executable, str(sibling_script("pipeline-plan-check")), str(plan), "--root", str(root)]
-    if complete:
-        command.append("--require-complete")
-    completed = subprocess.run(command, capture_output=True, text=True)
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
-        fail(f"auto-pipeline lifecycle validation failed: {detail}")
-
-
-def required_manual_stages(task: dict[str, object], *, before: str | None = None) -> tuple[str, ...]:
-    limit = STAGES.index(before) if before is not None else len(STAGES)
-    policy = task_policy(task)
-    return tuple(
-        stage for stage in STAGES[:limit]
-        if not (stage in PIPELINE_STAGES and stage_is_automatic(policy, stage))
-    )
-
-
-def refresh_manual_bindings(
-    root: Path, task_path: Path, task: dict[str, object]
-) -> tuple[str, ...]:
-    if task.get("mode") != "auto-pipeline":
-        fail("--refresh-manual-bindings applies only to auto-pipeline tasks")
-    run_pipeline_check(root, task_path, task, complete=False)
-    required = required_manual_stages(task)
-    state = load_state(task_path, task, required=True)
-    stages = state["stages"]
-    assert isinstance(stages, dict)
-    receipts: list[dict[str, object]] = []
-    for stage in required:
-        receipt = stages.get(stage)
-        if not isinstance(receipt, dict) or receipt.get("status") != "complete":
-            fail(f"high-risk stage has no completion receipt: {stage}")
-        verify_receipt_evidence(root, task_path, task, stage, receipt)
-        receipts.append(receipt)
-    binding = task_binding(task)
-    for receipt in receipts:
-        receipt["task_binding_sha256"] = binding
-    write_state(state_path(task_path, task), state)
-    return required
 
 
 def main() -> int:
@@ -387,7 +393,6 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--require-prior", choices=STAGES)
     mode.add_argument("--require-complete", action="store_true")
-    mode.add_argument("--refresh-manual-bindings", action="store_true")
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
@@ -400,23 +405,10 @@ def main() -> int:
     except ValueError:
         fail(f"task manifest resolves outside repository: {task_path}")
     task = validate_task(task_path)
-    if args.refresh_manual_bindings:
-        refreshed = refresh_manual_bindings(root, task_path, task)
-        print(
-            "lifecycle-check: refreshed manual receipt bindings: "
-            + ", ".join(refreshed)
-        )
-    elif args.require_prior:
-        verify_receipts(
-            root, task_path, task,
-            required_manual_stages(task, before=args.require_prior),
-        )
-        if task.get("mode") == "auto-pipeline":
-            run_pipeline_check(root, task_path, task, complete=False)
+    if args.require_prior:
+        verify_receipts(root, task_path, task, STAGES[:STAGES.index(args.require_prior)])
     else:
-        verify_receipts(root, task_path, task, required_manual_stages(task))
-        if task.get("mode") == "auto-pipeline":
-            run_pipeline_check(root, task_path, task, complete=True)
+        verify_receipts(root, task_path, task, STAGES)
     print("lifecycle-check: passed")
     return 0
 

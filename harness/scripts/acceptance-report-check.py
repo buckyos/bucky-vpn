@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Validate the minimal Harness acceptance report.
+"""Validate coverage and consistency of the Harness defect-discovery report.
 
-Acceptance reviews requirements and delivered implementation. When a design
-source or testing document exists, the report also records whether the
-implementation is consistent with it. Test execution, quality gates, risk
-matrices, generated acceptance rules, and fixed audit-category tables belong
-to their owning stages and are not acceptance-report requirements.
+This checker proves that required review surfaces were recorded with concrete
+evidence and that the conclusion agrees with the recorded findings. It cannot
+prove that the reviewer found every real defect.
 """
 
 from __future__ import annotations
@@ -15,7 +13,7 @@ import re
 import sys
 from pathlib import Path
 
-from task_manifest import TaskManifestError, parse_task_manifest, stage_is_automatic
+from task_manifest import TaskManifestError, parse_task_manifest
 
 
 TABLE_SEPARATOR_RE = re.compile(
@@ -24,14 +22,40 @@ TABLE_SEPARATOR_RE = re.compile(
 EMPTY_VALUES = {"", "-", "n/a", "na", "tbd", "todo", "pending"}
 ALLOWED_RESULTS = {"accepted", "rejected", "needs changes"}
 ALLOWED_SEVERITIES = {"none", "low", "medium", "high", "critical"}
-ALLOWED_FINDING_KINDS = {
+ALLOWED_OWNING_STAGES = {
     "requirement",
+    "design",
     "implementation",
-    "design-consistency",
-    "testing-consistency",
+    "testing",
+    "none",
 }
 REVIEW_STATUSES = {"pass", "fail"}
+DISCOVERY_STATUSES = {"pass", "fail", "not-applicable"}
 DOCUMENT_STATUSES = {"pass", "fail", "not-present"}
+REQUIRED_DISCOVERY_CATEGORIES = {
+    "requirement-and-behavior",
+    "logic-and-control-flow",
+    "boundary-and-input",
+    "state-and-data-integrity",
+    "error-handling-and-recovery",
+    "resource-lifetime-and-cleanup",
+    "concurrency-and-ordering",
+    "interface-and-compatibility",
+    "security-and-capacity",
+    "test-adequacy",
+}
+ALWAYS_APPLICABLE_CATEGORIES = {"requirement-and-behavior", "test-adequacy"}
+GENERIC_EVIDENCE = {
+    "reviewed code",
+    "reviewed implementation",
+    "looks correct",
+    "tests pass",
+    "test passed",
+    "no issue",
+    "no issues",
+    "no defect",
+    "no defects",
+}
 
 
 def fail(message: str) -> None:
@@ -60,6 +84,16 @@ def split_table_row(line: str) -> list[str]:
 
 def non_empty(value: str) -> bool:
     return value.strip().lower() not in EMPTY_VALUES
+
+
+def concrete(value: str) -> bool:
+    normalized = re.sub(r"\s+", " ", value.strip().lower())
+    return (
+        non_empty(value)
+        and len(normalized) >= 12
+        and normalized not in GENERIC_EVIDENCE
+        and not re.search(r"<[^>]+>", normalized)
+    )
 
 
 def section_body(text: str, heading: str, path: Path) -> str:
@@ -178,25 +212,8 @@ def expected_document_sources(packet: Path) -> dict[str, list[str]]:
             fail(str(error))
     else:
         task = {}
-    policy = {
-        "stage": str(task["stage"]) if task.get("stage") is not None else None,
-        "mode": str(task["mode"]) if task.get("mode") is not None else None,
-        "start": (
-            str(task["auto_pipeline_start_stage"])
-            if task.get("auto_pipeline_start_stage") is not None
-            else None
-        ),
-    }
-    automatic_design = stage_is_automatic(policy, "design")
-    automatic_testing = stage_is_automatic(policy, "testing")
-    design_candidates = (
-        ("pipeline/plan.md",) if automatic_design else ("design.md",)
-    )
-    testing_candidates = (
-        ("testplan.yaml",)
-        if automatic_testing
-        else ("testing.md", "testplan.yaml")
-    )
+    design_candidates = ("design.md",)
+    testing_candidates = ("testing.md", "testplan.yaml")
     design_sources = [
         relative for relative in design_candidates if (packet / relative).is_file()
     ]
@@ -207,12 +224,31 @@ def expected_document_sources(packet: Path) -> dict[str, list[str]]:
 
 
 def check_report(path: Path, text: str, root: Path) -> None:
+    ordered_headings = (
+        "Findings",
+        "Requirement Coverage",
+        "Independent Defect Discovery",
+        "Document Consistency",
+        "Conclusion",
+    )
+    positions = []
+    for heading in ordered_headings:
+        match = re.search(rf"(?m)^##\s+{re.escape(heading)}\s*$", text)
+        if not match:
+            fail(f"{path} missing required section: ## {heading}")
+        positions.append(match.start())
+    if positions != sorted(positions):
+        fail(
+            f"{path} must record findings, requirement coverage, and independent "
+            "defect discovery before document consistency and conclusion"
+        )
+
     result = conclusion(text, path)
     scope = object_scope(text, path, root)
     expected = (
         root
-        / "docs"
-        / "versions"
+        / ".harness"
+        / "tasks"
         / str(scope["version"])
         / "modules"
         / str(scope["module"])
@@ -230,36 +266,187 @@ def check_report(path: Path, text: str, root: Path) -> None:
         path,
         "Findings",
         findings,
-        ("id", "severity", "kind", "evidence", "problem", "blocking"),
+        (
+            "id",
+            "severity",
+            "owning_stage",
+            "correctness_category",
+            "evidence",
+            "problem",
+            "blocking",
+        ),
     )
     for index, row in enumerate(findings, start=1):
         severity = row["severity"].lower()
-        kind = row["kind"].lower()
+        owning_stage = row["owning_stage"].lower()
         blocking = row["blocking"].lower()
         if severity not in ALLOWED_SEVERITIES:
             fail(f"{path} Findings row {index} has invalid severity: {severity}")
-        if kind not in ALLOWED_FINDING_KINDS:
-            fail(f"{path} Findings row {index} has invalid kind: {kind}")
+        if owning_stage not in ALLOWED_OWNING_STAGES:
+            fail(
+                f"{path} Findings row {index} has invalid owning stage: "
+                f"{owning_stage}"
+            )
         if blocking not in {"yes", "no"}:
             fail(f"{path} Findings row {index} blocking must be yes or no")
+        if not concrete(row["evidence"]):
+            fail(f"{path} Findings row {index} needs concrete evidence")
+        if severity in {"high", "critical"} and blocking != "yes":
+            fail(
+                f"{path} Findings row {index} severity {severity} must be blocking"
+            )
+        if severity == "none" and owning_stage != "none":
+            fail(
+                f"{path} Findings row {index} with severity none must use owning stage none"
+            )
+        if severity != "none" and owning_stage == "none":
+            fail(
+                f"{path} Findings row {index} with a defect must name an owning stage"
+            )
+        if severity == "none" and blocking != "no":
+            fail(
+                f"{path} Findings row {index} with severity none cannot be blocking"
+            )
+        if severity != "none" and row["correctness_category"].lower() not in (
+            REQUIRED_DISCOVERY_CATEGORIES
+        ):
+            fail(
+                f"{path} Findings row {index} with a defect must name a required "
+                "correctness category"
+            )
         if result == "accepted" and blocking == "yes":
             fail(f"{path} accepted conclusion contains a blocking finding: {row['id']}")
 
-    for heading, columns in (
-        (
-            "Requirement Review",
-            ("requirement_or_boundary", "source", "implementation_evidence", "finding", "status"),
-        ),
-        ("Implementation Review", ("area", "evidence", "finding", "status")),
+    blocking_findings = [
+        row for row in findings if row["blocking"].lower() == "yes"
+    ]
+    if result in {"needs changes", "rejected"} and not blocking_findings:
+        fail(f"{path} {result} conclusion requires a blocking finding")
+    if result == "needs changes" and not any(
+        row["owning_stage"].lower() in {"design", "implementation", "testing"}
+        for row in blocking_findings
     ):
-        rows = table_rows(text, heading, path)
-        require_columns(path, heading, rows, columns)
-        for index, row in enumerate(rows, start=1):
-            status = row["status"].lower()
-            if status not in REVIEW_STATUSES:
-                fail(f"{path} ## {heading} row {index} has invalid status: {status}")
-            if result == "accepted" and status != "pass":
-                fail(f"{path} accepted conclusion has failing {heading} row {index}")
+        fail(
+            f"{path} needs changes must route a blocking finding to design, "
+            "implementation, or testing"
+        )
+    if result == "rejected" and not any(
+        row["owning_stage"].lower() == "requirement"
+        for row in blocking_findings
+    ):
+        fail(f"{path} rejected conclusion requires a blocking requirement finding")
+
+    requirements = table_rows(text, "Requirement Coverage", path)
+    require_columns(
+        path,
+        "Requirement Coverage",
+        requirements,
+        (
+            "change_id",
+            "requirement_or_boundary",
+            "source",
+            "implementation_evidence",
+            "finding",
+            "status",
+        ),
+    )
+    actual_change_ids = {row["change_id"] for row in requirements}
+    if actual_change_ids != scope["change_ids"]:
+        fail(
+            f"{path} Requirement Coverage change_ids must exactly match task.yaml: "
+            f"{sorted(scope['change_ids'])}"
+        )
+    for index, row in enumerate(requirements, start=1):
+        status = row["status"].lower()
+        if status not in REVIEW_STATUSES:
+            fail(
+                f"{path} ## Requirement Coverage row {index} has invalid status: {status}"
+            )
+        if not concrete(row["implementation_evidence"]):
+            fail(
+                f"{path} ## Requirement Coverage row {index} needs concrete "
+                "implementation evidence"
+            )
+        if result == "accepted" and status != "pass":
+            fail(
+                f"{path} accepted conclusion has failing Requirement Coverage row {index}"
+            )
+
+    discovery = table_rows(text, "Independent Defect Discovery", path)
+    require_columns(
+        path,
+        "Independent Defect Discovery",
+        discovery,
+        (
+            "category",
+            "applicable_scope",
+            "evidence_inspected",
+            "adversarial_check",
+            "finding_or_not_applicable_reason",
+            "status",
+        ),
+    )
+    rows_by_category: dict[str, dict[str, str]] = {}
+    for index, row in enumerate(discovery, start=1):
+        category = row["category"].lower()
+        if category in rows_by_category:
+            fail(
+                f"{path} Independent Defect Discovery repeats category: {category}"
+            )
+        rows_by_category[category] = row
+        if category not in REQUIRED_DISCOVERY_CATEGORIES:
+            fail(
+                f"{path} Independent Defect Discovery row {index} has unknown "
+                f"category: {category}"
+            )
+        status = row["status"].lower()
+        if status not in DISCOVERY_STATUSES:
+            fail(
+                f"{path} Independent Defect Discovery row {index} has invalid "
+                f"status: {status}"
+            )
+        for column in ("applicable_scope", "evidence_inspected", "adversarial_check"):
+            if not concrete(row[column]):
+                fail(
+                    f"{path} Independent Defect Discovery row {index} needs "
+                    f"concrete {column.replace('_', ' ')}"
+                )
+        reason = row["finding_or_not_applicable_reason"]
+        if not concrete(reason):
+            fail(
+                f"{path} Independent Defect Discovery row {index} needs a concrete "
+                "finding or not-applicable reason"
+            )
+        if status == "not-applicable":
+            if category in ALWAYS_APPLICABLE_CATEGORIES:
+                fail(f"{path} category {category} cannot be not-applicable")
+            if len(re.sub(r"\s+", " ", reason.strip())) < 24:
+                fail(
+                    f"{path} category {category} needs a task-specific "
+                    "not-applicable reason"
+                )
+        if result == "accepted" and status == "fail":
+            fail(
+                f"{path} accepted conclusion has failing defect-discovery "
+                f"category: {category}"
+            )
+    missing_categories = sorted(
+        REQUIRED_DISCOVERY_CATEGORIES - set(rows_by_category)
+    )
+    if missing_categories:
+        fail(
+            f"{path} Independent Defect Discovery missing categories: "
+            + ", ".join(missing_categories)
+        )
+    for index, finding in enumerate(findings, start=1):
+        if finding["severity"].lower() == "none":
+            continue
+        category = finding["correctness_category"].lower()
+        if rows_by_category[category]["status"].lower() != "fail":
+            fail(
+                f"{path} Findings row {index} category {category} must have a "
+                "failing Independent Defect Discovery row"
+            )
 
     consistency = table_rows(text, "Document Consistency", path)
     require_columns(
@@ -291,13 +478,10 @@ def check_report(path: Path, text: str, root: Path) -> None:
         elif status != "not-present":
             fail(f"{path} {document} source is absent and must use status not-present")
 
-    summary = section_body(text, "Result Summary", path)
-    for label in ("Overall result", "Outcome", "Blocking issues", "Next action"):
-        match = re.search(rf"(?im)^\s*-\s*{re.escape(label)}:\s*(.+)$", summary)
-        if not match or not non_empty(match.group(1)):
-            fail(f"{path} Result Summary missing concrete {label}")
-        if label == "Overall result" and result not in match.group(1).lower():
-            fail(f"{path} Result Summary does not match Conclusion: {result}")
+    body = section_body(text, "Conclusion", path)
+    action = re.search(r"(?im)^\s*-\s*Next action:\s*(.+)$", body)
+    if not action or not non_empty(action.group(1)):
+        fail(f"{path} Conclusion missing Next action")
 
 
 def main() -> int:

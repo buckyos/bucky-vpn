@@ -17,6 +17,7 @@ from pathlib import Path
 
 REQUIRED_RULES = (
     "task-entry-gate-rules.md",
+    "github-issue-creation-rules.md",
     "proposal-doc-rules.md",
     "design-doc-rules.md",
     "testing-doc-rules.md",
@@ -27,7 +28,7 @@ REQUIRED_RULES = (
     "acceptance-task-rules.md",
     "acceptance-review-rules.md",
     "quality-gate-rules.md",
-    "auto-pipeline-rules.md",
+    "task-execution-rules.md",
     "triggers/contract-protocol.md",
     "triggers/data-schema.md",
     "triggers/security.md",
@@ -58,14 +59,11 @@ REQUIRED_SCRIPTS = (
     "acceptance-report-check.py",
     "completion-report-check.py",
     "lower-tier-check.py",
-    "pipeline-plan-check.py",
     "check-all.py",
     "quality-check.py",
 )
 
 REQUIRED_TASK_TEMPLATES = (
-    "pipeline-stage-task.md",
-    "pipeline-submodule-task.md",
     "acceptance-return-task.md",
 )
 
@@ -150,10 +148,11 @@ def check_root(root: Path) -> None:
     require_path(root / "test-run.sh", directory=False)
     require_path(root / "docs", directory=True)
     require_path(root / "docs" / "architecture", directory=True)
-    require_path(root / "docs" / "changes", directory=True)
-    require_path(root / "docs" / "changes" / "_template.md", directory=False)
     require_path(root / "docs" / "modules", directory=True)
-    require_path(root / "docs" / "versions", directory=True)
+    require_path(root / ".harness", directory=True)
+    require_path(root / ".harness" / "changes", directory=True)
+    require_path(root / ".harness" / "changes" / "_template.md", directory=False)
+    require_path(root / ".harness" / "tasks", directory=True)
     require_path(root / "harness", directory=True)
     require_path(root / "harness" / "rules", directory=True)
     require_path(root / "harness" / "custom-rules", directory=True)
@@ -164,25 +163,19 @@ def check_root(root: Path) -> None:
         root / "harness" / "templates" / "evidence" / "stage-scope-manifest-meta.json",
         directory=False,
     )
-    require_path(root / "harness" / "templates" / "pipeline", directory=True)
-    require_path(
-        root / "harness" / "templates" / "pipeline" / "state.json",
-        directory=False,
-    )
     require_path(root / "harness" / "quality-gates.yaml", directory=False)
-    require_path(root / ".harness", directory=True)
     check_version_scaffold(root)
     check_generated_output_ignored(root)
     check_no_legacy_runtime_locations(root)
 
 
 def check_version_scaffold(root: Path) -> None:
-    versions_dir = root / "docs" / "versions"
+    versions_dir = root / ".harness" / "tasks"
     version_dirs = [path for path in versions_dir.iterdir() if path.is_dir()]
     if not version_dirs:
-        fail("docs/versions must contain at least one version directory")
+        fail(".harness/tasks must contain at least one version directory")
     for version_dir in version_dirs:
-        tasks_index = version_dir / "modules" / "tasks.json"
+        tasks_index = root / ".harness" / "tasks" / version_dir.name / "tasks.json"
         require_path(tasks_index, directory=False)
         task_index = root / "harness" / "scripts" / "task-index.py"
         completed = subprocess.run(
@@ -210,28 +203,44 @@ def check_version_scaffold(root: Path) -> None:
 
 
 def check_generated_output_ignored(root: Path) -> None:
-    """All generated Harness runtime state must stay untracked."""
+    """Every `.harness` path is local Harness state and must stay untracked."""
     gitignore = root / ".gitignore"
     if not gitignore.is_file():
         fail("missing .gitignore: .harness/ must be git-ignored")
-    entries = {
-        line.strip().lstrip("/").rstrip("/")
+    entries = [
+        line.strip()
         for line in read_text(gitignore).splitlines()
-    }
-    missing = [entry for entry in (".harness",) if entry not in entries]
-    if missing:
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    patterns = {entry.lstrip("/").rstrip("/") for entry in entries}
+    if not patterns & {".harness", ".harness/*", ".harness/**"}:
         fail(
-            ".gitignore must ignore generated Harness output: "
-            + ", ".join(f"{entry}/" for entry in missing)
+            ".gitignore must ignore the local Harness tree: .harness/"
+        )
+    re_included = [
+        entry
+        for entry in entries
+        if entry.startswith("!")
+        and entry.lstrip("!").lstrip("/").rstrip("/").startswith(".harness")
+    ]
+    if re_included:
+        fail(
+            ".harness/ holds local-only task documents and runtime state; "
+            "remove re-include patterns: "
+            + ", ".join(re_included)
         )
 
 
 def check_no_legacy_runtime_locations(root: Path) -> None:
-    """Reject runtime state outside the project-local `.harness/` tree."""
+    """Reject task documents and runtime state outside the project-local `.harness/` tree."""
     legacy: list[Path] = []
     if (root / "test-results").exists():
         legacy.append(root / "test-results")
-    versions = root / "docs" / "versions"
+    for retired in ("versions", "changes"):
+        path = root / "docs" / retired
+        if path.exists():
+            legacy.append(path)
+    versions = root / ".harness" / "tasks"
     if versions.is_dir():
         for version_dir in versions.iterdir():
             if not version_dir.is_dir():
@@ -243,7 +252,7 @@ def check_no_legacy_runtime_locations(root: Path) -> None:
                 legacy.extend(modules.glob("**/pipeline/state.json"))
     if legacy:
         fail(
-            "Harness runtime state must live under .harness/: "
+            "Harness task documents and runtime state must live under .harness/: "
             + ", ".join(str(path) for path in sorted(legacy))
         )
 
@@ -349,7 +358,7 @@ def check_agents_references(root: Path) -> None:
             "## Rule Ownership",
             "harness/scripts/harness-check.py",
             "## Workflow Tiers",
-            "docs/changes/<change>.md",
+            ".harness/changes/<change>.md",
             "harness/scripts/schema-check.py",
             "harness/scripts/stage-scope-check.py",
         ),
@@ -360,7 +369,10 @@ def check_markdown_path_references(root: Path) -> None:
     """Catch obvious stale generated path references in default harness files."""
 
     checked_roots = [root / "AGENTS.md", root / "harness" / "rules", root / "harness" / "process_rules"]
-    pattern = re.compile(r"`((?:harness|docs|test-run)[^`]+?)`")
+    durable_prefixes = ("harness/", "docs/", ".harness/tasks/", ".harness/changes/")
+    pattern = re.compile(
+        r"`((?:harness|docs|test-run|\.harness/(?:tasks|changes))[^`]+?)`"
+    )
     missing: list[tuple[Path, str]] = []
     for base in checked_roots:
         paths = [base] if base.is_file() else sorted(base.rglob("*.md"))
@@ -370,8 +382,11 @@ def check_markdown_path_references(root: Path) -> None:
                 raw = match.group(1).strip()
                 if any(token in raw for token in ("<", ">", "|", "*", " ", "\n")):
                     continue
-                candidate = root / raw.replace("\\", "/")
-                if not candidate.exists() and raw.startswith(("harness/", "docs/")):
+                file_part = raw.split("#", 1)[0].replace("\\", "/")
+                candidate = root / file_part
+                if not candidate.resolve().is_relative_to(root.resolve()) or ".." in Path(file_part).parts:
+                    fail(f"generated docs reference unsafe path: {raw}")
+                if not candidate.exists() and raw.startswith(durable_prefixes):
                     missing.append((path, raw))
     if missing:
         for path, raw in missing[:20]:
