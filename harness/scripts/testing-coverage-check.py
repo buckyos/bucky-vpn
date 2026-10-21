@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from task_manifest import cached_parse, read_only_validation, read_text as shared_read_text
+
 
 TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
 CASE_TYPES = {"normal", "boundary", "negative", "error", "compatibility", "lifecycle", "cross-module"}
@@ -35,7 +37,7 @@ def fail(message: str) -> None:
 def read_text(path: Path) -> str:
     if not path.exists():
         fail(f"missing required file: {path}")
-    return path.read_text(encoding="utf-8")
+    return shared_read_text(path)
 
 
 def normalize_column(value: str) -> str:
@@ -51,6 +53,7 @@ def split_table_row(line: str) -> list[str]:
     return parts
 
 
+@cached_parse
 def table_rows_after_heading(text: str, heading: str, path: Path) -> list[dict[str, str]]:
     match = re.search(rf"(?m)^##\s+{re.escape(heading)}\s*$", text)
     if not match:
@@ -439,6 +442,7 @@ def check_api_contract_closure(root: Path, packet: Path, requested: set[str]) ->
         check_language_command(root, kind, command, language, concrete_inputs, inputs)
 
 
+@cached_parse
 def extract_level_blocks(text: str) -> dict[str, str]:
     match = re.search(r"(?m)^levels:\s*$", text)
     if not match:
@@ -456,6 +460,7 @@ def extract_level_blocks(text: str) -> dict[str, str]:
     return blocks
 
 
+@cached_parse
 def extract_steps(level_block: str) -> dict[str, str]:
     starts = list(re.finditer(r"(?m)^      - id:\s*([A-Za-z0-9_.-]+)\s*$", level_block))
     steps: dict[str, str] = {}
@@ -555,11 +560,6 @@ def check_coverage(
     levels = extract_level_blocks(read_text(plan)) if plan.is_file() else {}
     seen_ids: set[str] = set()
     covered_changes: set[str] = set()
-    case_types: dict[str, set[str]] = {change_id: set() for change_id in requested}
-    elements: set[str] = set()
-    seen_levels: set[str] = set()
-    dv_case_types: set[str] = set()
-    dv_applicable = False
     known_changes = requested if known_changes is None else known_changes
     for row in rows:
         label = str(row.get("id", ""))
@@ -575,17 +575,12 @@ def check_coverage(
         status, level = str(row["status"]), str(row["level"])
         if status not in COVERAGE_STATUSES or level not in TEST_LEVELS:
             fail(f"{source} coverage {label} invalid status or level")
-        seen_levels.add(level)
         for field, allowed in (("case_types", CASE_TYPES), ("element_types", DESIGN_ELEMENT_TYPES)):
             values = row.get(field, [])
             if not isinstance(values, list) or not set(values) <= allowed:
                 fail(f"{source} coverage {label} invalid {field}")
         if not row.get("case_types") and not row.get("element_types"):
             fail(f"{source} coverage {label} requires case_types or element_types")
-        elements.update(row.get("element_types", []))
-        for change_id in changes:
-            if change_id in requested:
-                case_types[change_id].update(row.get("case_types", []))
         if status != "not-applicable":
             covered_changes.update(set(changes) & requested)
         if status == "covered":
@@ -618,30 +613,21 @@ def check_coverage(
                     reason = match.group(1)
             if not has_value(reason):
                 fail(f"{source} coverage {label} {status} requires a concrete reason")
-        if level == "dv":
-            # A stateless module may explicitly exclude lifecycle coverage.
-            dv_case_types.update(row.get("case_types", []))
-            dv_applicable = dv_applicable or status != "not-applicable"
     missing_changes = requested - covered_changes
     if missing_changes:
         fail(f"{source} changes need direct cases or explicit gaps: {sorted(missing_changes)}")
-    for change_id, seen in case_types.items():
-        if CASE_TYPES - seen:
-            fail(f"{source} {change_id} missing case types: {sorted(CASE_TYPES - seen)}")
-    if DESIGN_ELEMENT_TYPES - elements:
-        fail(f"{source} missing design element types: {sorted(DESIGN_ELEMENT_TYPES - elements)}")
-    if TEST_LEVELS - seen_levels:
-        fail(f"{source} missing test levels or explicit gaps: {sorted(TEST_LEVELS - seen_levels)}")
-    if dv_applicable and not {"normal", "error", "lifecycle"} <= dv_case_types:
-        fail(f"{source} DV coverage requires main, failure, and lifecycle accounting (normal/error/lifecycle tags) or explicit gaps")
+    # Tags describe applicable evidence, not a required Cartesian product.
+    # Critical-path adequacy is reviewed against design/code in acceptance;
+    # runnable bindings, assertions and explicit gap reasons remain mandatory.
 
 
-def run_test_runner_dry_run(root: Path, module_key: str) -> None:
+def run_test_runner_dry_run(root: Path, module_key: str, task: Path) -> None:
     test_runner = root / "harness" / "scripts" / "test-run.py"
     if not test_runner.exists():
         fail(f"missing unified test runner: {test_runner}")
     completed = subprocess.run(
-        [sys.executable, str(test_runner), module_key, "all", "--root", str(root), "--dry-run"],
+        [sys.executable, str(test_runner), module_key, "all", "--root", str(root),
+         "--task", str(task.resolve()), "--dry-run"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -662,6 +648,7 @@ def task_scope_from_testplan(packet: Path, module: str) -> str:
     return f"{module}/{packet.name}"
 
 
+@read_only_validation
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
@@ -696,7 +683,7 @@ def main() -> int:
             if args.submodule
             else task_scope_from_testplan(packet, args.module)
         )
-        run_test_runner_dry_run(root, module_key)
+        run_test_runner_dry_run(root, module_key, packet / "task.yaml")
 
     print("testing-coverage-check: passed")
     return 0

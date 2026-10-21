@@ -13,14 +13,21 @@ whose list-valued fields use inline YAML/Python syntax.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
+import hashlib
+import importlib.util
+import io
 import json
 import re
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
-from task_manifest import TaskManifestError, parse_task_manifest
+from task_manifest import TaskManifestError, parse_task_manifest, test_run_directory
+from task_manifest import content_digest, invalidate_validation_content, read_json, validation_content
 
 
 STAGES = {"proposal", "design", "implementation", "testing", "acceptance"}
@@ -259,6 +266,208 @@ def run(command: list[str], *, dry_run: bool) -> bool:
     return True if dry_run else subprocess.run(command).returncode == 0
 
 
+def checker_cache_key(
+    root: Path, manifest: Path, task: dict[str, object], command: list[str], *,
+    checker_versions: dict[Path, dict[str, str]] | None = None,
+) -> str | None:
+    """Fingerprint only read-only checks with a known, complete input contract.
+
+    Lifecycle/test evidence is deliberately excluded: its latest-run checks must
+    execute on every invocation. Missing/invalid dependencies disable reuse and
+    leave diagnostics to the checker itself.
+    """
+    script = Path(command[1])
+    name = script.name.removesuffix(".template.py").removesuffix(".py")
+    if name not in {"schema-check", "risk-profile-check", "stage-scope-check"}:
+        return None
+    try:
+        paths = {manifest}
+        resolved_paths: dict[str, str] = {}
+        stage = str(task["stage"])
+        if name == "schema-check":
+            paths.add(manifest.parent / "proposal.md")
+            if stage != "proposal":
+                paths.add(manifest.parent / "design.md")
+            if stage in {"testing", "acceptance"}:
+                paths.update(manifest.parent / value for value in ("testing.md", "testplan.yaml"))
+            index = root / ".harness" / "tasks" / str(task["version"]) / "tasks.json"
+            paths.add(index)
+            data = read_json(index)
+            for entry in data["tasks"]:
+                indexed = safe_repo_path(root, entry["task_manifest"], "indexed task")
+                paths.update((indexed, indexed.parent / "proposal.md"))
+        elif name == "risk-profile-check":
+            fields = ["proposal", "risk_profile"]
+            if stage != "proposal":
+                fields.append("design")
+            if stage in {"testing", "acceptance"}:
+                fields.extend(("testing", "testplan"))
+            if stage == "acceptance":
+                fields.append("acceptance_report")
+            defaults = {"testing": "testing.md", "testplan": "testplan.yaml", "acceptance_report": "acceptance-report.md"}
+            paths.update(manifest.parent / str(task.get(field) or defaults.get(field, "")) for field in fields)
+        else:
+            if "--from-git" in command:
+                return None
+            # This legacy task's pinned exception reads additional migration
+            # journals and authorization bytes. Revalidate it rather than cache
+            # a scope result whose generic key does not bind those inputs.
+            if task.get("task_name") == "039-harness-full-upgrade":
+                return None
+            spec = importlib.util.spec_from_file_location("cached_stage_scope", script)
+            if spec is None or spec.loader is None:
+                return None
+            scope = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(scope)
+            options = {
+                argument: command[index + 1]
+                for index, argument in enumerate(command[:-1])
+                if argument in {"--stage", "--version", "--module", "--submodule"}
+            }
+            for index, argument in enumerate(command):
+                if argument == "--changed-paths-file":
+                    changed = safe_repo_path(root, command[index + 1], "changed paths")
+                    paths.update((changed, changed.with_name(changed.name + ".meta.json")))
+                    for value in scope.changed_paths_from_file(changed):
+                        # Resolve every listed path just as the checker does.
+                        relative = scope.canonical_repo_path(root, value)
+                        resolved_paths[value] = relative
+                        # Ordinary scope checks depend on the canonical path,
+                        # not file contents. Only mixed Rust validation reads it.
+                        if (
+                            options.get("--stage") == "testing"
+                            and relative.endswith(".rs")
+                            and not scope.allowed_for_stage(
+                                relative, "testing", options.get("--version"),
+                                options.get("--module"), options.get("--submodule"),
+                            )
+                        ):
+                            paths.add(root / relative)
+                elif argument == "--baseline-manifest":
+                    baseline = safe_repo_path(root, command[index + 1], "baseline")
+                    paths.add(baseline)
+                    data = read_json(baseline)
+                    for record in data["files"]:
+                        paths.add(baseline.parent / record["snapshot"])
+
+        def fingerprint(path: Path) -> tuple[str, str, str, str | None]:
+            resolved = path.resolve()
+            relative = resolved.relative_to(root).as_posix()
+            digest = content_digest(path) if path.is_file() else None
+            kind = "file" if path.is_file() else "directory" if path.is_dir() else "other" if path.exists() else "missing"
+            return str(path), relative, kind, digest
+
+        # Include imported helper versions and membership, not only the driver.
+        # This also binds reuse to this cache implementation and Python runtime.
+        versions = checker_versions if checker_versions is not None else {}
+        if script.parent not in versions:
+            versions[script.parent] = {
+                str(path): content_digest(path)
+                for path in sorted({*script.parent.glob("*.py"), Path(__file__)})
+            }
+        payload = {
+            "schema": 1,
+            "command": command,
+            "python": sys.version,
+            "inputs": [fingerprint(path) for path in sorted(paths)],
+            "resolved_paths": resolved_paths,
+            "checkers": versions[script.parent],
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+    except (OSError, ValueError, KeyError, TypeError, SystemExit):
+        return None
+
+
+def run_cached(
+    root: Path, manifest: Path, task: dict[str, object], command: list[str], *, dry_run: bool,
+    checker_versions: dict[Path, dict[str, str]] | None = None,
+    timings: list[dict[str, object]] | None = None,
+) -> bool:
+    event: dict[str, object] = {
+        "command": command, "kind": "routing" if Path(command[1]).name in {"context.py", "context.template.py"} else "checker",
+        "cache": "dry-run" if dry_run else "bypass", "success": False,
+        "fingerprint_s": 0.0, "cache_lookup_s": 0.0, "execution_s": 0.0,
+    }
+    started = time.perf_counter()
+    try:
+        with validation_content():
+            success = _run_cached(root, manifest, task, command, dry_run=dry_run,
+                                  checker_versions=checker_versions, event=event)
+        event["success"] = success
+        return success
+    finally:
+        event["duration_s"] = time.perf_counter() - started
+        if timings is not None:
+            timings.append(event)
+
+
+def _run_cached(
+    root: Path, manifest: Path, task: dict[str, object], command: list[str], *, dry_run: bool,
+    checker_versions: dict[Path, dict[str, str]] | None,
+    event: dict[str, object],
+) -> bool:
+    if dry_run:
+        return run(command, dry_run=True)
+
+    def key() -> str | None:
+        started = time.perf_counter()
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                return checker_cache_key(root, manifest, task, command, checker_versions=checker_versions)
+        finally:
+            event["fingerprint_s"] += time.perf_counter() - started
+
+    def execute() -> bool:
+        started = time.perf_counter()
+        try:
+            return run(command, dry_run=False)
+        finally:
+            event["execution_s"] += time.perf_counter() - started
+            # Share versions only across read-only fingerprinting/cache hits.
+            # Any executed command is a boundary requiring fresh content hashes.
+            if checker_versions is not None:
+                checker_versions.clear()
+            invalidate_validation_content()
+
+    before = key()
+    if before is None:
+        return execute()
+    command_key = hashlib.sha256(json.dumps(command).encode("utf-8")).hexdigest()
+    cache = root / ".harness" / "checker-cache" / f"{command_key}.json"
+    event["cache"] = "miss"
+    lookup_started = time.perf_counter()
+    try:
+        if json.loads(cache.read_text(encoding="utf-8")) == {"schema": 1, "success_key": before}:
+            event["cache"] = "hit"
+            print("harness-check: reused successful check: " + " ".join(command))
+            return True
+    except (OSError, ValueError):
+        pass
+    finally:
+        event["cache_lookup_s"] += time.perf_counter() - lookup_started
+    # Never keep a prior success when a real rerun fails or changes its inputs.
+    try:
+        cache.unlink(missing_ok=True)
+    except OSError:
+        pass
+    success = execute()
+    if success and key() == before:
+        temporary = None
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache.parent, delete=False) as stream:
+                temporary = Path(stream.name)
+                json.dump({"schema": 1, "success_key": before}, stream)
+            temporary.replace(cache)
+        except OSError:
+            pass  # Reconstructable cache storage must not block real checks.
+        finally:
+            if temporary is not None:
+                with contextlib.suppress(OSError):
+                    temporary.unlink(missing_ok=True)
+    return success
+
+
 def identity_args(task: dict[str, object]) -> list[str]:
     return [
         "--version", str(task["version"]),
@@ -332,8 +541,11 @@ def context_evidence_paths(root: Path, task: dict[str, object]) -> list[str]:
     if safe_repo_path(root, hybrid_baseline, "repository baseline").is_file():
         candidates.append(hybrid_baseline)
 
-    run_dir = root / ".harness" / "test-results" / "test-runs"
-    task_suffix = "/" + str(task["task_name"])
+    scope = f"{task['packet_module']}/{task['task_name']}"
+    testplan = (task_packet(root, task) / str(task.get("testplan") or "testplan.yaml")).relative_to(root).as_posix()
+    run_dir = test_run_directory(root, scope, [testplan])
+    if not run_dir.is_dir():
+        run_dir = root / ".harness" / "test-results" / "test-runs"
     if run_dir.is_dir():
         for artifact in sorted(run_dir.glob("*.json")):
             try:
@@ -341,7 +553,7 @@ def context_evidence_paths(root: Path, task: dict[str, object]) -> list[str]:
             except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 continue
             requested = payload.get("requested_module") if isinstance(payload, dict) else None
-            if isinstance(requested, str) and requested.endswith(task_suffix):
+            if requested == scope and testplan in (payload.get("testplans") or []):
                 candidates.append(artifact.relative_to(root).as_posix())
 
     result: list[str] = []
@@ -659,8 +871,54 @@ def main() -> int:
     parser.add_argument("--task", required=True, help="task packet task.yaml")
     parser.add_argument("--profile", required=True, choices=sorted(PROFILES))
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--timings-json", help="optional timing report path relative to --root")
     args = parser.parse_args()
 
+    started = time.perf_counter()
+    timings: list[dict[str, object]] = []
+    result = 1
+    try:
+        result = run_checks(args, timings)
+        return result
+    finally:
+        summary = {
+            "total_s": time.perf_counter() - started,
+            "routing_s": sum(event["execution_s"] for event in timings if event["kind"] == "routing"),
+            "checkers_s": sum(event["execution_s"] for event in timings if event["kind"] == "checker"),
+            "fingerprint_s": sum(event["fingerprint_s"] for event in timings),
+            "cache_lookup_s": sum(event["cache_lookup_s"] for event in timings),
+            # Hit cost includes dependency fingerprinting, not just JSON lookup.
+            "cache_hit_s": sum(event["duration_s"] for event in timings if event["cache"] == "hit"),
+            "cache_hits": sum(event["cache"] == "hit" for event in timings),
+            "cache_misses": sum(event["cache"] == "miss" for event in timings),
+        }
+        print("harness-check: timings " + json.dumps(summary, sort_keys=True), file=sys.stderr)
+        if args.timings_json:
+            report = {
+                "schema": 1, "task": args.task, "profile": args.profile,
+                "dry_run": args.dry_run, "exit_code": result,
+                "summary": summary, "commands": timings,
+            }
+            destination = Path(args.timings_json)
+            if not destination.is_absolute():
+                destination = Path(args.root) / destination
+            temporary = None
+            try:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=destination.parent, delete=False) as stream:
+                    temporary = Path(stream.name)
+                    json.dump(report, stream, indent=2)
+                    stream.write("\n")
+                temporary.replace(destination)
+            except OSError as error:
+                print(f"harness-check: cannot write timings: {error}", file=sys.stderr)
+            finally:
+                if temporary is not None:
+                    with contextlib.suppress(OSError):
+                        temporary.unlink(missing_ok=True)
+
+
+def run_checks(args: argparse.Namespace, timings: list[dict[str, object]]) -> int:
     root = Path(args.root).resolve()
     manifest = Path(args.task)
     if not manifest.is_absolute():
@@ -677,7 +935,13 @@ def main() -> int:
     if args.profile == "completion" and not args.dry_run:
         materialize_stage_scope_sidecars(root, task)
     commands = build_commands(root, manifest, task, args.profile)
-    failures = sum(not run(command, dry_run=args.dry_run) for command in commands)
+    checker_versions: dict[Path, dict[str, str]] = {}
+    with validation_content():
+        failures = sum(
+            not run_cached(root, manifest, task, command, dry_run=args.dry_run,
+                           checker_versions=checker_versions, timings=timings)
+            for command in commands
+        )
     if failures:
         print(f"harness-check: FAILED ({failures} command(s) failed)", file=sys.stderr)
         return 1

@@ -15,7 +15,7 @@ These full post-implementation coverage contracts are the high-risk default. Sta
 - In any tier, proposal discussion of validation MUST use the unit/DV/integration responsibility boundaries and lowest-level placement principles below. Identify which behavior the proposed evidence can demonstrate, including whether it needs real module wiring, cross-module interaction, or an external environment; mocks do not establish behavior beyond their boundary.
 - Derive representative scenarios from proposal requirements, candidate interfaces, state transitions, failure paths, invariants, and concurrency risks using the relevant `Case Derivation` categories below. An approved design or delivered code is not required to discuss these scenarios; label assumptions and unresolved behavior explicitly.
 - Cover material success, failure, and boundary expectations needed to agree on acceptance. For proposed API/build changes, use `API and Repository Consumer Contracts` below to identify the kinds of future evidence needed. Record evidence feasibility, unavailable environments, and known gaps instead of promising unsupported coverage.
-- Full branch/interface coverage accounting, every derivation-category row, validation IDs, test files, `testing.md`, `testplan.yaml`, unified-entrypoint registration, and execution results remain post-implementation obligations according to the confirmed tier. Planned evidence and expected outcomes are not passing results.
+- Risk-based coverage accounting, validation IDs, test files, optional `testing.md`, `testplan.yaml`, unified-entrypoint registration, and execution results remain post-implementation obligations according to the confirmed tier. Planned evidence and expected outcomes are not passing results.
 - Proposal content and handoff follow [Proposal Document Rules](proposal-doc-rules.md#design-and-testing-discussion). Later high-risk test-case design still derives from the approved design and delivered code under the contracts below.
 
 ## Proposal Test Handoff
@@ -30,22 +30,22 @@ These full post-implementation coverage contracts are the high-risk default. Sta
 - Object: changed functions, methods, and branches; external dependencies are stubbed or mocked.
 - Placement: code inside an existing Rust `#[cfg(test)]` item is test code, but every newly created unit test MUST be implemented in a dedicated test file, test directory, or test-only crate/package rather than as a new inline test body in a production source file.
 - File placement is stage evidence rather than filesystem permission: new tests belong in dedicated test files/directories/packages. Testing-stage validation rejects production paths except a mechanically proven edit confined to an existing Rust `#[cfg(test)]` item with selected-file baseline evidence.
-- MUST cover every public function touched by implemented `change_id` values and every conditional branch in changed code: if/else arms, match/switch arms, early returns, error returns, loop zero/one/many iterations, and boundary comparisons.
-- Uncovered branches MUST have a coverage record naming the branch and a concrete gap reason.
+- MUST cover affected behavior and relevant success, failure, and boundary outcomes. Inspect changed branches to find risks; touching a function does not require enumerating every unaffected branch.
+- Reuse existing tests by reference. A current coverage-tool report bound to the tested revision may replace handwritten branch inventory; record uncovered material risks and concrete gap reasons.
 - Not responsible for cross-module behavior, real external I/O, or full workflows.
-- Done when every changed-code branch is covered or has a recorded per-branch gap reason.
+- Done when affected behavior and risk boundaries have assertions or explicit gaps. Security, data integrity/migration, concurrency/ordering, resource cleanup, and other critical paths retain explicit branch/failure/invariant coverage or specific gap reasons, using tool reports where sufficient.
 
 ### DV (single-module runnable verification)
 - Object: the module as a whole inside its boundary, with real internal wiring between submodules.
-- MUST cover lifecycle where applicable, each main workflow, at least one failure workflow, behavior-changing configuration variants, and persisted-state recovery when the module persists state.
+- MUST cover affected main and failure workflows, plus lifecycle, behavior-changing configuration, and persisted-state recovery where this change or its risks affect them. Reuse valid existing workflow tests.
 - Not responsible for branch-level internal coverage or neighbor-module contracts.
-- Done when each main workflow and at least one failure workflow have runnable DV steps or recorded gaps.
+- Done when affected workflows and risk boundaries have runnable DV steps or recorded gaps; unchanged workflows do not need new inventory rows.
 
 ### Integration
 - Object: contracts between this module and neighbor modules.
-- MUST cover every consumed exported interface with at least one success case and one failure-semantics case, plus cross-module data flow and side-effect ordering for boundary-crossing key call flows.
+- MUST cover success and failure semantics of affected consumed interfaces and boundary-crossing flows where the change can alter them. Include affected data flow and side-effect ordering; unchanged interfaces may reuse existing evidence without per-interface duplicate rows.
 - Not responsible for re-proving logic already covered at unit or DV level.
-- Done when every consumed exported interface has success and failure coverage or recorded gaps.
+- Done when affected contracts and risk boundaries have success/failure coverage or recorded gaps. Critical security, data, and concurrency contracts retain explicit coverage.
 
 ### API and Repository Consumer Contracts
 - These contract checks complement, and do not replace, unit/DV/integration levels.
@@ -62,7 +62,7 @@ These full post-implementation coverage contracts are the high-risk default. Sta
 - Duplicate verification across levels MUST record a reason.
 
 ## Case Derivation
-Test cases MUST derive from design artifacts. Each derivation source below gets concrete cases or an explicit gap/not-applicable record in the single coverage list:
+Derive cases from approved design and affected implementation behavior. Use the categories below to discover relevant risks; record applicable cases and material gaps in the single coverage list, without mandatory rows for irrelevant categories:
 
 | element_type | Derivation source | Required cases |
 |--------------|-------------------|----------------|
@@ -73,16 +73,16 @@ Test cases MUST derive from design artifacts. Each derivation source below gets 
 | invariant | design state/ownership invariants | one case verifying each invariant |
 | concurrency | concurrency, reentrancy, or ordering declarations | race, reentry, ordering cases, or a manual reason |
 
-- Every element type MUST appear in coverage tags at least once; absent design content uses `status: not-applicable` with a concrete design source and reason.
-- Each derived case MUST name its design source so acceptance can audit authenticity.
-- New failure paths, error categories, or state transitions found in code but missing from design return to design.
+- Each derived case MUST cite its governing design source. Implementation details may also cite code locations and explain how the expected outcome follows from that design.
+- Failure paths or error categories that are implementation details within existing contracts may be tested directly, including fault injection; record the design reference, code detail, and expected behavior without returning to design.
+- Return to design only when an observation exposes a missing or contradictory decision about externally visible behavior, interfaces, state transitions/ownership, recovery policy, security, or another material invariant. Requirement or acceptance-boundary decisions return to proposal. Do not bless an implementation defect by changing its expected result.
 
 ## Required Recording
 - `testplan.yaml` owns one `coverage` list. Each case/gap has `id`, `change_ids`, `design_source`, `target`, `case_types`, `element_types`, `level`, and `status`. Use single-line scalars and inline quoted-string lists for the three plural fields.
-- `target` identifies the changed function/branch, module workflow, or consumed interface. Record each changed branch, each main/lifecycle/failure/config/persistence workflow where applicable, and each interface's success/failure semantics; tags alone do not prove that depth.
+- `target` identifies affected behavior, a risk boundary, workflow, or contract. Group related outcomes and reference existing tests or current coverage reports instead of duplicating branch/interface inventories. Critical-path gaps remain explicit; tags alone do not prove adequate coverage.
 - Covered records also name `test` (test file and case), `assertion` (observable expected behavior), and `step_id` in the matching enabled level. The step must bind every recorded `change_id`. One case may carry multiple tags and change IDs instead of being copied into multiple tables.
-- Applicable DV coverage accounts for `normal`, `error`, and `lifecycle` with DV records; a stateless lifecycle may use a reasoned not-applicable record. Tags in other levels do not satisfy these DV obligations.
-- Every change accounts for `normal`, `boundary`, `negative`, `error`, `compatibility`, `lifecycle`, and `cross-module` case types. The task accounts for every design element type above and all three test levels. Group truly inapplicable categories only when they share a concrete task-specific reason.
+- Each change needs direct behavior/risk coverage or an explicit material gap. Select applicable `case_types`, `element_types`, and levels; no full category matrix per change or not-applicable rows for every absent category is required. Layer modes/reasons still live once in `levels`.
+- Critical security, data, concurrency, and recovery paths require concrete failure/boundary/invariant evidence or specific gaps. Acceptance audits their depth against design and code even when a coverage tool supplies the inventory.
 - Statuses: `covered`, `gap`, `manual`, `disabled`, `not-applicable`. Non-covered records need a concrete `reason`; `manual`/`disabled` records may inherit the matching level's reason. An all-not-applicable record set cannot satisfy a change's direct coverage obligation.
 - Commands and layer reasons live in `levels`; execution results live in machine-written run artifacts. Do not repeat them in coverage records or copy coverage into `testing.md`, checklists, consumer tables, or per-level tables. Consumer discovery remains in design and contract verification in the task plan.
 - When a versioned exception permits missing `testplan.yaml`, record these same fields once in `testing.md`'s `## Coverage` table. List-valued cells use quoted inline lists. Such an exception records manual/disabled/gap evidence; runnable automated coverage requires a plan.

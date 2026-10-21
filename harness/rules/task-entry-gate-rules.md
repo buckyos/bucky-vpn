@@ -19,6 +19,7 @@ Apply after the explicit all-Harness-rules opt-out in `AGENTS.md`, before stage 
 - Directly inspect, edit, and verify requests primarily maintaining repository-local `harness/rules/` or `harness/custom-rules/` policy, including their indexes.
 - Apply this exception before proposal responsibility: no packet creation/selection, task-index mutation, tier/stage classification, proposal confirmation, downstream artifacts, or lifecycle commands for this scope.
 - Mixed product, runtime, build, test, or non-rule tooling changes use normal task workflow for that additional scope. External instructions, explicit user scope, and non-Harness repository constraints still apply.
+- Non-rule Harness tooling uses implementation responsibility under [Implementation Rules](implementation-rules.md#harness-tooling-ownership), with testing and independent acceptance retained for high-risk work.
 
 ## Mandatory Proposal Responsibility
 - Every governed task creates the same proposal packet before execution: allocate `<task-seq>-<task-slug>`, use the canonical single-project or `globals` packet path, create `task.yaml` plus draft `proposal.md`, and register `task.yaml` in the version's unfinished-task index.
@@ -79,7 +80,7 @@ This proportional close gate adds no risk profile, design/testing documents or r
 - `schema-check.py` checks status values only, not approver identity, conversation provenance, timestamps, or approval records.
 
 ## Stage Ownership
-- Every high-risk stage MUST run in a fresh subagent task under [Task Execution Rules](task-execution-rules.md#high-risk-stage-subtasks). Standard tasks combine their responsibilities in one continuous flow, with mandatory fresh-subagent execution when the current session has substantial information under [Standard Task Session Context](task-execution-rules.md#standard-task-session-context).
+- High-risk execution may reuse the parent or stage agent while context capacity permits, with every stage check and independent acceptance retained under [Task Execution Rules](task-execution-rules.md#high-risk-stage-subtasks). Standard tasks combine their responsibilities in one continuous flow, with mandatory fresh-subagent execution when the current session has substantial information under [Standard Task Session Context](task-execution-rules.md#standard-task-session-context).
 - A stage names the task's primary responsibility and expected evidence. Completion fails when the task's changed-path manifest contains artifacts owned by another stage.
 - If work needs artifacts owned by another stage, return or split the work before completion and record the synchronization so the artifact chain remains understandable.
 - Proposal owns requirements, acceptance boundaries, and scripted new-task registration. Design owns implementation shape and Scope Paths. Implementation owns design-bound production changes. Testing owns test design/implementation and task test evidence. Acceptance owns independent defect discovery, requirement/design/implementation/testing findings, secondary document consistency, reporting, and scripted removal of a successfully completed task from `tasks.json`.

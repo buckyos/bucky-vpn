@@ -8,7 +8,14 @@ import re
 import sys
 from pathlib import Path
 
-from task_manifest import TaskManifestError, parse_task_manifest
+from task_manifest import (
+    TaskManifestError,
+    cached_parse,
+    design_input_paths,
+    parse_task_manifest,
+    read_only_validation,
+    read_text as shared_read_text,
+)
 
 
 MAX_PROPOSAL_LINES = 1000
@@ -73,7 +80,7 @@ def fail(message: str) -> None:
 def read_text(path: Path) -> str:
     if not path.exists():
         fail(f"missing required file: {path}")
-    return path.read_text(encoding="utf-8")
+    return shared_read_text(path)
 
 
 def normalize_column(value: str) -> str:
@@ -107,6 +114,7 @@ def section_declares_not_applicable(body: str) -> bool:
     return re.search(r"(?im)^\s*(?:[-*]\s*)?not-applicable\s*:\s*\S", body) is not None
 
 
+@cached_parse
 def table_after_heading(text: str, heading: str, path: Path) -> list[dict[str, str]]:
     body = section_body(text, heading, path)
     lines = body.splitlines()
@@ -146,9 +154,16 @@ def check_sections(path: Path, text: str) -> None:
         section_body(text, heading, path)
 
 
-def check_tables(path: Path, text: str) -> None:
+def has_section(text: str, heading: str) -> bool:
+    return re.search(rf"(?m)^##\s+{re.escape(heading)}\s*$", text) is not None
+
+
+def check_tables(path: Path, text: str, *, document_name: str | None = None,
+                 present_only: bool = False) -> None:
     for (name, heading), columns in REQUIRED_TABLE_COLUMNS.items():
-        if name != path.name:
+        if name != (document_name or path.name):
+            continue
+        if present_only and not has_section(text, heading):
             continue
         rows = table_after_heading(text, heading, path)
         available = set(rows[0])
@@ -184,18 +199,16 @@ def check_tables(path: Path, text: str) -> None:
 FORBIDDEN_DESIGN_TEST_HEADINGS = {
     "test cases",
     "test plan",
-    "testing strategy",
-    "validation rationale",
     "unit tests",
     "dv tests",
     "integration tests",
     "test implementation",
 }
-FORBIDDEN_DESIGN_TEST_TERMS_RE = re.compile(r"(?i)\\b(testability seams?|validation ids?|test fixtures?|expected test results?)\\b")
+FORBIDDEN_DESIGN_TEST_TERMS_RE = re.compile(r"(?i)\b(validation ids?|test fixtures?|expected test results?)\b")
 
 
 def check_design_has_no_test_design(path: Path, text: str) -> None:
-    for heading in re.findall(r"(?m)^##+\\s+(.+?)\\s*$", text):
+    for heading in re.findall(r"(?m)^##+\s+(.+?)\s*$", HTML_COMMENT_RE.sub("", text)):
         normalized = heading.strip().lower()
         if normalized in FORBIDDEN_DESIGN_TEST_HEADINGS:
             fail(f"{path} design-stage documents must not define testing section: {heading}")
@@ -204,32 +217,42 @@ def check_design_has_no_test_design(path: Path, text: str) -> None:
         fail(f"{path} design-stage documents must not define testing details: {match.group(1)}")
 
 
-def check_module_dependencies(path: Path, text: str) -> None:
-    rows = table_after_heading(text, "Module Dependencies", path)
-    graph: dict[tuple[str, str, str], list[str]] = {}
-    for row in rows:
-        key = tuple(row.get(field, "").strip().strip("`") for field in ("level", "parent", "node"))
-        if not all(non_empty(value) for value in key):
-            fail(f"{path} module dependency rows require level, parent, and node")
-        if key in graph:
-            fail(f"{path} duplicate dependency node: {key}")
-        raw = row.get("depends_on", "").strip().strip("`")
-        if not raw:
-            fail(f"{path} node {key} requires depends_on; use none for no dependencies")
-        graph[key] = [] if raw.lower() == "none" else [item.strip().strip("`") for item in raw.split(",")]
+def check_module_dependencies(path: Path, text: str, *,
+                              sources: list[tuple[Path, str]] | None = None) -> None:
+    graph: dict[tuple[str, str, str], set[str]] = {}
+    origins: dict[tuple[str, str, str], Path] = {}
+    for source, content in [(path, text), *(sources or [])]:
+        if source != path and not has_section(content, "Module Dependencies"):
+            continue
+        local_nodes: set[tuple[str, str, str]] = set()
+        for row in table_after_heading(content, "Module Dependencies", source):
+            key = tuple(row.get(field, "").strip().strip("`") for field in ("level", "parent", "node"))
+            if not all(non_empty(value) for value in key):
+                fail(f"{source} module dependency rows require level, parent, and node")
+            if key in local_nodes:
+                fail(f"{source} duplicate dependency node: {key}")
+            local_nodes.add(key)
+            raw = row.get("depends_on", "").strip().strip("`")
+            if not raw:
+                fail(f"{source} node {key} requires depends_on; use none for no dependencies")
+            dependencies = set() if raw.lower() == "none" else {item.strip().strip("`") for item in raw.split(",")}
+            if key in graph and graph[key] != dependencies:
+                fail(f"{source} conflicting dependency node: {key}; first defined in {origins[key]}")
+            graph[key] = dependencies
+            origins.setdefault(key, source)
     visiting: set[tuple[str, str, str]] = set()
     visited: set[tuple[str, str, str]] = set()
 
     def visit(node: tuple[str, str, str]) -> None:
         if node in visiting:
-            fail(f"{path} module dependency cycle at {node}")
+            fail(f"{origins[node]} module dependency cycle at {node}")
         if node in visited:
             return
         visiting.add(node)
-        for target in graph[node]:
+        for target in sorted(graph[node]):
             dependency = (node[0], node[1], target)
             if dependency not in graph:
-                fail(f"{path} unknown or cross-parent dependency {node} -> {target}")
+                fail(f"{origins[node]} unknown or cross-parent dependency {node} -> {target}")
             visit(dependency)
         visiting.remove(node)
         visited.add(node)
@@ -254,10 +277,13 @@ def check_state_ownership(path: Path, text: str) -> None:
         fail(f"{path} State and Ownership must name the single owner or record not-applicable")
 
 
-def check_file_level_interfaces(path: Path, text: str) -> None:
-    body = visible_section_body(text, "File-Level Interfaces", path)
+def check_file_level_interfaces(path: Path, text: str, *, partial: bool = False) -> None:
+    body = (
+        visible_section_body(text, "File-Level Interfaces", path)
+        if not partial or has_section(text, "File-Level Interfaces") else ""
+    )
     values: set[str] = set()
-    if not section_declares_not_applicable(body):
+    if (not partial or has_section(text, "File-Level Interfaces")) and not section_declares_not_applicable(body):
         blocks = CODE_BLOCK_RE.findall(body)
         source_blocks = [lang.lower() for lang, code in blocks if lang.lower() not in {"mermaid", "text", "txt", "plain", "markdown", "md"} and non_empty(code)]
         if not source_blocks:
@@ -270,6 +296,8 @@ def check_file_level_interfaces(path: Path, text: str) -> None:
         values = {part.strip().lower() for part in re.split(r"[/,]", compatibility.group(1))}
         if not values & COMPATIBILITY_VALUES:
             fail(f"{path} ## File-Level Interfaces compatibility must include one of: {', '.join(sorted(COMPATIBILITY_VALUES))}")
+    if partial and not has_section(text, "API and Build Surface Impact"):
+        return
     impact_body = visible_section_body(text, "API and Build Surface Impact", path)
     impact_match = re.search(r"(?im)^\s*-\s*Public API impact\s*:\s*([^\n]+)", impact_body)
     public_api = impact_match.group(1).strip().lower() if impact_match else ""
@@ -351,19 +379,47 @@ def check_submodule_doc_placement(packet: Path, stage: str | None) -> None:
                 fail(f"submodule packet docs belong directly under the submodule packet, not {folder_name}/: {rendered}")
 
 
-def check_doc(path: Path, max_lines: int) -> None:
+@read_only_validation
+def check_doc(path: Path, max_lines: int, *,
+              dependency_sources: list[tuple[Path, str]] | None = None) -> None:
     text = read_text(path)
     if path.name == "proposal.md":
         check_line_count(path, max_lines)
     check_sections(path, text)
     check_tables(path, text)
     if path.name == "design.md":
-        check_module_dependencies(path, text)
+        check_module_dependencies(path, text, sources=dependency_sources)
         check_file_level_interfaces(path, text)
         check_key_flows(path, text)
         check_state_ownership(path, text)
         check_design_has_no_test_design(path, text)
         check_file_level_implementation_sequence(path, text)
+
+
+@read_only_validation
+def check_design_sources(root: Path, design: Path, max_lines: int) -> None:
+    """Check the root template and only the contracts present in each fragment."""
+    try:
+        sources = design_input_paths(root, design)
+    except TaskManifestError as error:
+        fail(str(error))
+    fragments = [
+        (path, HTML_COMMENT_RE.sub("", read_text(path)))
+        for path in sources if path != design.resolve()
+    ]
+    check_doc(design, max_lines, dependency_sources=fragments)
+    for path, text in fragments:
+        check_design_has_no_test_design(path, text)
+        check_tables(path, text, document_name="design.md", present_only=True)
+        for heading, check in (
+            ("Key Flows", check_key_flows),
+            ("State and Ownership", check_state_ownership),
+            ("File-Level Implementation Sequence", check_file_level_implementation_sequence),
+        ):
+            if has_section(text, heading):
+                check(path, text)
+        if has_section(text, "File-Level Interfaces") or has_section(text, "API and Build Surface Impact"):
+            check_file_level_interfaces(path, text, partial=True)
 
 
 def packet_path(root: Path, version: str, module: str, submodule: str | None) -> Path:
@@ -373,6 +429,7 @@ def packet_path(root: Path, version: str, module: str, submodule: str | None) ->
     return packet
 
 
+@read_only_validation
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
@@ -399,7 +456,7 @@ def main() -> int:
         args.docs in {"all", "mandatory", "design"}
         and stage != "proposal"
     ):
-        check_doc(packet / "design.md", args.max_lines)
+        check_design_sources(Path(args.root), packet / "design.md", args.max_lines)
     if args.docs in {"all", "testing"}:
         testing = packet / "testing.md"
         if testing.exists():

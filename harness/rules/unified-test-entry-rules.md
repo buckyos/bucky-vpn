@@ -20,7 +20,7 @@
 - `UV_CACHE_DIR=.harness/uv-cache uv run --active python ./harness/scripts/test-run.py <module> dv`
 - `UV_CACHE_DIR=.harness/uv-cache uv run --active python ./harness/scripts/test-run.py <module> integration`
 - `UV_CACHE_DIR=.harness/uv-cache uv run --active python ./harness/scripts/test-run.py <module> all`
-- `UV_CACHE_DIR=.harness/uv-cache uv run --active python ./harness/scripts/test-run.py <module>/<task-name> all`
+- `UV_CACHE_DIR=.harness/uv-cache uv run --active python ./harness/scripts/test-run.py <module>/<task-name> all --task <packet>/task.yaml`
 - `UV_CACHE_DIR=.harness/uv-cache uv run --active python ./harness/scripts/test-run.py all all`
 
 ## Consistency Rule
@@ -35,6 +35,7 @@
 - `<module> all` and `all all` MUST compose every command registered under that module's `unit`, `dv`, `integration`, and explicit `all` suites, de-duplicating identical argv. Adding a level-specific regression therefore cannot leave the canonical `all` entrypoint unaware of it.
 - A testing task is not complete until every new or changed test implementation is registered with, or otherwise reachable through, the unified test interface.
 - Every task-local `testplan.yaml` MUST reference `task_manifest: task.yaml`; the runner derives its registration as `<module>/<task-name>` from the canonical packet path, and it MUST NOT attach the plan to the bare `<module>` scope.
+- Task execution and reachability checks MUST pass `--task <packet>/task.yaml` to load only the selected packet, including its version. The positional scope MUST match that packet. Legacy scope-only calls remain supported when unambiguous; module/project maintenance does not discover task plans.
 - Package/module suites are mandatory maintenance commands independent of task plans; they MUST never be selected by single-task execution.
 - Risk-triggered task-local contract steps are not module-suite selection. `<module>/<task-name> all` MAY execute a design-required package/workspace compile-only closure while remaining a task-scoped artifact; it MUST NOT execute the broad runtime suite.
 - A task-local `repository-compile-closure` MAY run a package/workspace compile-only command such as `cargo test -p <package> --no-run --all-targets`; this does not authorize the package runtime test suite.
@@ -44,6 +45,8 @@
 - New test execution paths MUST be added to the canonical entrypoint instead of creating unrelated ad hoc commands.
 
 ## Execution Contract
+- Apply `defaults.timeout_sec` to every task command, including contract checks (600 seconds when omitted, also for module suites). Require a finite positive number. On timeout, terminate the command's process tree, record `timed_out`, the effective timeout, and exit code 124 in the run artifact, and stop further steps. Exact argv duplicates use the shortest contributing timeout.
+- Pure explanatory design corrections may retain an original run through reviewed old/new governing-document hash amendments recorded by `task-transition.py refresh-documentation` under [Task Execution Rules](task-execution-rules.md#corrections-and-stops). This exception requires document checks and independent consistency evidence; it never permits changes to runtime/test/build inputs, assertions, risk decisions, testplan, or latest-run validity, and never rewrites the run artifact.
 - Before real execution, fingerprint every bound testplan, the runner/registration source, governing proposal/design/risk inputs, and expanded `evidence_inputs`. Declare all relevant production, test, fixture, dependency/build and consumer inputs; directory fingerprints include file membership so additions and deletions invalidate reuse. Runtime outputs belong outside those input trees.
 - Compare the same inputs after execution; a changed or missing input makes the run unsuccessful even if every command returned zero. Store the starting fingerprints and stability result in a unique artifact that cannot overwrite another run, including runs within the same second.
 - Lifecycle validation selects the latest run by recorded start time for the same packet and task scope before testing its success and input consistency. Never fall back to an older success after a newer failure; a newer failed unit/DV/integration run also requires a fresh successful `all` run. Missing legacy fingerprints require a new run. Recheck freshness when creating or verifying a testing receipt.
@@ -51,6 +54,7 @@
 - Missing, failed, stale, or invalidated evidence requires a new task-scoped `all` run in testing. A concrete uncovered behavior or unresolved failure hypothesis may require targeted additional validation through testing; neither condition authorizes module/project-wide runtime suites.
 - Unknown modules or test levels MUST exit non-zero.
 - Every real run (not `--list` / `--dry-run`) MUST write a machine-readable run artifact to `.harness/test-results/test-runs/` recording requested task scope, requested level, covered `change_ids`, each executed command, its registration sources, exit code, duration, and optional informational git state. `.harness/` is local, uncommitted state outside durable `harness/` tooling and MUST be listed in `.gitignore`.
+- Run records are partitioned by task scope and full testplan paths, including version and packet module; all levels share that partition so newer failures remain visible. Existing flat records are read only until the task has a partition.
 - `<module>/<task-name> all` MUST run only the task's `unit`, `dv`, and `integration` testplan commands.
 - `<module>/<task-name> all` MUST run enabled task-local `contract_checks` before the task's unit/DV/integration commands. Contract sources record `contract_kind` and its exact assertion in the run artifact.
 - Package/module and `all all` commands MUST exist only for explicit user-directed maintenance outside a task flow.

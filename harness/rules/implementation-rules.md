@@ -2,6 +2,11 @@
 
 Applies to high-risk implementation, bugfixes, and production-code changes. Standard tasks use [Task Entry Gate Rules](task-entry-gate-rules.md#tier-default-flows).
 
+## Harness Tooling Ownership
+- Non-rule Harness tooling belongs to implementation: scripts/checkers under `harness/scripts/`, durable templates under `harness/templates/` and `harness/process_rules/task_templates/`, and supporting configuration such as `harness/quality-gates.yaml`.
+- Test code and the unified `harness/scripts/test-run.py` entrypoint belong to testing. Instantiated evidence and runtime state under `.harness/` remain outside project changed-path manifests; reusable evidence templates are implementation artifacts.
+- Rule policy under `harness/rules/` and `harness/custom-rules/` uses [Direct Harness Rule Maintenance](task-entry-gate-rules.md#direct-harness-rule-maintenance). Tooling changes retain normal proposal/design checks, post-implementation testing, and independent acceptance; acceptance defects return to the owning stage.
+
 ## Required Inputs
 - Select the active packet under [Task Entry Gate Rules](task-entry-gate-rules.md#task-packet-selection).
 - Read approved `proposal.md` and `design.md`; each current `change_id` needs direct design, target-module, and Scope Path mappings. Historical packets, module overviews, and chat context do not replace them.

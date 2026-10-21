@@ -8,13 +8,17 @@ This standalone review contract applies to high-risk task packets. Standard task
 - Process closure, document consistency, passing tests, and report structure are secondary. They support the review but never prove functional correctness.
 
 ## Independence And Review Order
-1. Start a fresh acceptance subagent task after implementation and testing under [Task Execution Rules](task-execution-rules.md#high-risk-stage-subtasks). The reviewer MUST NOT have implemented or tested the delivery.
+1. Use an independent acceptance subagent after implementation and testing under [Task Execution Rules](task-execution-rules.md#high-risk-stage-subtasks). The reviewer MUST NOT have implemented or tested the delivery.
 2. Read the current `proposal.md`, current implementation, relevant callers/dependencies, test design, test code, and available runtime evidence. Do not adopt an implementation summary, self-review, previous acceptance conclusion, or task completion claim as truth.
 3. Inspect the requirement and implementation directly, generate failure hypotheses, and try to falsify the delivery.
 4. Record findings and every defect-discovery category before selecting `accepted`, `rejected`, or `needs changes`.
 5. Check design/testing document consistency and lifecycle closure only after the defect search. Never convert a process pass into a correctness pass.
 
 If an independent acceptance subagent cannot be dispatched, follow the blocker policy in Task Execution Rules. Each acceptance subagent MUST use this review order, ignore prior conclusions until inspecting current evidence, and state the concrete evidence used for each category.
+
+For follow-up limited to a reviewed `refresh-documentation` correction, the independent reviewer checks the explanatory diff, document checks, and consistency with unchanged requirements, code, and tests. After verifying retained bindings and run validity, keep the prior concrete defect-discovery evidence for unaffected categories and update the correction findings, document consistency, and conclusion. Do not repeat implementation review or test execution solely for wording changes. If impact is material or uncertain, use the normal owning-stage return and affected-category review.
+
+Every recorded documentation correction remains pending acceptance until the report covers it in `## Documentation Refresh Review`, with a table containing `review_id`, `document`, `evidence`, and `status`. Copy the exact review ID and repository-relative document path from the owner receipt's `documentation_reviews` in `lifecycle.json`; each ID binds the old/new hashes, impact assessment, and consistency review. Record concrete acceptance evidence and `pass` for every amendment before concluding `accepted`. Retain rows for earlier amendments; an unchanged accepted report or a generic statement that documents were reviewed cannot renew acceptance.
 
 ## Required Defect-Discovery Categories
 
@@ -52,7 +56,7 @@ For documentation-only or non-runtime tasks, use the same categories. Mark truly
 - A design defect returns to design.
 - Missing required behavior or a defect in code against an adequate requirement/design returns to implementation.
 - Missing, stale, weak, or non-runnable validation that can hide a defect returns to testing.
-- A design-document-only mismatch returns to design, and a testing-document-only mismatch returns to testing. A proposal-document problem is a requirement problem and follows the `rejected` user-decision path.
+- Pure explanatory design/testing mismatches use `task-transition.py refresh-documentation` under Task Execution Rules, with document checks and independent consistency review; behavioral or validation changes return to their owning stage. A proposal-document problem is a requirement problem and follows the `rejected` user-decision path.
 - Acceptance does not repair requirements, design/testing documents, tests, or implementation in the same task.
 - `accepted` is allowed only when every required category is `pass` or concretely `not-applicable`, every task `change_id` is covered, no blocking finding remains, and document consistency passes for every present source.
 - Use `needs changes` when the approved intent remains valid and a fix can be routed to design, implementation, testing, or a document-owning stage.

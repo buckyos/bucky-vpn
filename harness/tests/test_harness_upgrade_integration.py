@@ -190,7 +190,7 @@ changes:'''),encoding='utf-8')
     def run_task(self,root,level='all',ok=True):
         result=subprocess.run([sys.executable,str(SCRIPTS/'test-run.py'),'repo-governance/001-fixture',level,'--root',str(root)],capture_output=True,text=True,encoding='utf-8')
         self.assertEqual(result.returncode==0,ok,result.stdout+result.stderr)
-        paths=list((root/'.harness/test-results/test-runs').glob('*.json'))
+        paths=list((root/'.harness/test-results/test-runs').rglob('*.json'))
         return max(paths,key=lambda p: json.loads(p.read_text())['started_at']) if paths else None
 
     def test_artifact_dedup_latest_failed_stale_and_membership(self):
@@ -308,7 +308,7 @@ class FreshCloneRegressionTests(unittest.TestCase):
                 self.assertFalse(artifacts.exists(),'invalid selection must not claim an executed run')
             result=self.run_installed(root,'repo-governance','all')
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-            runs=list(artifacts.glob('*.json')); self.assertEqual(len(runs),1)
+            runs=list(artifacts.rglob('*.json')); self.assertEqual(len(runs),1)
             data=json.loads(runs[0].read_text())
             self.assertEqual(data['requested_module'],'repo-governance')
             self.assertEqual(data['requested_level'],'all')
@@ -332,7 +332,7 @@ class FreshCloneRegressionTests(unittest.TestCase):
             self.assertNotIn('raise SystemExit(19)',dry.stdout)
             task=self.run_installed(root,'repo-governance/001-fixture','all')
             self.assertNotEqual(task.returncode,0,task.stdout+task.stderr)
-            latest=max(artifacts.glob('*.json'),key=lambda p:json.loads(p.read_text())['started_at'])
+            latest=max(artifacts.rglob('*.json'),key=lambda p:json.loads(p.read_text())['started_at'])
             taskdata=json.loads(latest.read_text())
             self.assertEqual(len(taskdata['steps']),1)
             self.assertEqual(taskdata['steps'][0]['exit_code'],19)
@@ -350,7 +350,7 @@ class FreshCloneRegressionTests(unittest.TestCase):
             self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
             self.assertIn('FileNotFoundError',result.stderr)
             self.assertIn('originals.zip',result.stderr)
-            data=json.loads(next((root/'.harness/test-results/test-runs').glob('*.json')).read_text())
+            data=json.loads(next((root/'.harness/test-results/test-runs').rglob('*.json')).read_text())
             self.assertTrue(any(step['exit_code']!=0 for step in data['steps']))
             self.assertFalse((root/'.harness/upgrade-039').exists())
             print('fresh durable copy red: unfiltered old module registration fails on absent local originals.zip')

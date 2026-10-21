@@ -51,15 +51,15 @@ contract_checks:
 #       run: ["cargo", "test", "-p", "<package>", "--doc"]
 defaults:
   workdir: .
+  # Per-command wall-clock limit, including contract checks; finite and > 0.
   timeout_sec: 600
   env: {}
-# Level contracts per harness/rules/test-design-rules.md: unit = every changed-code branch,
-# dv = module lifecycle + main + failure workflows, integration = per-interface success + failure semantics.
-# One record per case or gap. Multi-value tags replace separate change/type/design/level tables.
-# Scalars are single-line; list fields use inline quoted strings. Record every changed branch,
-# workflow, and consumed interface at the required depth; tags alone do not prove coverage.
-# Include all case types per change and all design element types overall, using task-specific
-# not-applicable/gap records where needed. See test-design-rules.md for the full contract.
+# Cover affected behavior and risk boundaries at the lowest effective level.
+# Reuse existing tests or current coverage reports; group related cases/gaps.
+# Only applicable tags are required, without a full category matrix per change.
+# Security, data, concurrency, and recovery paths retain explicit failure,
+# boundary, and invariant evidence or concrete gaps. See test-design-rules.md.
+# Scalars are single-line; list fields use inline quoted strings.
 coverage:
   - id: VAL-example
     change_ids: ["CHG-example"]

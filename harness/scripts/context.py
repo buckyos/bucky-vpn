@@ -12,8 +12,10 @@ import argparse
 import ast
 import fnmatch
 import json
+import os
 import re
 import sys
+import time
 from pathlib import Path
 
 
@@ -260,6 +262,21 @@ def expand_scope_files(root: Path, values: list[str]) -> list[str]:
     """Expand task Scope Paths into existing repository files."""
     result: list[str] = []
     root = root.resolve()
+
+    def walk_files(directory: Path):
+        # An explicitly selected root is honored even inside a generated tree.
+        excluded = {".git", ".venv", "target", ".harness", "__pycache__"}
+        for current, dirs, files in os.walk(directory):
+            parent = Path(current)
+            dirs[:] = sorted(
+                name for name in dirs
+                if name not in excluded and not (parent / name).is_symlink()
+            )
+            for name in sorted(files):
+                child = parent / name
+                if child.is_file() and not child.is_symlink():
+                    yield child
+
     for value in values:
         relative = Path(value)
         if relative.is_absolute() or ".." in relative.parts:
@@ -271,7 +288,8 @@ def expand_scope_files(root: Path, values: list[str]) -> list[str]:
             if character in normalized
         ]
         if wildcard_positions:
-            prefix = normalized[: min(wildcard_positions)].rstrip("/")
+            # Only complete path components form the literal search root.
+            prefix = normalized[: min(wildcard_positions)].rpartition("/")[0]
             search_root = safe_relative(
                 root,
                 prefix or ".",
@@ -279,7 +297,7 @@ def expand_scope_files(root: Path, values: list[str]) -> list[str]:
             )
             if not search_root.exists():
                 continue
-            candidates = search_root.rglob("*") if search_root.is_dir() else [search_root]
+            candidates = walk_files(search_root) if search_root.is_dir() else [search_root]
             for candidate in candidates:
                 if candidate.is_symlink() or not candidate.is_file():
                     continue
@@ -296,8 +314,7 @@ def expand_scope_files(root: Path, values: list[str]) -> list[str]:
         else:
             result.extend(
                 child.relative_to(root).as_posix()
-                for child in candidate.rglob("*")
-                if child.is_file() and not child.is_symlink()
+                for child in walk_files(candidate)
             )
     return list(dict.fromkeys(sorted(result)))
 
@@ -464,6 +481,14 @@ def changed_paths_from_args(root: Path, direct: list[str], manifests: list[str])
 
 
 def main() -> int:
+    started = time.perf_counter()
+    try:
+        return route_main()
+    finally:
+        print("context: timings " + json.dumps({"routing_s": time.perf_counter() - started}), file=sys.stderr)
+
+
+def route_main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
     parser.add_argument("--workflow-tier", choices=sorted(WORKFLOW_TIERS))

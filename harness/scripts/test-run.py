@@ -5,7 +5,7 @@ Adapt this template to the target repository's test commands. The contract is
 stable: all test implementation must be reachable through this entrypoint.
 
 Every real run (not --list / --dry-run) writes a machine-readable run artifact
-to .harness/test-results/test-runs/<timestamp>-<module>-<level>.json recording
+to .harness/test-results/test-runs/<task-identity>/<timestamp>-<module>-<level>.json recording
 the exact task scope, commands, registration sources, and exit codes.
 `.harness/` is local, uncommitted state and must be listed in .gitignore.
 Acceptance cites these artifacts instead of pasted command output.
@@ -18,18 +18,30 @@ import ast
 import datetime
 import hashlib
 import json
+import math
+import os
 import re
+import signal
 import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
 
-from task_manifest import TaskManifestError, parse_task_manifest
+from task_manifest import (
+    TaskManifestError,
+    content_digest,
+    design_input_paths,
+    parse_task_manifest,
+    read_only_validation,
+    read_text as shared_read_text,
+    test_run_directory,
+)
 
 
 LEVELS = ("unit", "dv", "integration")
 RUN_ARTIFACT_SCHEMA = 1
+DEFAULT_TIMEOUT_SEC = 600.0
 CONTRACT_KINDS = {
     "external-positive",
     "external-negative",
@@ -50,11 +62,11 @@ CONTRACT_ASSERTIONS = {
 # `module all` and `all all` compose unit, DV, integration, and explicit `all`
 # commands, then de-duplicate identical argv. This keeps newly registered
 # level-specific regressions reachable even when an older `all` suite exists.
-# Upgrade regression classes use runtime fixtures; task 039 separately selects
-# local archive/proposal/authorization provenance through its task testplan.
 MODULE_SUITES: dict[str, dict[str, list[list[str]]]] = {
     "repo-governance": {
         "unit": [
+            ["python3", "./harness/tests/test_tooling_refresh.py", "ToolingUnitTests"],
+            ["python3", "./harness/tests/test_tooling_lifecycle.py", "LifecycleBindingRegressionTests", "CanonicalAllSuiteRegressionTests"],
             ["python3", "./harness/scripts/context.py", "--validate-index"],
             ["python3", "./harness/tests/test_schema_check_proposal_approval.py"],
             ["python3", "./harness/tests/test_auto_pipeline_proposal_transition.py"],
@@ -63,10 +75,15 @@ MODULE_SUITES: dict[str, dict[str, list[list[str]]]] = {
             ["python3", "./harness/tests/test_governance_contracts.py"],
         ],
         "dv": [
+            ["python3", "./harness/tests/test_tooling_check_reuse.py"],
+            ["python3", "./harness/tests/test_tooling_source_isolation.py"],
+            ["python3", "./harness/tests/test_tooling_timeouts.py"],
+            ["python3", "./harness/tests/test_tooling_lifecycle.py", "UnifiedTaskExecutionTests", "ProposalApprovalRegressionTests"],
             ["python3", "./harness/scripts/harness-self-check.py", "--root", "."],
             ["python3", "./harness/tests/test_harness_upgrade_migration.py", "MigrationTests"],
         ],
         "integration": [
+            ["python3", "./harness/tests/test_tooling_refresh.py", "ToolingIntegrationTests"],
             ["python3", "./harness/scripts/check-all.py", "--root", "."],
             ["python3", "./harness/tests/test_harness_upgrade_integration.py", "UpgradeIntegrationTests"],
         ],
@@ -143,7 +160,7 @@ def parse_inline_list(value: str) -> list[str]:
 
 
 def steps_from_testplan(path: Path, level: str) -> list[tuple[list[str], str, list[str]]]:
-    text = path.read_text(encoding="utf-8")
+    text = shared_read_text(path)
     start = re.search(rf"(?m)^  {re.escape(level)}:\s*$", text)
     if not start:
         return []
@@ -170,7 +187,7 @@ def steps_from_testplan(path: Path, level: str) -> list[tuple[list[str], str, li
 
 
 def contract_steps_from_testplan(path: Path) -> list[tuple[list[str], str, list[str], str, str]]:
-    text = path.read_text(encoding="utf-8")
+    text = shared_read_text(path)
     start = re.search(r"(?m)^contract_checks:\s*$", text)
     if not start:
         return []
@@ -213,7 +230,7 @@ def contract_steps_from_testplan(path: Path) -> list[tuple[list[str], str, list[
 
 
 def evidence_input_paths(root: Path, testplan: Path) -> list[Path]:
-    text = testplan.read_text(encoding="utf-8")
+    text = shared_read_text(testplan)
     match = re.search(r"(?m)^evidence_inputs:\s*(\[[^\n]*\])\s*$", text)
     configured = parse_inline_list(match.group(1)) if match else []
     candidates = [testplan.resolve()]
@@ -232,14 +249,25 @@ def evidence_input_paths(root: Path, testplan: Path) -> list[Path]:
         if not candidate.exists():
             fail(f"evidence input does not exist in {testplan}: {value}")
         if candidate.is_dir():
-            for child in sorted(candidate.rglob("*")):
-                if child.is_symlink():
-                    fail(f"evidence input tree contains a symlink in {testplan}: {child}")
-                if child.is_file() and not any(
-                    part in {".git", ".venv", "target", ".harness", "__pycache__"}
-                    for part in child.relative_to(root_resolved).parts
-                ):
-                    candidates.append(child.resolve())
+            excluded = {".git", ".venv", "target", ".harness", "__pycache__"}
+            if any(part in excluded for part in candidate.relative_to(root_resolved).parts):
+                continue
+
+            def walk_error(error: OSError) -> None:
+                raise error
+
+            for directory, dirs, files in os.walk(candidate, onerror=walk_error):
+                parent = Path(directory)
+                # Check links at the boundary, but never enter generated trees.
+                for name in dirs + files:
+                    child = parent / name
+                    if child.is_symlink():
+                        fail(f"evidence input tree contains a symlink in {testplan}: {child}")
+                dirs[:] = sorted(name for name in dirs if name not in excluded)
+                candidates.extend(
+                    (parent / name).resolve() for name in sorted(files)
+                    if name not in excluded and (parent / name).is_file()
+                )
         elif candidate.is_file():
             candidates.append(candidate)
     return sorted(set(candidates), key=lambda item: item.relative_to(root_resolved).as_posix())
@@ -248,7 +276,7 @@ def evidence_input_paths(root: Path, testplan: Path) -> list[Path]:
 def evidence_input_roots(root: Path, testplans: list[str]) -> list[str]:
     roots: set[str] = set()
     for relative in testplans:
-        text = (root / relative).read_text(encoding="utf-8")
+        text = shared_read_text(root / relative)
         match = re.search(r"(?m)^evidence_inputs:\s*(\[[^\n]*\])\s*$", text)
         if match:
             roots.update(parse_inline_list(match.group(1)))
@@ -270,7 +298,11 @@ def expanded_evidence_inputs(root: Path, testplans: list[str]) -> list[str]:
     ]
 
 
-def run_input_snapshot(root: Path, testplans: list[str]) -> dict[str, object]:
+@read_only_validation
+def run_input_snapshot(
+    root: Path, testplans: list[str], *,
+    design_sources: dict[tuple[Path, Path], list[Path]] | None = None,
+) -> dict[str, object]:
     """Bind declared source/test/build trees (including membership) before execution."""
     paths = set(expanded_evidence_inputs(root, testplans))
     governing: dict[str, str | None] = {}
@@ -285,22 +317,30 @@ def run_input_snapshot(root: Path, testplans: list[str]) -> dict[str, object]:
                 key = candidate.relative_to(root.resolve()).as_posix()
             except ValueError:
                 fail(f"governing input resolves outside repository: {value}")
-            governing[key] = hashlib.sha256(candidate.read_bytes()).hexdigest() if candidate.is_file() else None
+            if field == "design" and candidate.is_file():
+                try:
+                    sources = design_input_paths(root, candidate, cache=design_sources)
+                except TaskManifestError as error:
+                    fail(str(error))
+                for source in sources:
+                    governing[source.relative_to(root.resolve()).as_posix()] = content_digest(source)
+            # Parse design sources before hashing so their bytes serve both uses.
+            governing[key] = content_digest(candidate) if candidate.is_file() else None
     return {
         "schema": 1,
         "testplans": sorted(set(testplans)),
         "roots": evidence_input_roots(root, testplans),
         "files": {
-            relative: hashlib.sha256((root / relative).read_bytes()).hexdigest()
+            relative: content_digest(root / relative)
             for relative in sorted(paths)
         },
         "governing_inputs": governing,
-        "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "runner_sha256": content_digest(Path(__file__)),
     }
 
 
 def non_executed_levels_from_testplan(path: Path, requested_level: str) -> list[dict[str, str]]:
-    text = path.read_text(encoding="utf-8")
+    text = shared_read_text(path)
     levels = list(LEVELS) if requested_level == "all" else [requested_level]
     records: list[dict[str, str]] = []
     for level in levels:
@@ -350,25 +390,51 @@ def repo_relative_testplan(root: Path, path: Path) -> str:
         fail(f"task testplan resolves outside repository: {path}")
 
 
-def discover_testplans(root: Path) -> dict[str, Path]:
+def discover_testplans(root: Path, scope: str | None = None, task: Path | None = None) -> dict[str, Path]:
+    """Load an explicit packet directly; legacy discovery only scans its scope."""
     plans: dict[str, Path] = {}
-    for path in root.glob(".harness/tasks/*/modules/**/testplan.yaml"):
-        relative = path.relative_to(root / ".harness" / "tasks")
+    if task is not None:
+        manifest = (root / task).resolve()
+        if manifest.name != "task.yaml" or not manifest.is_file():
+            fail(f"--task must name an existing canonical task.yaml: {manifest}")
+        candidates = [manifest.parent / "testplan.yaml"]
+        if not candidates[0].is_file():
+            fail(f"missing task testplan: {candidates[0]}")
+    elif scope is not None:
+        parts = scope.split("/")
+        if len(parts) != 2 or any(
+            part in {"", ".", ".."} or any(char in part for char in "*?[]\\")
+            for part in parts
+        ):
+            fail(f"invalid task scope: {scope}")
+        candidates = root.glob(f".harness/tasks/*/modules/{scope}/testplan.yaml")
+    else:
+        candidates = root.glob(".harness/tasks/*/modules/*/*/testplan.yaml")
+    for path in candidates:
+        path = path.resolve()
+        try:
+            relative = path.relative_to(root / ".harness" / "tasks")
+        except ValueError:
+            fail(f"task testplan resolves outside repository task packets: {path}")
         if any(part.startswith("_") for part in relative.parts):
+            if task is not None:
+                fail(f"cannot select a template task packet: {path}")
             continue
-        text = path.read_text(encoding="utf-8")
+        if len(relative.parts) != 5 or relative.parts[1] != "modules":
+            fail(f"manifest-bound testplan must live in a canonical task packet: {path}")
+        text = shared_read_text(path)
         if not re.search(r"(?m)^task_manifest:\s*task\.yaml\s*$", text):
             fail(f"testplan must use task_manifest: task.yaml: {path}")
         if re.search(r"(?m)^(module|version|task_name|submodule):\s*\S+", text):
             fail(f"testplan duplicates canonical task identity from task.yaml: {path}")
-        modules_root = relative.parts.index("modules")
-        packet_parts = relative.parts[modules_root + 1 : -1]
-        if len(packet_parts) != 2 or not (path.parent / "task.yaml").is_file():
+        if not (path.parent / "task.yaml").is_file():
             fail(f"manifest-bound testplan must live in a task packet with task.yaml: {path}")
-        module, task_name = packet_parts
+        module, task_name = relative.parts[2:4]
         key = f"{module}/{task_name}"
+        if task is not None and scope != key:
+            fail(f"--task selects {key}, which does not match requested scope {scope}")
         if key in plans:
-            fail(f"duplicate task testplan registration for {key}: {plans[key]} and {path}")
+            fail(f"ambiguous task scope {key}: {plans[key]} and {path}; select --task <packet>/task.yaml")
         plans[key] = path
     return plans
 
@@ -429,6 +495,7 @@ def command_sources_for(
     plan = task_plans.get(scope)
     if plan is None:
         fail(f"unknown module or task scope: {scope}")
+    timeout_sec = testplan_timeout(plan)
     levels = list(LEVELS) if requested_level == "all" else [requested_level]
     try:
         plan_rel = plan.resolve().relative_to(root.resolve()).as_posix()
@@ -444,6 +511,7 @@ def command_sources_for(
                         "kind": "task-testplan",
                         "level": level,
                         "testplan": plan_rel,
+                        "timeout_sec": timeout_sec,
                         "step_id": step_id,
                         "change_ids": change_ids,
                         "registration_index": str(command_index),
@@ -465,6 +533,7 @@ def command_sources_for(
                         "contract_kind": contract_kind,
                         "assertion": assertion,
                         "testplan": plan_rel,
+                        "timeout_sec": timeout_sec,
                         "step_id": step_id,
                         "change_ids": change_ids,
                         "registration_index": str(command_index),
@@ -516,16 +585,77 @@ def command_workdir(root: Path, sources: list[dict[str, object]]) -> Path:
     return root
 
 
-def run_command(command: list[str], root: Path, dry_run: bool) -> int:
+def testplan_timeout(path: Path) -> float:
+    text = shared_read_text(path)
+    defaults = re.search(r"(?ms)^defaults:[ \t]*\n(.*?)(?=^[A-Za-z0-9_-]+:|\Z)", text)
+    values = re.findall(r"(?m)^  timeout_sec:[ \t]*([^\n]*)", defaults.group(1)) if defaults else []
+    if not values:
+        return DEFAULT_TIMEOUT_SEC
+    try:
+        timeout = float(values[0].split("#", 1)[0].strip())
+    except ValueError:
+        fail(f"{path} defaults.timeout_sec must be a finite positive number")
+    if len(values) != 1 or not math.isfinite(timeout) or timeout <= 0:
+        fail(f"{path} defaults.timeout_sec must be a finite positive number")
+    return timeout
+
+
+def terminate_process_tree(process: subprocess.Popen) -> None:
+    cleanup_error: str | None = None
+    if os.name == "nt":
+        # Killing only the driver leaves test workers and services running.
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+            )
+            if result.returncode:
+                cleanup_error = f"taskkill exited with {result.returncode} for PID {process.pid}"
+        except (OSError, subprocess.TimeoutExpired) as error:
+            cleanup_error = f"taskkill failed: {error}"
+        if process.poll() is None:
+            process.kill()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    process.wait(timeout=5)
+    if cleanup_error:
+        raise OSError(cleanup_error)
+
+
+def run_command(
+    command: list[str], root: Path, dry_run: bool, *,
+    timeout_sec: float = DEFAULT_TIMEOUT_SEC, outcome: dict[str, object] | None = None,
+) -> int:
     print("+ " + " ".join(command))
     if dry_run:
         return 0
     try:
-        completed = subprocess.run(command, cwd=root)
+        process = subprocess.Popen(
+            command, cwd=root, start_new_session=os.name != "nt",
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+        )
     except OSError as error:
         print(f"test-run: command could not start: {error}", file=sys.stderr)
         return 127
-    return completed.returncode
+    try:
+        return process.wait(timeout=timeout_sec)
+    except (subprocess.TimeoutExpired, KeyboardInterrupt) as error:
+        cancelled = isinstance(error, KeyboardInterrupt)
+        if outcome is not None:
+            outcome["cancelled" if cancelled else "timed_out"] = True
+        try:
+            terminate_process_tree(process)
+        except (OSError, subprocess.SubprocessError, KeyboardInterrupt) as cleanup_error:
+            message = f"{type(cleanup_error).__name__}: {cleanup_error}"
+            if outcome is not None:
+                outcome["cleanup_error"] = message
+            print(f"test-run: process tree cleanup failed: {message}", file=sys.stderr)
+        message = "command cancelled" if cancelled else f"command timed out after {timeout_sec:g}s"
+        print(f"test-run: {message}", file=sys.stderr)
+        return 130 if cancelled else 124
 
 
 def git_state(root: Path) -> tuple[str | None, bool | None]:
@@ -556,7 +686,15 @@ def write_run_artifact(
     input_snapshot: dict[str, object] | None = None,
     inputs_unchanged: bool = False,
 ) -> None:
-    artifact_dir = root / ".harness" / "test-results" / "test-runs"
+    testplans = sorted(
+        set(bound_testplans or []) | {
+            source["testplan"]
+            for step in steps
+            for source in step.get("sources", [])
+            if isinstance(source, dict) and isinstance(source.get("testplan"), str)
+        }
+    )
+    artifact_dir = test_run_directory(root, requested_module, testplans)
     try:
         artifact_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -571,14 +709,7 @@ def write_run_artifact(
             "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "git_head": head,
             "worktree_dirty": dirty,
-            "testplans": sorted(
-                set(bound_testplans or []) | {
-                    source["testplan"]
-                    for step in steps
-                    for source in step.get("sources", [])
-                    if isinstance(source, dict) and isinstance(source.get("testplan"), str)
-                }
-            ),
+            "testplans": testplans,
             "change_ids": sorted(
                 set(bound_change_ids or []) | {
                     change_id
@@ -608,13 +739,22 @@ def main() -> int:
     parser.add_argument("module", help="module name, module/task-name, or all")
     parser.add_argument("level", choices=[*LEVELS, "all"], help="test level or all")
     parser.add_argument("--root", default=".")
+    parser.add_argument("--task", type=Path, help="canonical task.yaml path (relative to --root or absolute); load only this packet")
     parser.add_argument("--list", action="store_true", help="list known modules and exit")
     parser.add_argument("--dry-run", action="store_true", help="print commands without running them")
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
     validate_module_suites()
-    task_plans = discover_testplans(root)
+    if args.task is not None:
+        task_plans = discover_testplans(root, args.module, args.task)
+    elif args.list:
+        task_plans = discover_testplans(root)
+    elif "/" in args.module:
+        task_plans = discover_testplans(root, args.module)
+    else:
+        # Canonical module/project suites never depend on historical task plans.
+        task_plans = {}
     modules = sorted({*MODULE_SUITES, *task_plans})
     if args.list:
         for module in modules:
@@ -693,8 +833,11 @@ def main() -> int:
         if not isinstance(sources, list) or not sources:
             fail(f"registered command has no sources: {command!r}")
         first_source = sources[0]
+        # Exact argv may have several registrations; enforce the tightest limit.
+        timeout_sec = min(float(source.get("timeout_sec", DEFAULT_TIMEOUT_SEC)) for source in sources)
+        outcome: dict[str, object] = {"timed_out": False, "cancelled": False}
         step_start = time.monotonic()
-        code = run_command(command, command_workdir(root, sources), args.dry_run)
+        code = run_command(command, command_workdir(root, sources), args.dry_run, timeout_sec=timeout_sec, outcome=outcome)
         steps.append(
             {
                 "module": first_source.get("scope") if isinstance(first_source, dict) else None,
@@ -702,6 +845,10 @@ def main() -> int:
                 "command": command,
                 "sources": sources,
                 "exit_code": code,
+                "timeout_sec": timeout_sec,
+                "timed_out": outcome["timed_out"],
+                "cancelled": outcome["cancelled"],
+                **({"cleanup_error": outcome["cleanup_error"]} if "cleanup_error" in outcome else {}),
                 "duration_s": round(time.monotonic() - step_start, 3),
             }
         )

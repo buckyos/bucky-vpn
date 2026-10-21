@@ -34,6 +34,11 @@
 | design | `design.md`; use `not-present` when absent | implementation follows the documented solution shape | no mismatch | pass / fail / not-present |
 | testing | `testing.md` and/or `testplan.yaml`; use `not-present` when absent | implemented behavior and tests do not contradict the testing document | no mismatch | pass / fail / not-present |
 
+## Documentation Refresh Review
+<!-- Required only when lifecycle.json records documentation_reviews. One concrete passing review per review ID and document path; otherwise omit this section. -->
+| review_id | document | evidence | status |
+|-----------|----------|----------|--------|
+
 ## Conclusion
 - Accepted / rejected / needs changes: accepted / rejected / needs changes
 - Reason: explain why the completed defect search does or does not support acceptance

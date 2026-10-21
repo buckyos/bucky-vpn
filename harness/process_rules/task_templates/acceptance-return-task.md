@@ -1,6 +1,7 @@
 # Acceptance Return Task
 
 > Do not instantiate this task for a proposal ambiguity, contradiction, or incorrect requirement/acceptance boundary. Stop acceptance and ask the user to decide instead.
+> Pure explanatory design/testing corrections use `task-transition.py refresh-documentation` under Task Execution Rules: document checks and independent consistency review only, preserving unaffected receipts and test runs. Use this return task when behavior, contracts, implementation, or validation semantics are affected.
 
 ## Task Identity
 - Task ID:

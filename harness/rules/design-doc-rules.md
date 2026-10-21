@@ -16,7 +16,7 @@
 - Describe relationships at the relevant parent boundary; source-language signatures specify file-level interfaces. Exploratory proposal discussion need not reach file-level detail.
 - Keep alternatives and abstractions grounded in the actual requirement and current code. Apply the guardrails against filler, speculative architecture, and unjustified abstractions to candidate solutions too.
 - Formal metadata, complete file sequences, migration closure, architecture synchronization, and completion checks remain downstream obligations. Proposal records material compatibility/migration implications without claiming completed evidence.
-- The prohibition on test planning below applies to design-stage artifacts. Proposal may discuss testing under [Test Design Rules — Proposal Applicability](test-design-rules.md#proposal-applicability); proposal content and its handoff are governed by [Proposal Document Rules](proposal-doc-rules.md#design-and-testing-discussion).
+- Proposal may discuss testing under [Test Design Rules — Proposal Applicability](test-design-rules.md#proposal-applicability). Design may record verification strategy, feasibility, observability, and necessary test interfaces; concrete cases and test implementation remain testing responsibilities. Proposal content and handoff follow [Proposal Document Rules](proposal-doc-rules.md#design-and-testing-discussion).
 
 ## Proposal Design Handoff
 - When `proposal.md` contains a design solution, the design stage's primary goal is to inspect it for defects and complete it into an implementation-ready design. Start from that solution, retain sound decisions, correct defects, and fill missing detail under the guardrails below. Proposal approval does not prove design correctness.
@@ -33,6 +33,8 @@
 - Design scope, useful context, and the smallest sufficient overall approach.
 - A top-down layered design decomposition from the whole affected module to submodules, nested submodules, and file-level modules.
 - Split task-local design files only when complexity or context loading benefits; reference any split sources from the root design. No per-level file or fixed index table is required.
+- Referenced design sources are checked recursively for forbidden testing content and the design contracts they contain (including dependency cycles); fragments need not repeat the full root template. Links inside HTML comments or code blocks do not activate a source.
+- Reference split sources under task-local `design/` with Markdown links or backtick paths; nested sources may link to each other. Lifecycle receipts and test snapshots bind every recursively referenced file and the resulting file collection. Missing sources invalidate evidence; unreferenced drafts are not governing inputs.
 - `## Module Dependencies`: one row per affected unit with `level`, `parent`, `node`, and comma-separated `depends_on` (`none` for no dependencies).
 - Source-language fenced code blocks for file-level module interfaces when the design reaches implementation files.
 - Key boundary-crossing call order and relevant failure outcomes, using concise steps or another useful representation.
@@ -45,10 +47,10 @@
 - Design implements approved proposal intent without changing scope.
 - Approval, packet immutability, and stage ownership follow `harness/rules/task-entry-gate-rules.md`; schema validation checks the document status only.
 - Design stays at module shape level: relationships, ownership, interfaces, external dependencies, key flows, state transitions, and implementation order. Avoid low-level implementation detail unless it affects a contract, dependency, state, or control flow.
-- Design docs MUST contain only useful content. Delete filler tables, placeholder sections, repeated proposal text, speculative extension points, idealized architecture, test planning, and facts that do not affect implementation, scope binding, or acceptance.
+- Design docs MUST contain only useful content. Delete filler tables, placeholder sections, repeated proposal text, speculative extension points, idealized architecture, and facts that do not affect implementation, scope binding, verification feasibility, or acceptance.
 - Design MUST proceed top-down through affected boundaries. Parent responsibilities must be established before lower-level decisions; one document may cover multiple levels.
 - Layered design documents belong to the active task's design artifact group. They describe the same task's decomposition and MUST NOT be used as a substitute for creating a sibling task packet for a new requirement or independent task.
-- Design-stage artifacts MUST NOT define test cases, test plans, test strategy, validation IDs, test fixtures, testability seams, test implementation, or expected test results. Testing-stage artifacts own test-case design and test implementation after implementation completes.
+- Design-stage artifacts MAY record verification strategy, key observable outcomes, environment constraints, and necessary testability interfaces so validation difficulties surface before implementation. Describe interface purpose, consumer, compatibility, and limits without speculative hooks. Testing owns concrete cases, validation IDs, executable test plans, fixtures, test implementation, and recorded test results after implementation completes.
 - Diagrams are optional aids. The dependency record is authoritative for graph checks; flow and state descriptions need no diagram syntax.
 - Dependency records describe same-level relationships. Cross-parent collaboration is represented at the nearest common parent level.
 - Module and submodule dependency graphs MUST be acyclic. Circular dependencies return to design.
@@ -66,7 +68,7 @@
 - Every persistent datum or shared state has exactly one owning submodule; other submodules access it through the owner's interface.
 - Lifecycles and cross-boundary call flows include failure, timeout, retry, idempotency, and partial-completion behavior only where those behaviors affect this change.
 - Boundary, technical-choice, and cross-module collaboration decisions record a serious rejected alternative only when a real alternative was considered; otherwise omit the filler and record no fake decision.
-- Do not record testability seams in design documents. If a replaceable dependency or boundary hook is required for production behavior, describe it as an implementation interface with its real consumer and compatibility decision, not as a testing aid.
+- Necessary replaceable dependencies or observation/injection hooks may serve tests. Document their real test consumer, isolation from production behavior, compatibility, and why existing interfaces cannot provide the required evidence; omit unnecessary test abstractions.
 - Changes to existing modules list externally observable behavior and invariants to preserve when those invariants constrain the implementation; greenfield modules can record `not-applicable: new module`.
 - Small submodules may map to one file. Larger submodules with internal responsibilities should be directories; keep detailed internal layout out of `design.md` unless required for the change.
 - The final design MUST identify every file-level module that will be created or modified. `## File-Level Implementation Sequence` MUST order those files by dependency so implementation child tasks can be created and executed in that order.

@@ -14,6 +14,8 @@ import re
 import sys
 from pathlib import Path
 
+from task_manifest import cached_parse, read_only_validation, read_text as shared_read_text
+
 
 RISK_KEYS = ("contract", "data", "security", "runtime", "build", "ui", "harness")
 RISK_TRIGGERS = {
@@ -56,10 +58,11 @@ def inline_list(value: str, path: Path, line_number: int) -> list[str]:
     return [item.strip() for item in parsed]
 
 
+@cached_parse
 def parse_profile(path: Path) -> dict[str, object]:
     if not path.is_file():
         fail(f"missing task risk profile: {path}")
-    lines = path.read_text(encoding="utf-8").splitlines()
+    lines = shared_read_text(path).splitlines()
     profile: dict[str, object] = {"source_bindings": {}, "risks": {}}
     section: str | None = None
     category: str | None = None
@@ -172,7 +175,7 @@ def prepare(profile_path: Path, task_path: Path, task: dict[str, object]) -> Non
     if not proposal.is_file():
         fail(f"missing proposal source: {proposal}")
     design = active_design_source(task, task_path)
-    text = profile_path.read_text(encoding="utf-8")
+    text = shared_read_text(profile_path)
     change_ids = [str(change["id"]) for change in task["changes"]]
     text = replace_scalar(text, "change_ids", repr(change_ids).replace("'", '"'))
     text = replace_scalar(text, "proposal", str(task["proposal"]), indent=2)
@@ -195,10 +198,11 @@ def placeholder(value: str) -> bool:
 def require_reference(path: Path, expected: str = "Risk profile: ./risk-profile.yaml") -> None:
     if not path.is_file():
         return
-    if expected not in path.read_text(encoding="utf-8"):
+    if expected not in shared_read_text(path):
         fail(f"{path} must reference the task-level profile with `{expected}`")
 
 
+@read_only_validation
 def validate(profile_path: Path, task_path: Path, task: dict[str, object]) -> None:
     profile = parse_profile(profile_path)
     if profile.get("task_manifest") != "task.yaml":
@@ -252,7 +256,7 @@ def validate(profile_path: Path, task_path: Path, task: dict[str, object]) -> No
         if testing.is_file():
             require_reference(testing)
         testplan = task_path.parent / str(task.get("testplan") or "testplan.yaml")
-        if testplan.is_file() and not re.search(r"(?m)^risk_profile:\s*risk-profile\.yaml\s*$", testplan.read_text(encoding="utf-8")):
+        if testplan.is_file() and not re.search(r"(?m)^risk_profile:\s*risk-profile\.yaml\s*$", shared_read_text(testplan)):
             fail(f"{testplan} must reference risk_profile: risk-profile.yaml")
     if task["stage"] == "acceptance":
         require_reference(task_path.parent / str(task.get("acceptance_report") or "acceptance-report.md"))

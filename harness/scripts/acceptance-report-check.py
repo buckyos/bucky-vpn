@@ -9,11 +9,18 @@ prove that the reviewer found every real defect.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import re
 import sys
 from pathlib import Path
 
-from task_manifest import TaskManifestError, parse_task_manifest
+from task_manifest import (
+    TaskManifestError,
+    cached_parse,
+    parse_task_manifest,
+    read_only_validation,
+    read_text as shared_read_text,
+)
 
 
 TABLE_SEPARATOR_RE = re.compile(
@@ -66,7 +73,7 @@ def fail(message: str) -> None:
 def read_text(path: Path) -> str:
     if not path.is_file():
         fail(f"missing required file: {path}")
-    return path.read_text(encoding="utf-8")
+    return shared_read_text(path)
 
 
 def normalize_column(value: str) -> str:
@@ -105,6 +112,7 @@ def section_body(text: str, heading: str, path: Path) -> str:
     return text[match.end() : end]
 
 
+@cached_parse
 def table_rows(text: str, heading: str, path: Path) -> list[dict[str, str]]:
     lines = section_body(text, heading, path).splitlines()
     start = next(
@@ -223,6 +231,7 @@ def expected_document_sources(packet: Path) -> dict[str, list[str]]:
     return {"design": design_sources, "testing": testing_sources}
 
 
+@read_only_validation
 def check_report(path: Path, text: str, root: Path) -> None:
     ordered_headings = (
         "Findings",
@@ -257,6 +266,17 @@ def check_report(path: Path, text: str, root: Path) -> None:
     )
     if path.resolve() != expected.resolve():
         fail(f"{path} Object and Scope does not match report task packet path: {expected}")
+    if result == "accepted" and (path.parent / "lifecycle.json").is_file():
+        script = Path(__file__).with_name("lifecycle-check.py")
+        if not script.is_file():
+            script = Path(__file__).with_name("lifecycle-check.template.py")
+        spec = importlib.util.spec_from_file_location("acceptance_lifecycle", script)
+        if spec is None or spec.loader is None:
+            fail(f"cannot load lifecycle checker: {script}")
+        lifecycle = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(lifecycle)
+        task_path = path.parent / "task.yaml"
+        lifecycle.verify_documentation_acceptance(task_path, parse_task_manifest(task_path), text)
     proposal = path.parent / "proposal.md"
     if result == "accepted" and not proposal.is_file():
         fail(f"{path} cannot be accepted because required proposal is missing: {proposal}")
@@ -484,6 +504,7 @@ def check_report(path: Path, text: str, root: Path) -> None:
         fail(f"{path} Conclusion missing Next action")
 
 
+@read_only_validation
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("report")

@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -46,6 +48,9 @@ def run_completion(root: Path, task_path: Path) -> None:
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
         fail(f"stage completion failed: {detail}")
+    for line in completed.stderr.splitlines():
+        if line.startswith("harness-check: timings "):
+            print(line, file=sys.stderr)
 
 
 def require_accepted_report(task_path: Path, task: dict[str, object]) -> None:
@@ -78,6 +83,88 @@ def write_stage(task_path: Path, stage: str, *, pending: bool = False) -> None:
     temporary.replace(task_path)
 
 
+def run_document_checks(root: Path, task: dict[str, object], stage: str) -> None:
+    identity = ["--root", str(root), "--version", str(task["version"]),
+                "--module", str(task["packet_module"]), "--submodule", str(task["task_name"])]
+    for name, extra in (
+        ("schema-check", ["--require-approved"]),
+        ("doc-structure-check", ["--docs", stage]),
+    ):
+        result = subprocess.run(
+            [sys.executable, str(sibling_script(name)), *identity, *extra],
+            capture_output=True, text=True,
+        )
+        if result.returncode:
+            fail(f"documentation check failed: {result.stderr.strip() or result.stdout.strip()}")
+
+
+def refresh_documentation(root: Path, task_path: Path, task: dict[str, object],
+                          stage: str, reason: str, review_evidence: str) -> None:
+    """Renew an explanatory edit without replaying unaffected delivery stages."""
+    if not reason.strip() or not review_evidence.strip():
+        fail("documentation refresh requires impact assessment and independent consistency review")
+    if STAGES.index(stage) > STAGES.index(str(task["stage"])):
+        fail("cannot refresh documentation from a future stage")
+    lifecycle = load_lifecycle()
+    state = lifecycle.load_state(task_path, task, required=True)
+    stages = state["stages"]
+    receipt = stages.get(stage)
+    if not isinstance(receipt, dict) or receipt.get("status") != "complete":
+        fail("documentation refresh requires an existing completed owner receipt")
+    if receipt.get("task_binding_schema") != lifecycle.TASK_BINDING_SCHEMA or receipt.get("task_binding_sha256") != lifecycle.task_binding(task, stage):
+        fail("documentation refresh cannot change task, scope, or artifact bindings")
+    inputs = lifecycle.expected_receipt_inputs(root, task_path, task, stage)
+    old_inputs = receipt.get("inputs", {})
+    document = (task_path.parent / str(task.get(stage) or f"{stage}.md")).relative_to(root).as_posix()
+    documents = {document}
+    if stage == "design":
+        documents.update(path for path in inputs if path != (task_path.parent / str(task["risk_profile"])).relative_to(root).as_posix())
+    if set(inputs) != set(old_inputs) or any(
+        inputs[path] != digest for path, digest in old_inputs.items() if path not in documents
+    ):
+        fail("documentation refresh cannot change the source collection, risk policy or testplan; use return --to")
+    changed = sorted(path for path in documents if path in inputs and inputs[path] != old_inputs[path])
+    if not changed:
+        fail("documentation refresh requires a changed owner document")
+    updated = copy.deepcopy(stages)
+    updated[stage]["inputs"] = inputs
+    for path in changed:
+        review = {"path": path, "before": old_inputs[path], "after": inputs[path],
+                  "reason": reason, "review_evidence": review_evidence}
+        review["id"] = lifecycle.sha256_bytes(
+            json.dumps(review, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        )
+        updated[stage].setdefault("documentation_reviews", []).append(review)
+        if stage == "design" and "testing" in updated:
+            updated["testing"].setdefault("documentation_updates", []).append(review)
+    # Check every retained receipt, including latest-run freshness. Only the
+    # reviewed design hash may differ in a test snapshot; no run is rewritten.
+    for name, retained in updated.items():
+        if name in {stage, "acceptance"}:
+            continue
+        if retained.get("task_binding_schema") != lifecycle.TASK_BINDING_SCHEMA or retained.get("task_binding_sha256") != lifecycle.task_binding(task, name):
+            fail(f"cannot retain stale {name} receipt")
+        if name == "testing":
+            if retained.get("inputs") != lifecycle.expected_receipt_inputs(root, task_path, task, name):
+                fail("cannot retain changed testing inputs")
+            artifact = lifecycle.latest_test_artifact(
+                root, task_path, task, documentation_updates=retained.get("documentation_updates", [])
+            )
+            if retained.get("test_run") != artifact.relative_to(root).as_posix() or retained.get("test_run_sha256") != lifecycle.sha256_file(artifact):
+                fail("cannot retain superseded or modified testing evidence")
+        else:
+            lifecycle.verify_receipt_evidence(root, task_path, task, name, retained)
+    if stage == "testing":
+        # The owner receipt is renewed, but its original run must still be valid.
+        lifecycle.verify_receipt_evidence(root, task_path, task, stage, updated[stage])
+    run_document_checks(root, task, stage)
+    updated.pop("acceptance", None)
+    state["stages"] = updated
+    lifecycle.write_state(lifecycle.state_path(task_path, task), state)
+    for review in updated[stage]["documentation_reviews"][-len(changed):]:
+        print(f"task-transition: pending acceptance review {review['id']}: {review['path']}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
@@ -85,6 +172,10 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("advance")
     commands.add_parser("complete")
+    refreshed = commands.add_parser("refresh-documentation")
+    refreshed.add_argument("--stage", required=True, choices=("design", "testing"))
+    refreshed.add_argument("--reason", required=True)
+    refreshed.add_argument("--review-evidence", required=True)
     returned = commands.add_parser("return")
     returned.add_argument("--to", required=True, choices=STAGES[:-1])
     args = parser.parse_args()
@@ -98,13 +189,19 @@ def main() -> int:
     task = lifecycle.validate_task(task_path)
     current = str(task["stage"])
 
+    if args.command == "refresh-documentation":
+        refresh_documentation(root, task_path, task, args.stage, args.reason, args.review_evidence)
+        print(f"task-transition: refreshed {args.stage} documentation; independent acceptance required")
+        return 0
+
     if args.command == "advance":
         if current == "acceptance":
             fail("acceptance has no next stage; use complete")
         lifecycle.verify_receipts(root, task_path, task, STAGES[:STAGES.index(current)])
         run_completion(root, task_path)
+        payload = None
         if current in {"design", "testing"}:
-            lifecycle.receipt_payload(root, task_path, task, current)
+            payload = lifecycle.receipt_payload(root, task_path, task, current)
             document = task_path.parent / str(task.get(current) or f"{current}.md")
             if document.is_file():
                 text = document.read_text(encoding="utf-8")
@@ -112,7 +209,10 @@ def main() -> int:
                 if count != 1:
                     fail(f"{document} must contain a valid status field")
                 document.write_text(approved, encoding="utf-8")
-        lifecycle.record_stage(root, task_path, task, current)
+                # Approval changes only the owner document. Retain every other
+                # fingerprint and the test-run validation performed above.
+                payload["inputs"][document.relative_to(root).as_posix()] = lifecycle.sha256_file(document)
+        lifecycle.record_stage(root, task_path, task, current, payload=payload)
         next_stage = STAGES[STAGES.index(current) + 1]
         write_stage(task_path, next_stage)
         print(f"task-transition: advanced {current} -> {next_stage}")

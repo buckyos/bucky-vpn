@@ -13,13 +13,20 @@ import datetime
 import importlib.util
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 from task_manifest import (
     TaskManifestError,
+    content_digest,
+    read_json,
+    read_only_validation,
+    read_text as shared_read_text,
+    design_input_paths,
     parse_task_manifest,
+    test_run_directory,
 )
 
 
@@ -51,7 +58,7 @@ def sha256_bytes(value: bytes) -> str:
 
 def sha256_file(path: Path) -> str:
     try:
-        return sha256_bytes(path.read_bytes())
+        return content_digest(path)
     except OSError as error:
         fail(f"cannot read receipt input {path}: {error}")
 
@@ -119,7 +126,7 @@ def load_state(task_path: Path, task: dict[str, object], *, required: bool) -> d
             fail(f"missing lifecycle state: {path}")
         return {"schema_version": 1, "task_manifest": "task.yaml", "stages": {}}
     try:
-        state = json.loads(path.read_text(encoding="utf-8"))
+        state = read_json(path)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         fail(f"invalid lifecycle state {path}: {error}")
     if not isinstance(state, dict) or set(state) != STATE_FIELDS:
@@ -132,7 +139,10 @@ def load_state(task_path: Path, task: dict[str, object], *, required: bool) -> d
     return state
 
 
-def artifact_inputs(root: Path, task_path: Path, task: dict[str, object], stage: str) -> list[Path]:
+def artifact_inputs(
+    root: Path, task_path: Path, task: dict[str, object], stage: str, *,
+    design_sources: dict[tuple[Path, Path], list[Path]] | None = None,
+) -> list[Path]:
     fields: dict[str, tuple[str, ...]] = {
         "proposal": ("proposal",),
         "design": ("design", "risk_profile"),
@@ -143,6 +153,8 @@ def artifact_inputs(root: Path, task_path: Path, task: dict[str, object], stage:
     result: list[Path] = []
     for field in fields[stage]:
         value = task.get(field)
+        if field == "testing" and value in {None, ""}:
+            value = "testing.md"
         if value in {None, ""}:
             fail(f"stage {stage} requires task field {field}")
         relative = Path(str(value))
@@ -154,8 +166,16 @@ def artifact_inputs(root: Path, task_path: Path, task: dict[str, object], stage:
         except ValueError:
             fail(f"stage artifact {field} resolves outside repository: {path}")
         if not path.is_file():
+            if field == "testing" and not path.exists():
+                continue
             fail(f"stage {stage} completion input is missing: {path}")
-        result.append(path)
+        if field == "design":
+            try:
+                result.extend(design_input_paths(root, path, cache=design_sources))
+            except TaskManifestError as error:
+                fail(str(error))
+        else:
+            result.append(path)
     return result
 
 
@@ -206,7 +226,14 @@ def successful_test_run(
     )
 
 
-def latest_test_artifact(root: Path, task_path: Path, task: dict[str, object]) -> Path:
+@read_only_validation
+def latest_test_artifact(
+    root: Path, task_path: Path, task: dict[str, object], *,
+    documentation_updates: list[dict[str, str]] | None = None,
+    design_sources: dict[tuple[Path, Path], list[Path]] | None = None,
+) -> Path:
+    if design_sources is None:
+        design_sources = {}
     testplan = task_path.parent / str(task.get("testplan") or "testplan.yaml")
     expected = testplan.relative_to(root).as_posix()
     scope = f"{task['packet_module']}/{task['task_name']}"
@@ -216,10 +243,14 @@ def latest_test_artifact(root: Path, task_path: Path, task: dict[str, object]) -
         if isinstance(change, dict) and change.get("id")
     }
     matches: list[tuple[datetime.datetime, Path, dict[str, object]]] = []
-    artifact_root = root / ".harness" / "test-results" / "test-runs"
+    artifact_root = test_run_directory(root, scope, [expected])
+    if not artifact_root.is_dir():
+        # Preserve old receipts until the first run in the new partition.
+        # Once it exists, only this task's records need to be examined.
+        artifact_root = root / ".harness" / "test-results" / "test-runs"
     for path in artifact_root.glob("*.json") if artifact_root.is_dir() else ():
         try:
-            artifact = json.loads(path.read_text(encoding="utf-8"))
+            artifact = read_json(path)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             continue
         if not isinstance(artifact, dict):
@@ -249,11 +280,40 @@ def latest_test_artifact(root: Path, task_path: Path, task: dict[str, object]) -
             fail(f"newer task test-run failed or had unstable inputs; rerun all: {later_path}")
     if not successful_test_run(artifact, scope, expected, change_ids):
         fail(f"latest task test-run did not succeed: {path}")
-    validate_test_inputs(root, artifact)
+    if documentation_updates is None:
+        state = load_state(task_path, task, required=False)
+        receipt = state["stages"].get("testing", {})
+        documentation_updates = (
+            receipt.get("documentation_updates", [])
+            if receipt.get("test_run") == path.relative_to(root).as_posix() else []
+        )
+    design_path = task_path.parent / str(task.get("design") or "design.md")
+    try:
+        allowed = {
+            source.relative_to(root).as_posix()
+            for source in design_input_paths(root, design_path, cache=design_sources)
+        }
+    except TaskManifestError as error:
+        fail(str(error))
+    if not isinstance(documentation_updates, list) or any(
+        not isinstance(update, dict) or update.get("path") not in allowed
+        or not str(update.get("reason") or "").strip()
+        or not str(update.get("review_evidence") or "").strip()
+        for update in documentation_updates
+    ):
+        fail("invalid documentation-only test-input updates")
+    validate_test_inputs(
+        root, artifact, documentation_updates=documentation_updates, design_sources=design_sources,
+    )
     return path
 
 
-def validate_test_inputs(root: Path, artifact: dict[str, object]) -> None:
+@read_only_validation
+def validate_test_inputs(
+    root: Path, artifact: dict[str, object], *,
+    documentation_updates: list[dict[str, str]] | None = None,
+    design_sources: dict[tuple[Path, Path], list[Path]] | None = None,
+) -> None:
     snapshot = artifact.get("input_snapshot")
     if not isinstance(snapshot, dict) or snapshot.get("schema") != 1 or artifact.get("inputs_unchanged") is not True:
         fail("task test-run lacks stable input fingerprints; rerun tests")
@@ -269,18 +329,33 @@ def validate_test_inputs(root: Path, artifact: dict[str, object]) -> None:
     for path in testplans:
         safe_repo_path(root, path, "test-run testplan")
     try:
-        current = runner.run_input_snapshot(root, testplans)
+        current = runner.run_input_snapshot(root, testplans, design_sources=design_sources)
     except (OSError, SystemExit, TaskManifestError):
         fail("task test-run inputs are missing or stale; rerun tests")
-    if snapshot != current:
+    # Keep the original run immutable. Only reviewed explanatory design edits
+    # can bridge governing-document hashes; runtime/test/build inputs stay exact.
+    adjusted = json.loads(json.dumps(snapshot))
+    for update in documentation_updates or []:
+        path = update["path"]
+        for field in ("governing_inputs", "files"):
+            values = adjusted.get(field, {})
+            if path in values:
+                if values[path] != update.get("before"):
+                    fail("documentation update does not match original test-input chain")
+                values[path] = update.get("after")
+    if adjusted != current:
         fail("task test-run inputs changed since execution; rerun tests")
 
 
+@read_only_validation
 def receipt_payload(root: Path, task_path: Path, task: dict[str, object], stage: str) -> dict[str, object]:
     inputs = {
         path.relative_to(root).as_posix(): sha256_file(path)
         for path in artifact_inputs(root, task_path, task, stage)
     }
+    if stage == "acceptance":
+        report = task_path.parent / str(task.get("acceptance_report") or "acceptance-report.md")
+        verify_documentation_acceptance(task_path, task, shared_read_text(report))
     payload: dict[str, object] = {
         "status": "complete",
         "task_binding_schema": TASK_BINDING_SCHEMA,
@@ -303,7 +378,11 @@ def write_state(path: Path, state: dict[str, object]) -> None:
     temporary.replace(path)
 
 
-def record_stage(root: Path, task_path: Path, task: dict[str, object], stage: str) -> None:
+def record_stage(
+    root: Path, task_path: Path, task: dict[str, object], stage: str, *,
+    payload: dict[str, object] | None = None,
+) -> None:
+    """Record fresh evidence, or reuse a payload validated in this transition."""
     if task.get("stage") != stage:
         fail(f"cannot record {stage} while task.yaml stage is {task.get('stage')}")
     state = load_state(task_path, task, required=False)
@@ -313,7 +392,7 @@ def record_stage(root: Path, task_path: Path, task: dict[str, object], stage: st
     missing = [name for name in STAGES[:index] if name not in stages]
     if missing:
         fail(f"cannot record {stage} before prior stages: {', '.join(missing)}")
-    stages[stage] = receipt_payload(root, task_path, task, stage)
+    stages[stage] = receipt_payload(root, task_path, task, stage) if payload is None else payload
     for later in STAGES[index + 1 :]:
         stages.pop(later, None)
     write_state(state_path(task_path, task), state)
@@ -328,12 +407,14 @@ def clear_from(task_path: Path, task: dict[str, object], stage: str) -> None:
     write_state(state_path(task_path, task), state)
 
 
+@read_only_validation
 def verify_receipts(root: Path, task_path: Path, task: dict[str, object], required: tuple[str, ...]) -> None:
     if not required:
         return
     state = load_state(task_path, task, required=True)
     stages = state["stages"]
     assert isinstance(stages, dict)
+    design_sources: dict[tuple[Path, Path], list[Path]] = {}
     for stage in required:
         receipt = stages.get(stage)
         if not isinstance(receipt, dict) or receipt.get("status") != "complete":
@@ -347,27 +428,34 @@ def verify_receipts(root: Path, task_path: Path, task: dict[str, object], requir
             )
         if receipt_binding != task_binding(task, stage):
             fail(f"high-risk stage receipt has stale task binding: {stage}")
-        verify_receipt_evidence(root, task_path, task, stage, receipt)
+        verify_receipt_evidence(root, task_path, task, stage, receipt, design_sources=design_sources)
 
 
+@read_only_validation
 def expected_receipt_inputs(
-    root: Path, task_path: Path, task: dict[str, object], stage: str
+    root: Path, task_path: Path, task: dict[str, object], stage: str, *,
+    design_sources: dict[tuple[Path, Path], list[Path]] | None = None,
 ) -> dict[str, str]:
     return {
         path.relative_to(root).as_posix(): sha256_file(path)
-        for path in artifact_inputs(root, task_path, task, stage)
+        for path in artifact_inputs(root, task_path, task, stage, design_sources=design_sources)
     }
 
 
+@read_only_validation
 def verify_receipt_evidence(
     root: Path,
     task_path: Path,
     task: dict[str, object],
     stage: str,
     receipt: dict[str, object],
+    *, design_sources: dict[tuple[Path, Path], list[Path]] | None = None,
 ) -> None:
-    if receipt.get("inputs") != expected_receipt_inputs(root, task_path, task, stage):
+    if receipt.get("inputs") != expected_receipt_inputs(root, task_path, task, stage, design_sources=design_sources):
         fail(f"high-risk stage receipt inputs are missing or stale: {stage}")
+    if stage == "acceptance":
+        report = task_path.parent / str(task.get("acceptance_report") or "acceptance-report.md")
+        verify_documentation_acceptance(task_path, task, shared_read_text(report))
     if stage == "testing":
         value = receipt.get("test_run")
         digest = receipt.get("test_run_sha256")
@@ -376,9 +464,39 @@ def verify_receipt_evidence(
         artifact = safe_repo_path(root, value, "testing receipt test_run")
         if not artifact.is_file() or sha256_file(artifact) != digest:
             fail("testing receipt task test-run artifact is missing or stale")
-        latest = latest_test_artifact(root, task_path, task)
+        latest = latest_test_artifact(root, task_path, task, design_sources=design_sources)
         if latest != artifact:
             fail("testing receipt is superseded by a newer task test-run; renew testing completion")
+
+
+def verify_documentation_acceptance(task_path: Path, task: dict[str, object], text: str) -> None:
+    """Require report evidence covering every recorded documentation amendment."""
+    state = load_state(task_path, task, required=False)
+    reviews = [review for name in ("design", "testing")
+               for review in state["stages"].get(name, {}).get("documentation_reviews", [])]
+    if not reviews:
+        return
+    section = re.search(r"(?m)^## Documentation Refresh Review\s*$", text)
+    if section is None:
+        fail("acceptance must cover pending documentation changes in ## Documentation Refresh Review")
+    body = re.split(r"(?m)^##\s+", text[section.end():], maxsplit=1)[0]
+    rows = [line.strip().strip("|").split("|") for line in body.splitlines()
+            if line.lstrip().startswith("|")]
+    if len(rows) < 3:
+        fail("documentation refresh review requires review_id, document, evidence, status table")
+    headers = [cell.strip().lower() for cell in rows[0]]
+    if not {"review_id", "document", "evidence", "status"} <= set(headers):
+        fail("documentation refresh review table has missing columns")
+    entries = [dict(zip(headers, (cell.strip().strip("`") for cell in row))) for row in rows[2:]]
+    for review in reviews:
+        matches = [entry for entry in entries if entry.get("review_id") == review.get("id")]
+        if len(matches) != 1:
+            fail(f"acceptance has not reviewed documentation change: {review.get('id')} ({review['path']})")
+        entry = matches[0]
+        evidence = entry.get("evidence", "")
+        if (entry.get("document") != review["path"] or entry.get("status") != "pass"
+                or len(evidence) < 24 or re.search(r"<[^>]+>|\b(?:TODO|TBD|pending)\b", evidence, re.I)):
+            fail(f"documentation change needs concrete passing acceptance evidence: {review['path']}")
 
 
 def sibling_script(name: str) -> Path:

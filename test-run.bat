@@ -18,7 +18,7 @@ set "VENV_PYTHON=.venv\Scripts\python.exe"
 if not exist "%VENV_PYTHON%" (
   echo Creating local Python virtual environment in .venv
   uv venv .venv
-  if errorlevel 1 exit /b %errorlevel%
+  if errorlevel 1 exit /b
 )
 
 call ".venv\Scripts\activate.bat"
@@ -27,12 +27,12 @@ if errorlevel 1 exit /b %errorlevel%
 if exist "pyproject.toml" (
   echo Syncing Python environment with uv
   uv sync
-  if errorlevel 1 exit /b %errorlevel%
+  if errorlevel 1 exit /b
 ) else (
   if exist "requirements.txt" (
     echo Installing requirements into .venv with uv
     uv pip install --python "%VENV_PYTHON%" -r requirements.txt
-    if errorlevel 1 exit /b %errorlevel%
+    if errorlevel 1 exit /b
   )
 )
 

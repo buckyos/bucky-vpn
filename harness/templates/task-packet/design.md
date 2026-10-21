@@ -73,7 +73,7 @@ class ExampleStore:
 | 1 | `src/example/example_store.py` | modify | none | CHG-example |
 
 ## Design Notes
-<!-- Record only decisions a future implementer/reviewer needs: rejected alternatives, new abstraction justification, rollout/rollback constraints, or large-module submodule decisions. Do not record test cases, test plans, test strategy, validation IDs, testability seams, fixtures, or test implementation here. Use bullets, not mandatory filler tables. -->
+<!-- Record only decisions a future implementer/reviewer needs: rejected alternatives, new abstraction justification, rollout/rollback constraints, or large-module submodule decisions. May record verification strategy, observability, constraints, and necessary test interfaces. Concrete cases, validation IDs, executable test plans, fixtures, implementation, and results belong to testing. Use bullets, not mandatory filler tables. -->
 - Rejected alternative:
 - New abstraction justification:
 - Large-module submodule decision:

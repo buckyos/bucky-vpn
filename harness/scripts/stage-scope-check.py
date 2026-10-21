@@ -17,7 +17,7 @@ import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
-from task_manifest import TaskManifestError, parse_task_manifest
+from task_manifest import TaskManifestError, parse_task_manifest, read_text as shared_read_text
 
 
 STAGES = {"proposal", "design", "testing", "implementation", "acceptance"}
@@ -121,7 +121,7 @@ def baseline_sources_from_manifest(root: Path, raw_manifest: str) -> dict[str, s
             fail(f"baseline snapshot does not exist: {raw_snapshot}")
         data = snapshot.read_bytes()
         try:
-            sources[path] = data.decode("utf-8")
+            sources[path] = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
         except UnicodeDecodeError as error:
             fail(f"baseline snapshot is not utf-8 for {path}: {error}")
     return sources
@@ -204,7 +204,7 @@ def path_from_status_like_line(line: str) -> list[str]:
 def changed_paths_from_file(path: Path) -> list[str]:
     if not path.exists():
         fail(f"changed paths file does not exist: {path}")
-    text = path.read_text(encoding="utf-8")
+    text = shared_read_text(path)
     stripped = text.lstrip()
     paths: list[str] = []
     if stripped.startswith("[") or stripped.startswith("{"):
@@ -394,7 +394,7 @@ def has_value(value: str) -> bool:
 
 
 def is_unified_test_entrypoint(path: str) -> bool:
-    return path == "harness/scripts/test-run.py"
+    return path in {"harness/scripts/test-run.py", "test-run.bat", "test-run.sh"}
 
 
 def is_stage_doc_path(path: str) -> bool:
@@ -753,13 +753,13 @@ def allowed_for_stage(path: str, stage: str, version: str | None, module: str | 
             return False
         if is_stage_doc_path(path) or is_review_report(path) or is_legacy_review_area(path) or is_module_boundary_sync(path, module) or is_architecture_doc(path):
             return False
-        if is_test_artifact(path):
+        if is_test_artifact(path) or is_unified_test_entrypoint(path):
             return False
         if path == "AGENTS.md":
             return False
-        # Rules, scripts, and checkers are
-        # governance surfaces that implementation tasks must not modify.
-        if path.startswith("harness/"):
+        # Rule policy has a direct-maintenance flow. Non-rule Harness tooling
+        # and durable templates are implementation artifacts.
+        if path.startswith(("harness/rules/", "harness/custom-rules/")):
             return False
         return True
 

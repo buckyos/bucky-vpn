@@ -35,13 +35,6 @@ rules:
     stages: [implementation]
     triggers: []
     path_patterns: []
-  - id: implementation-admission
-    file: harness/rules/implementation-admission-rules.md
-    activation: stage
-    tiers: [high-risk]
-    stages: [implementation]
-    triggers: []
-    path_patterns: []
   - id: testing-document
     file: harness/rules/testing-doc-rules.md
     activation: stage
@@ -147,6 +140,13 @@ rules:
     stages: [general, proposal, design, implementation, testing, acceptance]
     triggers: [harness, harness-process, process, rule, test-infrastructure]
     path_patterns: ["AGENTS.md", "harness/**", "skills/**", "**/AGENTS.md"]
+  - id: implementation-admission
+    file: harness/rules/implementation-admission-rules.md
+    activation: stage
+    tiers: [high-risk]
+    stages: [implementation]
+    triggers: []
+    path_patterns: []
   - id: retired-auto-pipeline
     file: harness/rules/auto-pipeline-rules.md
     activation: trigger
