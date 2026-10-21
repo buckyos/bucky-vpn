@@ -1,0 +1,8 @@
+{
+  "commit": "2c7457ce6e4540996f27708004c052f3095b7091",
+  "sha256": {
+    "vpn-frame/src/client/tunnel_manager.rs": "34ed58c061247a406723016485f55a36f73986cbfb061faf3a727f8b9493fe68",
+    "vpn-frame/src/client/packet_dispatcher.rs": "bf69a029560c5bc840e06fe02ba4da4c2a90092fc20f48889767c3eefa533d89"
+  },
+  "transformation": "Only tunnel_manager idle timeout expression changes from Duration::from_secs(10 * 60) to Duration::from_millis(120); packet_dispatcher is original."
+}

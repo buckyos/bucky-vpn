@@ -1,4 +1,5 @@
 mod packet_dispatcher;
+mod tunnel_activity;
 mod tunnel_manager;
 mod vpn_client;
 mod vpn_client_manager;

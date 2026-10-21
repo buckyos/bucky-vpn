@@ -149,7 +149,21 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, L: VpnTunnel
         let mut sender: Option<WorkerGuard<PkgSend<S>, Factory<R, S, F, L>>> = None;
         let mut backoff_ms = config.reconnect_backoff_min_ms;
 
-        while let Some(first_packet) = rx.recv().await {
+        loop {
+            let first_packet = if let Some(writer) = sender.as_ref() {
+                tokio::select! {
+                    packet = rx.recv() => packet,
+                    _ = writer.closed() => {
+                        sender = None;
+                        continue;
+                    }
+                }
+            } else {
+                rx.recv().await
+            };
+            let Some(first_packet) = first_packet else {
+                break;
+            };
             let mut batch = Vec::with_capacity(config.max_batch_pkts);
             let mut batch_bytes = 0usize;
 
@@ -170,27 +184,42 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, L: VpnTunnel
                 }
             }
 
-            if sender.is_none() {
-                match tunnel_manager
-                    .get_send(target.network_group_id, target.network_id, target.target)
-                    .await
-                {
-                    Ok(worker) => {
-                        sender = Some(worker);
-                        backoff_ms = config.reconnect_backoff_min_ms;
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "get sender failed for target {} network {}: {:?}",
-                            target.target,
-                            target.network_id,
-                            e
-                        );
-                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                        backoff_ms = (backoff_ms * 2).min(config.reconnect_backoff_max_ms);
-                        continue;
+            let mut send_permit = sender.as_ref().and_then(|writer| writer.begin_send());
+            if send_permit.is_none() {
+                sender = None;
+                loop {
+                    match tunnel_manager
+                        .get_send(target.network_group_id, target.network_id, target.target)
+                        .await
+                    {
+                        Ok(worker) => {
+                            if let Some(permit) = worker.begin_send() {
+                                send_permit = Some(permit);
+                                sender = Some(worker);
+                                backoff_ms = config.reconnect_backoff_min_ms;
+                                break;
+                            }
+                            drop(worker);
+                            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                            backoff_ms = (backoff_ms * 2).min(config.reconnect_backoff_max_ms);
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "get sender failed for target {} network {}: {:?}",
+                                target.target,
+                                target.network_id,
+                                e
+                            );
+                            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                            backoff_ms = (backoff_ms * 2).min(config.reconnect_backoff_max_ms);
+                            break;
+                        }
                     }
                 }
+            }
+
+            if sender.is_none() {
+                continue;
             }
 
             let mut failed = false;
@@ -210,6 +239,7 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, L: VpnTunnel
                     failed = true;
                 }
             }
+            drop(send_permit);
 
             if failed {
                 sender = None;

@@ -1,3 +1,4 @@
+use super::tunnel_activity::{ChannelRegistry, SendPermit, TrackedRecv, TunnelChannel};
 use crate::errors::{VpnErrorCode, VpnResult, into_vpn_err, vpn_err};
 use crate::server::{NetworkGroupId, NetworkId, NetworkMember, NodeId};
 use crate::{
@@ -5,7 +6,7 @@ use crate::{
 };
 use bucky_raw_codec::{RawFixedBytes, RawFrom};
 use sfo_pool::{
-    PoolErrorCode, PoolResult, Worker, WorkerFactory, WorkerGuard, WorkerPool, WorkerPoolConfig,
+    PoolErrorCode, PoolResult, Worker, WorkerFactory, WorkerGuard, WorkerPool,
     WorkerPoolRef, into_pool_err,
 };
 use std::collections::HashMap;
@@ -21,6 +22,7 @@ use tokio::task::JoinHandle;
 
 const TUNNEL_POOL_MAX_COUNT: u16 = 20;
 const TUNNEL_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const TUNNEL_CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
 
 pub(crate) struct VpnRouter {
     routers: Mutex<HashMap<NetworkGroupId, HashMap<NetworkId, NetworkRoute>>>,
@@ -115,8 +117,7 @@ pub(crate) struct PkgSend<S: VpnTunnelSend> {
     network_id: Option<NetworkId>,
     target: Option<NodeId>,
     recv_handle: JoinHandle<()>,
-    send: S,
-    is_work: bool,
+    channel: Arc<TunnelChannel<S>>,
 }
 
 impl<S: VpnTunnelSend> PkgSend<S> {
@@ -125,76 +126,68 @@ impl<S: VpnTunnelSend> PkgSend<S> {
         network_id: NetworkId,
         target: NodeId,
         recv_handle: JoinHandle<()>,
-        send: S,
+        channel: Arc<TunnelChannel<S>>,
     ) -> Self {
         Self {
             network_group_id: Some(network_group_id),
             network_id: Some(network_id),
             target: Some(target),
             recv_handle,
-            send,
-            is_work: true,
+            channel,
         }
     }
 
-    pub fn new_pending(recv_handle: JoinHandle<()>, send: S) -> Self {
+    pub fn new_pending(recv_handle: JoinHandle<()>, channel: Arc<TunnelChannel<S>>) -> Self {
         Self {
             network_group_id: None,
             network_id: None,
             target: None,
             recv_handle,
-            send,
-            is_work: true,
+            channel,
         }
+    }
+
+    pub fn begin_send(&self) -> Option<SendPermit<S>> {
+        if self.recv_handle.is_finished() {
+            return None;
+        }
+        self.channel.begin_send()
+    }
+
+    pub async fn closed(&self) {
+        self.channel.closed().await;
     }
 }
 
 impl<S: VpnTunnelSend> Drop for PkgSend<S> {
     fn drop(&mut self) {
         log::info!("PkgSend Drop");
+        self.channel.close();
         self.recv_handle.abort();
     }
 }
 
 impl<S: VpnTunnelSend> Worker for PkgSend<S> {
     fn is_work(&self) -> bool {
-        self.is_work && !self.recv_handle.is_finished() && !self.send.is_closed()
+        !self.recv_handle.is_finished() && self.channel.is_work()
     }
 }
 
 impl<S: VpnTunnelSend> AsyncWrite for PkgSend<S> {
     fn poll_write(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, Error>> {
-        match Pin::new(&mut self.send).poll_write(cx, buf) {
-            Poll::Ready(ret) => {
-                if let Err(e) = ret {
-                    self.is_work = false;
-                    return Poll::Ready(Err(e));
-                }
-                Poll::Ready(ret)
-            }
-            Poll::Pending => Poll::Pending,
-        }
+        self.channel.poll_write(cx, buf)
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
-        match Pin::new(&mut self.send).poll_flush(cx) {
-            Poll::Ready(ret) => {
-                if let Err(e) = ret {
-                    self.is_work = false;
-                    return Poll::Ready(Err(e));
-                }
-                Poll::Ready(ret)
-            }
-            Poll::Pending => Poll::Pending,
-        }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        self.channel.poll_flush(cx)
     }
 
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
-        Pin::new(&mut self.send).poll_shutdown(cx)
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        self.channel.poll_shutdown(cx)
     }
 }
 
@@ -211,6 +204,10 @@ impl<S: VpnTunnelSend> PendingSendCache<S> {
 
     pub fn push(&self, send: PkgSend<S>) {
         self.cache.lock().unwrap().push(send);
+    }
+
+    pub fn cleanup(&self) {
+        self.cache.lock().unwrap().retain(|send| send.is_work());
     }
 
     pub fn get_pending_send(
@@ -235,7 +232,7 @@ impl<S: VpnTunnelSend> PendingSendCache<S> {
                         .target
                         .as_ref()
                         .map_or(true, |send_target| send_target == target)
-                    && send.send.is_target_tunnel(target)
+                    && send.channel.is_target_tunnel(target)
                 {
                     index = Some(i);
                     break;
@@ -271,6 +268,7 @@ pub(crate) struct Factory<
     target: NodeId,
     tunnel_factory: Arc<F>,
     pending_sends: Arc<PendingSendCache<S>>,
+    channels: Arc<ChannelRegistry<S>>,
     pkg_listener: Arc<dyn TunnelPkgRecv>,
     _p: Mutex<std::marker::PhantomData<(R, A)>>,
 }
@@ -284,6 +282,7 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
         target: NodeId,
         tunnel_factory: Arc<F>,
         pending_sends: Arc<PendingSendCache<S>>,
+        channels: Arc<ChannelRegistry<S>>,
         pkg_listener: Arc<dyn TunnelPkgRecv>,
     ) -> Self {
         let this = Self {
@@ -292,6 +291,7 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
             target,
             tunnel_factory,
             pending_sends,
+            channels,
             pkg_listener,
             _p: Default::default(),
         };
@@ -299,7 +299,13 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
         this
     }
 
-    fn create_handle(mut recv: R, recv_listener: Arc<dyn TunnelPkgRecv>) -> JoinHandle<()> {
+    fn create_handle(
+        recv: R,
+        recv_listener: Arc<dyn TunnelPkgRecv>,
+        channel: &Arc<TunnelChannel<S>>,
+    ) -> JoinHandle<()> {
+        let mut recv = TrackedRecv::new(recv, channel);
+        let weak_channel = Arc::downgrade(channel);
         let handle = spawn(async move {
             let ret: VpnResult<()> = async move {
                 loop {
@@ -332,7 +338,11 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
             if let Err(e) = ret {
                 log::error!("vpn recv handle exit {}", e);
             }
+            if let Some(channel) = weak_channel.upgrade() {
+                channel.close();
+            }
         });
+        channel.set_recv_abort(handle.abort_handle());
         handle
     }
 }
@@ -361,14 +371,16 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
                 "create tunnel failed"
             ))?;
         let recv_listener = self.pkg_listener.clone();
-        let handle = Self::create_handle(recv, recv_listener);
+        let channel = TunnelChannel::new(send);
+        self.channels.register(&channel);
+        let handle = Self::create_handle(recv, recv_listener, &channel);
 
         Ok(PkgSend::new(
             self.network_group_id,
             self.network_id,
             self.target.clone(),
             handle,
-            send,
+            channel,
         ))
     }
 }
@@ -395,7 +407,9 @@ pub struct TunnelManager<
     tunnel_factory: Arc<F>,
     tunnels: Mutex<HashMap<Target, WorkerPoolRef<PkgSend<S>, Factory<R, S, F, A>>>>,
     pending_send_cache: Arc<PendingSendCache<S>>,
+    channels: Arc<ChannelRegistry<S>>,
     recv_handle: JoinHandle<()>,
+    cleanup_handle: JoinHandle<()>,
     pkg_listener: Arc<dyn TunnelPkgRecv>,
     router: Arc<VpnRouter>,
 }
@@ -408,17 +422,40 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
         tunnel_listener: Arc<A>,
         pkg_listener: Arc<dyn TunnelPkgRecv>,
     ) -> Self {
+        Self::new_with_idle_policy(
+            tunnel_factory,
+            tunnel_listener,
+            pkg_listener,
+            TUNNEL_POOL_IDLE_TIMEOUT,
+            TUNNEL_CLEANUP_INTERVAL,
+        )
+    }
+
+    pub(crate) fn new_with_idle_policy(
+        tunnel_factory: Arc<F>,
+        tunnel_listener: Arc<A>,
+        pkg_listener: Arc<dyn TunnelPkgRecv>,
+        idle_timeout: Duration,
+        cleanup_interval: Duration,
+    ) -> Self {
+        let channels = Arc::new(ChannelRegistry::new());
         let pending_send_cache = Arc::new(PendingSendCache::new());
         let tmp_send_cache = pending_send_cache.clone();
+        let tmp_channels = channels.clone();
         let tmp_recv_listener = pkg_listener.clone();
         let tmp_tunnel_listener = tunnel_listener.clone();
         let recv_handle = tokio::spawn(async move {
             loop {
                 match tmp_tunnel_listener.accept().await {
                     Ok((recv, send)) => {
-                        let handle =
-                            Factory::<R, S, F, A>::create_handle(recv, tmp_recv_listener.clone());
-                        tmp_send_cache.push(PkgSend::new_pending(handle, send));
+                        let channel = TunnelChannel::new(send);
+                        tmp_channels.register(&channel);
+                        let handle = Factory::<R, S, F, A>::create_handle(
+                            recv,
+                            tmp_recv_listener.clone(),
+                            &channel,
+                        );
+                        tmp_send_cache.push(PkgSend::new_pending(handle, channel));
                     }
                     Err(e) => {
                         log::error!("tunnel_listener accept failed {}", e);
@@ -428,11 +465,30 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
             }
         });
 
+        let weak_channels = Arc::downgrade(&channels);
+        let weak_pending = Arc::downgrade(&pending_send_cache);
+        let cleanup_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(cleanup_interval);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let Some(channels) = weak_channels.upgrade() else {
+                    break;
+                };
+                channels.cleanup(tokio::time::Instant::now(), idle_timeout);
+                if let Some(pending) = weak_pending.upgrade() {
+                    pending.cleanup();
+                }
+            }
+        });
+
         TunnelManager {
             tunnel_factory,
             tunnels: Mutex::new(HashMap::new()),
             pending_send_cache,
+            channels,
             recv_handle,
+            cleanup_handle,
             pkg_listener,
             router: Arc::new(VpnRouter::new()),
         }
@@ -471,7 +527,7 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
             if let Some(pool) = tunnels.get(&key) {
                 pool.clone()
             } else {
-                let pool = WorkerPool::new_with_config(
+                let pool = WorkerPool::new(
                     TUNNEL_POOL_MAX_COUNT,
                     Factory::new(
                         network_group_id,
@@ -479,12 +535,9 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
                         node,
                         self.tunnel_factory.clone(),
                         self.pending_send_cache.clone(),
+                        self.channels.clone(),
                         self.pkg_listener.clone(),
                     ),
-                    WorkerPoolConfig {
-                        idle_timeout: Some(TUNNEL_POOL_IDLE_TIMEOUT),
-                        ..WorkerPoolConfig::default()
-                    },
                 );
                 tunnels.insert(key, pool.clone());
                 pool
@@ -518,7 +571,7 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
                 if let Some(pool) = tunnels.get(&key) {
                     pool.clone()
                 } else {
-                    let pool = WorkerPool::new_with_config(
+                    let pool = WorkerPool::new(
                         TUNNEL_POOL_MAX_COUNT,
                         Factory::new(
                             network_group_id,
@@ -526,12 +579,9 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
                             node_id,
                             self.tunnel_factory.clone(),
                             self.pending_send_cache.clone(),
+                            self.channels.clone(),
                             self.pkg_listener.clone(),
                         ),
-                        WorkerPoolConfig {
-                            idle_timeout: Some(TUNNEL_POOL_IDLE_TIMEOUT),
-                            ..WorkerPoolConfig::default()
-                        },
                     );
                     tunnels.insert(key, pool.clone());
                     pool
@@ -555,6 +605,8 @@ impl<R: VpnTunnelRecv, S: VpnTunnelSend, F: VpnTunnelFactory<R, S>, A: VpnTunnel
 {
     fn drop(&mut self) {
         log::info!("vpn TunnelManager drop");
+        self.channels.close_all();
+        self.cleanup_handle.abort();
         self.recv_handle.abort();
     }
 }
