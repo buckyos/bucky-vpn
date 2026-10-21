@@ -86,7 +86,7 @@ impl ControlCmdTunnelFactory {
         ))?;
         let target = TtpTarget {
             local_ep: local_ep.copied(),
-            remote_ep: self.control_endpoint,
+            remote_ep: vec![self.control_endpoint],
             remote_id: self.control_id.clone(),
             remote_name: self
                 .control_name
