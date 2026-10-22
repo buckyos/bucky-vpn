@@ -284,6 +284,14 @@ def concrete_contract_inputs(
 def contract_language(root: Path, impact: dict[str, object], concrete_inputs: set[str]) -> str:
     languages: set[str] = set()
     passive = {".md", ".json", ".yaml", ".yml", ".bat", ".sh"}
+    scripts = {".ps1", ".sh"}
+    suffixes = {Path(value).suffix for value in concrete_inputs}
+    if (
+        set(impact.get("required", [])) == {"documentation-examples"}
+        and suffixes & scripts
+        and suffixes <= passive | scripts
+    ):
+        return "script-documentation"
     for value in sorted(concrete_inputs):
         path = Path(value)
         if path.suffix == ".py":
@@ -303,6 +311,8 @@ def check_language_command(
     root: Path, kind: str, command: list[str], language: str,
     concrete_inputs: set[str], evidence_inputs: list[str],
 ) -> None:
+    if language == "script-documentation" and kind != "documentation-examples":
+        fail("Script documentation closure supports only documentation-examples")
     if kind not in {"repository-compile-closure", "documentation-examples"}:
         return
     if language == "rust":

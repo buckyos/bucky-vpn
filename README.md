@@ -14,6 +14,48 @@ BuckyVPN 是一个基于 P2P 网络实现的 VPN 工具，提供 Windows、Debia
 
 其中 `<version>` 是 Release 版本号，例如 `1.2.0`。
 
+### 使用脚本安装最新版本
+
+无需克隆仓库：以下命令从本项目 GitHub `master` 分支下载脚本，然后查询最新正式 Release，精确选择安装包并验证 Release 资产提供的 SHA-256。要求能够匿名访问官方仓库和 GitHub 下载服务；API 限流、缺少资产或摘要、校验失败都会停止安装。摘要用于下载完整性校验，不是独立发布签名。
+
+**Windows x64**：在“以管理员身份运行”的 PowerShell 5.1 或更新版本中执行：
+
+```powershell
+& {
+    $script = Join-Path ([IO.Path]::GetTempPath()) ("bucky-vpn-" + [Guid]::NewGuid().ToString('N') + ".ps1")
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/buckyos/bucky-vpn/master/install.ps1' -OutFile $script -ErrorAction Stop
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script
+    }
+    finally { Remove-Item -LiteralPath $script -Force -ErrorAction SilentlyContinue }
+}
+```
+
+脚本等待 EXE 静默安装结束，不自动重启。退出码 `0` 表示完成，`3010` 表示安装完成但需要重启；其他非零值表示失败，可在 `$LASTEXITCODE` 查看。脚本会显示保留的安装日志路径（位于用户临时目录），并删除下载的安装包。仅支持 Windows x64，不支持 Windows ARM64 或 x86。
+
+**Debian/Ubuntu amd64**：需要 Bash、curl、jq、dpkg 和 sha256sum。缺少 curl/jq 时先运行 `sudo apt-get update && sudo apt-get install -y curl jq`，然后执行：
+
+```bash
+curl --fail --show-error --location --proto '=https' --proto-redir '=https' \
+  'https://raw.githubusercontent.com/buckyos/bucky-vpn/master/install.sh' -o install.sh &&
+bash install.sh
+```
+
+脚本验证安装包后使用 `sudo dpkg -i`（root 会直接调用 dpkg）。需要 sudo 权限；依赖或服务环境不满足时保留 dpkg 原生错误，不自动修复依赖。不支持 RPM 发行版或 Linux ARM64。
+
+**macOS Intel / Apple Silicon**：需要 Bash 3.2 或更新版本、curl 和 jq；curl/Bash 为系统自带，jq 需预先安装（已有 Homebrew 时可运行 `brew install jq`）。执行：
+
+```bash
+curl --fail --show-error --location --proto '=https' --proto-redir '=https' \
+  'https://raw.githubusercontent.com/buckyos/bucky-vpn/master/install.sh' -o install.sh &&
+bash install.sh
+```
+
+macOS 安装需要 sudo 权限。当前 PKG 未签名，脚本在 HTTPS 下载和 SHA-256 校验后调用 `sudo /usr/sbin/installer -allowUntrusted -pkg ... -target /`，并按需仅移除本次 PKG 和安装成功后的 `/Applications/BuckyVPN.app` 内的 `com.apple.quarantine` 属性，不跟随符号链接、不修改全局 Gatekeeper 设置。该选项允许不受信任证书的安装，不保证绕过 MDM 或其他系统策略。安装后隔离属性处理失败也会返回失败并说明安装已完成；原生安装日志可查看 `/var/log/install.log`。
+
+Unix 脚本自动清理下载临时文件，保留原生安装命令的失败退出码。三个平台都沿用安装包的服务注册和启动行为，安装失败后的系统恢复由原生包管理器负责。以下仍可使用手动下载方式。
+
 ### Windows
 
 下载并运行 `BuckyVPN_<version>_amd64_Setup.exe`，按安装向导完成安装。安装程序会注册并启动 `BuckyVPN` 系统服务，同时将安装目录加入系统 `PATH`。安装后请打开一个新的终端窗口再使用 `bucky-vpn` 命令。

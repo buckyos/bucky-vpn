@@ -13,3 +13,5 @@ test-run.py 用 --task 精确绑定版本和 packet，module suite 不依赖历�
 历史迁移保留原始材料和 hash 映射，只规范必要路径和活跃任务绑定。档案结论不代表当前工具通过；不得重签旧 receipt、推断关闭未完成任务或代验收产品任务。039 的两文件前置同步授权是当前用户确认的单任务例外，不构成后续工作流规则。
 
 规范与阶段责任从 AGENTS.md 及 harness/rules/index.yaml 路由；全局协作边界见 docs/architecture/repository-workflow.md。
+
+testing-coverage-check.py 的脚本文档闭包仅支持 required 精确等于 documentation-examples，且具体设计输入全部为 .ps1/.sh 与既有被动格式（.md/.json/.yaml/.yml/.bat），并至少包含一个 .ps1 或 .sh。它复用现有 Python 文档 wrapper 的解释器、仓库内文件、指纹、--documentation-examples 模式及传播子进程失败的验证。其他输入仍按原有 Rust/Python 闭包处理；不提供 API/build 或未知语言的通用回退。专用回归位于 harness/tests/test_script_doc_closure.py，经任务计划执行，并注册到 repo-governance 维护入口。

@@ -73,6 +73,7 @@ MODULE_SUITES: dict[str, dict[str, list[list[str]]]] = {
             ["python3", "./harness/tests/test_test_file_location_rule.py"],
             ["python3", "./harness/tests/test_harness_upgrade_unit.py", "UpgradeUnitTests"],
             ["python3", "./harness/tests/test_governance_contracts.py"],
+            ["python3", "./harness/tests/test_script_doc_closure.py"],
         ],
         "dv": [
             ["python3", "./harness/tests/test_tooling_check_reuse.py"],
