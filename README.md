@@ -21,15 +21,7 @@ BuckyVPN 是一个基于 P2P 网络实现的 VPN 工具，提供 Windows、Debia
 **Windows x64**：在“以管理员身份运行”的 PowerShell 5.1 或更新版本中执行：
 
 ```powershell
-& {
-    $script = Join-Path ([IO.Path]::GetTempPath()) ("bucky-vpn-" + [Guid]::NewGuid().ToString('N') + ".ps1")
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/buckyos/bucky-vpn/master/install.ps1' -OutFile $script -ErrorAction Stop
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script
-    }
-    finally { Remove-Item -LiteralPath $script -Force -ErrorAction SilentlyContinue }
-}
+irm 'https://raw.githubusercontent.com/buckyos/bucky-vpn/master/install.ps1' | iex
 ```
 
 脚本等待 EXE 静默安装结束，不自动重启。退出码 `0` 表示完成，`3010` 表示安装完成但需要重启；其他非零值表示失败，可在 `$LASTEXITCODE` 查看。脚本会显示保留的安装日志路径（位于用户临时目录），并删除下载的安装包。仅支持 Windows x64，不支持 Windows ARM64 或 x86。
