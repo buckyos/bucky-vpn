@@ -79,9 +79,9 @@ def fixtures(directory: Path) -> None:
 def docs() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     windows = re.search(r"```powershell\n(.*?)\n```", readme, re.S).group(1)
-    assert "https://raw.githubusercontent.com/buckyos/bucky-vpn/master/install.ps1" in windows
-    assert "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script" in windows
-    assert "-ErrorAction Stop" in windows and "finally" in windows
+    assert windows.strip() == (
+        "irm 'https://raw.githubusercontent.com/buckyos/bucky-vpn/master/install.ps1' | iex"
+    )
     unix_commands = re.findall(r"```bash\n(curl --fail.*?bash install.sh)\n```", readme, re.S)
     assert len(unix_commands) == 2
     for command in unix_commands:
