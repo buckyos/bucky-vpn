@@ -18,13 +18,13 @@ BuckyVPN 是一个基于 P2P 网络实现的 VPN 工具，提供 Windows、Debia
 
 无需克隆仓库：以下命令从本项目 GitHub `master` 分支下载脚本，然后查询最新正式 Release，精确选择安装包并验证 Release 资产提供的 SHA-256。要求能够匿名访问官方仓库和 GitHub 下载服务；API 限流、缺少资产或摘要、校验失败都会停止安装。摘要用于下载完整性校验，不是独立发布签名。
 
-**Windows x64**：在“以管理员身份运行”的 PowerShell 5.1 或更新版本中执行：
+**Windows x64**：在 PowerShell 5.1 或更新版本中执行（非管理员会话会自动请求 UAC 提权，取消则不开始安装）：
 
 ```powershell
 irm 'https://raw.githubusercontent.com/buckyos/bucky-vpn/master/install.ps1' | iex
 ```
 
-脚本等待 EXE 静默安装结束，不自动重启。退出码 `0` 表示完成，`3010` 表示安装完成但需要重启；其他非零值表示失败，可在 `$LASTEXITCODE` 查看。脚本会显示保留的安装日志路径（位于用户临时目录），并删除下载的安装包。仅支持 Windows x64，不支持 Windows ARM64 或 x86。
+脚本等待 EXE 静默安装结束，不自动重启。退出码 `0` 表示完成，`3010` 表示安装完成但需要重启；其他非零值表示失败，可在 `$LASTEXITCODE` 查看。脚本会显示保留的安装日志路径（位于用户临时目录），并删除下载的安装包；安装开始前的失败会把失败的请求 URL、完整异常链和运行环境信息写入同样位于用户临时目录的 `bucky-vpn-error-*.log` 并显示其路径。仅支持 Windows x64，不支持 Windows ARM64 或 x86。`irm | iex` 执行的窗口不会关闭；脚本自己拉起或托管的新窗口在结束前会提示按任意键关闭（输入被重定向时跳过）。
 
 **Debian/Ubuntu amd64**：需要 Bash、curl、jq、dpkg 和 sha256sum。缺少 curl/jq 时先运行 `sudo apt-get update && sudo apt-get install -y curl jq`，然后执行：
 
